@@ -24,38 +24,75 @@ export interface OrchestratorConfig {
   sessionStore: SessionStore;
   /** Pluggable agent runner (e.g., ClaudeRunner). */
   agentRunner: AgentRunner;
-  /** Default agent name when no attributions overlap the comment. */
-  fallbackAgent: string;
+  /**
+   * Default agent name when no attributions overlap the comment.
+   * Can be a fixed string or a function that resolves per document
+   * (useful for auto-generated names stored in a DB).
+   */
+  fallbackAgent: string | ((documentId: string) => string);
+  /**
+   * Optional separate client for replying to comments (e.g., a service account).
+   * When provided, comment replies will appear from this identity instead of
+   * the main client's identity. The doc must be shared with the service account.
+   */
+  replyClient?: CodocsClient;
+  /** Called when an agent is assigned to handle a comment, before processing starts. */
+  onAgentAssigned?: (agentName: string, task: string) => void;
   /** Optional logger. */
   debug?: (msg: string) => void;
 }
 
 export class AgentOrchestrator {
   private client: CodocsClient;
+  private replyClient: CodocsClient;
   private sessionStore: SessionStore;
   private agentRunner: AgentRunner;
-  private fallbackAgent: string;
+  private fallbackAgent: string | ((documentId: string) => string);
+  private onAgentAssigned: (agentName: string, task: string) => void;
   private debug: (msg: string) => void;
 
   constructor(config: OrchestratorConfig) {
     this.client = config.client;
+    this.replyClient = config.replyClient ?? config.client;
     this.sessionStore = config.sessionStore;
     this.agentRunner = config.agentRunner;
     this.fallbackAgent = config.fallbackAgent;
+    this.onAgentAssigned = config.onAgentAssigned ?? (() => {});
     this.debug = config.debug ?? (() => {});
+  }
+
+  /** Resolve the fallback agent name for a given document. */
+  private resolveFallbackAgent(documentId: string): string {
+    return typeof this.fallbackAgent === 'function'
+      ? this.fallbackAgent(documentId)
+      : this.fallbackAgent;
+  }
+
+  /** Return currently active agent processes. */
+  getActiveAgents() {
+    return this.agentRunner.getActiveProcesses();
+  }
+
+  /** Kill all active agent processes. Returns the names of killed agents. */
+  killAll(): string[] {
+    return this.agentRunner.killAll();
   }
 
   /**
    * Handle a single comment event end-to-end.
    */
-  async handleComment(event: CommentEvent): Promise<void> {
+  async handleComment(event: CommentEvent): Promise<{
+    agentName: string;
+    replyPreview: string;
+    editSummary: string;
+  }> {
     const { documentId, comment } = event;
     const quotedText = comment.quotedText ?? '';
     const commentText = comment.content ?? '';
 
     if (!commentText) {
       this.debug('Skipping comment with no content');
-      return;
+      return { agentName: '', replyPreview: '', editSummary: 'No content' };
     }
 
     this.debug(`Handling comment on doc ${documentId}: "${commentText}"`);
@@ -66,16 +103,17 @@ export class AgentOrchestrator {
 
     // Step 2: Assign agent
     const agentName = assignAgent(quotedText, attributions, document, {
-      fallbackAgent: this.fallbackAgent,
+      fallbackAgent: this.resolveFallbackAgent(documentId),
     });
     this.debug(`Assigned to agent: ${agentName}`);
+    this.onAgentAssigned(agentName, commentText.slice(0, 60));
 
     // Step 3: Snapshot the document as markdown (the "base" for 3-way merge)
     const baseMarkdown = docsToMarkdown(document);
 
-    // Step 4: Write temp files
-    const { editPath, basePath } = await writeTempContext(baseMarkdown, documentId);
-    this.debug(`Temp files: edit=${editPath} base=${basePath}`);
+    // Step 4: Write temp files in a dedicated workspace directory
+    const { editPath, basePath } = await writeTempContext(baseMarkdown, documentId, agentName);
+    this.debug(`Edit file: ${editPath}`);
 
     try {
       // Step 5: Build prompt
@@ -99,6 +137,7 @@ export class AgentOrchestrator {
       // Step 7: Run the agent
       let result = await this.agentRunner.run(prompt, existingSessionId, {
         workingDirectory: undefined,
+        agentName,
       });
 
       // Handle session resume failure — retry with fresh session
@@ -109,6 +148,7 @@ export class AgentOrchestrator {
         this.sessionStore.deleteSession(agentName, documentId);
         result = await this.agentRunner.run(prompt, null, {
           workingDirectory: undefined,
+          agentName,
         });
       }
 
@@ -143,7 +183,7 @@ export class AgentOrchestrator {
           const resolveResult = await this.agentRunner.run(
             conflictPrompt,
             result.sessionId,
-            {},
+            { workingDirectory: undefined, agentName },
           );
 
           if (resolveResult.exitCode !== 0) {
@@ -165,16 +205,30 @@ export class AgentOrchestrator {
         this.debug('No changes to apply');
       }
 
-      // Step 13: Reply to comment (optional)
-      if (comment.id && diffResult.hasChanges) {
+      // Step 13: Reply to the comment with the agent's response
+      const agentResponse = result.stdout.trim();
+      const replyContent = agentResponse
+        || (diffResult.hasChanges ? 'Done — changes applied to the document.' : 'Done — no changes needed.');
+
+      if (comment.id) {
         try {
-          await this.client.addComment(documentId, {
-            content: `[${agentName}]: Changes applied.`,
-          });
+          await this.replyClient.replyToComment(documentId, comment.id, replyContent);
+          this.debug('Replied to comment');
         } catch (err) {
-          this.debug(`Failed to add reply comment: ${err}`);
+          this.debug(`Failed to reply to comment: ${err}`);
         }
       }
+
+      // Build edit summary
+      const editSummary = diffResult.hasChanges
+        ? `${diffResult.requests.length} edit${diffResult.requests.length !== 1 ? 's' : ''}${diffResult.conflictsResolved ? `, ${diffResult.conflictsResolved} conflict${diffResult.conflictsResolved !== 1 ? 's' : ''} resolved` : ''}`
+        : 'No changes';
+
+      return {
+        agentName,
+        replyPreview: replyContent,
+        editSummary,
+      };
     } finally {
       // Step 14: Cleanup
       await cleanupTempFiles(editPath, basePath);

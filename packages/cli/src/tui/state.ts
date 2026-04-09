@@ -14,7 +14,7 @@ export interface Agent {
 export interface ActivityEvent {
   id: string;
   time: Date;
-  type: 'comment' | 'system' | 'agent-reply' | 'error';
+  type: 'comment' | 'system' | 'agent-reply' | 'error' | 'debug';
   /** Author of the comment (if type=comment) */
   author?: string;
   /** Quoted text the comment is on */
@@ -27,6 +27,10 @@ export interface ActivityEvent {
   durationMs?: number;
   /** Cost of processing */
   cost?: number;
+  /** Truncated response/reply text (for agent-reply) */
+  replyPreview?: string;
+  /** Summary of document edits (for agent-reply) */
+  editSummary?: string;
 }
 
 export interface Stats {
@@ -46,6 +50,8 @@ export interface TuiState {
   docUrl: string;
   docTitle: string;
   connected: boolean;
+  /** Current system status shown in the header */
+  statusMessage: string;
   agents: Agent[];
   events: ActivityEvent[];
   stats: Stats;
@@ -63,15 +69,9 @@ export function createInitialState(
     docUrl,
     docTitle: docTitle ?? docId.slice(0, 12) + '...',
     connected: false,
+    statusMessage: 'Starting up...',
     agents: [],
-    events: [
-      {
-        id: 'init',
-        time: new Date(),
-        type: 'system',
-        content: 'Starting up...',
-      },
-    ],
+    events: [],
     stats: {
       commentCount: 0,
       totalCost: 0,

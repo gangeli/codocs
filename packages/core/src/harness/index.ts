@@ -1,4 +1,4 @@
-export type { AgentRunner, AgentRunOptions, AgentRunResult } from './agent.js';
+export type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent } from './agent.js';
 export type { SessionStore, SessionMapping } from './types.js';
 export { ClaudeRunner } from './agents/claude.js';
 export { assignAgent, findQuotedTextIndices, buildFlatText } from './assign.js';
@@ -11,3 +11,4 @@ export { parseSections, mergeDocuments, computeDocDiff } from './diff.js';
 export type { MdSection, MergeResult, DiffResult } from './diff.js';
 export { AgentOrchestrator } from './orchestrator.js';
 export type { OrchestratorConfig } from './orchestrator.js';
+export { generateAgentName } from './name-generator.js';

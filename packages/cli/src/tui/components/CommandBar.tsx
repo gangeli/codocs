@@ -3,7 +3,8 @@ import { Box, Text } from 'ink';
 
 interface CommandBarProps {
   paused: boolean;
-  showSettings: boolean;
+  debugMode: boolean;
+  view: 'main' | 'settings' | 'confirm-quit';
 }
 
 interface KeyHint {
@@ -11,20 +12,33 @@ interface KeyHint {
   label: string;
 }
 
-export function CommandBar({ paused, showSettings }: CommandBarProps) {
-  const hints: KeyHint[] = showSettings
-    ? [
+export function CommandBar({ paused, debugMode, view }: CommandBarProps) {
+  let hints: KeyHint[];
+
+  switch (view) {
+    case 'settings':
+      hints = [
         { key: 'esc', label: 'close' },
         { key: '\u2191\u2193', label: 'navigate' },
         { key: '\u2190\u2192', label: 'change' },
-      ]
-    : [
+      ];
+      break;
+    case 'confirm-quit':
+      hints = [
+        { key: 'y', label: 'quit' },
+        { key: 'n', label: 'cancel' },
+      ];
+      break;
+    default:
+      hints = [
         { key: 'q', label: 'quit' },
         { key: 's', label: 'settings' },
         { key: 'p', label: paused ? 'resume' : 'pause' },
         { key: 'o', label: 'open doc' },
-        { key: 'd', label: 'debug' },
+        { key: debugMode ? 'esc' : 'd', label: debugMode ? 'exit debug' : 'debug' },
       ];
+      break;
+  }
 
   return (
     <Box borderStyle="single" borderTop={true} borderBottom={false} borderLeft={false} borderRight={false} paddingX={1}>

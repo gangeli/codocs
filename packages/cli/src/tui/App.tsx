@@ -9,10 +9,25 @@ import { CommandBar } from './components/CommandBar.js';
 import { SettingsPanel } from './components/SettingsPanel.js';
 import type { TuiState, ActivityEvent, Agent, Settings } from './state.js';
 
+function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${minutes}m${secs}s`;
+}
+
+export interface ActiveAgentInfo {
+  agentName: string;
+  startedAt: Date;
+}
+
 interface AppProps {
   initialState: TuiState;
   /** Called when user requests shutdown */
   onShutdown: () => Promise<void>;
+  /** Returns currently active agent processes (for quit confirmation). */
+  getActiveAgents?: () => ActiveAgentInfo[];
   /** Ref callback to let serve.ts push state updates */
   onStateRef?: (ref: TuiStateRef) => void;
 }
@@ -22,18 +37,22 @@ export interface TuiStateRef {
   updateAgent: (name: string, update: Partial<Agent>) => void;
   removeAgent: (name: string) => void;
   setConnected: (connected: boolean) => void;
+  setStatus: (message: string) => void;
   incrementComments: () => void;
   addCost: (amount: number) => void;
   setDocTitle: (title: string) => void;
 }
 
-export function App({ initialState, onShutdown, onStateRef }: AppProps) {
+type View = 'main' | 'settings' | 'confirm-quit';
+
+export function App({ initialState, onShutdown, getActiveAgents, onStateRef }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 24;
 
   const [state, setState] = useState<TuiState>(initialState);
   const [scrollOffset, setScrollOffset] = useState(0);
+  const [view, setView] = useState<View>('main');
 
   // Expose state mutation methods to the serve command
   const stateRef: TuiStateRef = {
@@ -53,7 +72,6 @@ export function App({ initialState, onShutdown, onStateRef }: AppProps) {
             ),
           };
         }
-        // Add new agent
         return {
           ...s,
           agents: [...s.agents, { name, status: 'idle', ...update }],
@@ -66,6 +84,8 @@ export function App({ initialState, onShutdown, onStateRef }: AppProps) {
       })),
     setConnected: (connected) =>
       setState((s) => ({ ...s, connected })),
+    setStatus: (message) =>
+      setState((s) => ({ ...s, statusMessage: message })),
     incrementComments: () =>
       setState((s) => ({
         ...s,
@@ -80,7 +100,6 @@ export function App({ initialState, onShutdown, onStateRef }: AppProps) {
       setState((s) => ({ ...s, docTitle: title })),
   };
 
-  // Register ref on first render
   React.useEffect(() => {
     onStateRef?.(stateRef);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -90,18 +109,29 @@ export function App({ initialState, onShutdown, onStateRef }: AppProps) {
     exit();
   }, [onShutdown, exit]);
 
-  // Keyboard input (only when settings panel is not open)
+  // ── Keyboard: global (always active) ─────────────────────────
+  useInput((_input, key) => {
+    if (key.ctrl && _input === 'c') {
+      if (view === 'confirm-quit') {
+        handleShutdown();
+      } else {
+        setView('confirm-quit');
+      }
+    }
+  });
+
+  // ── Keyboard: main view ──────────────────────────────────────
   useInput(
     (input, key) => {
-      if (state.showSettings) {
-        // Settings panel handles its own input
-        return;
-      }
-
-      if (input === 'q' || (key.ctrl && input === 'c')) {
-        handleShutdown();
+      if (key.escape && state.settings.debugMode) {
+        setState((s) => ({
+          ...s,
+          settings: { ...s.settings, debugMode: false },
+        }));
+      } else if (input === 'q') {
+        setView('confirm-quit');
       } else if (input === 's') {
-        setState((s) => ({ ...s, showSettings: true }));
+        setView('settings');
       } else if (input === 'p') {
         setState((s) => ({ ...s, paused: !s.paused }));
       } else if (input === 'o') {
@@ -111,19 +141,30 @@ export function App({ initialState, onShutdown, onStateRef }: AppProps) {
           ...s,
           settings: { ...s.settings, debugMode: !s.settings.debugMode },
         }));
-      } else if (key.upArrow) {
+      } else if (key.upArrow || input === 'k') {
         setScrollOffset((o) => Math.max(0, o - 1));
-      } else if (key.downArrow) {
+      } else if (key.downArrow || input === 'j') {
         setScrollOffset((o) =>
           Math.min(Math.max(0, state.events.length - 3), o + 1),
         );
       }
     },
-    { isActive: !state.showSettings },
+    { isActive: view === 'main' },
+  );
+
+  // ── Keyboard: confirm quit ───────────────────────────────────
+  useInput(
+    (input, key) => {
+      if (input === 'y' || input === 'Y') {
+        handleShutdown();
+      } else {
+        setView('main');
+      }
+    },
+    { isActive: view === 'confirm-quit' },
   );
 
   // Calculate available height for the activity log
-  // Header(2) + StatusBar(1) + CommandBar(2) + margins(2) = ~7 lines overhead
   const logMaxVisible = Math.max(3, termHeight - 7);
 
   return (
@@ -132,49 +173,85 @@ export function App({ initialState, onShutdown, onStateRef }: AppProps) {
         docTitle={state.docTitle}
         docUrl={state.docUrl}
         connected={state.connected}
+        debugMode={state.settings.debugMode}
+        statusMessage={state.statusMessage}
       />
 
-      <Box flexGrow={1}>
-        <AgentList
-          agents={state.agents}
-          maxAgents={state.settings.maxAgents}
-        />
-
-        <Box
-          borderStyle="single"
-          borderTop={false}
-          borderBottom={false}
-          borderRight={false}
-          borderLeft={true}
-        >
-          <Text> </Text>
-        </Box>
-
-        <ActivityLog
-          events={state.events}
-          scrollOffset={scrollOffset}
-          maxVisible={logMaxVisible}
-        />
-      </Box>
-
-      <StatusBar stats={state.stats} paused={state.paused} />
-      <CommandBar paused={state.paused} showSettings={state.showSettings} />
-
-      {state.showSettings && (
-        <Box
-          position="absolute"
-          marginTop={3}
-          marginLeft={4}
-        >
+      {view === 'settings' ? (
+        <Box flexGrow={1} justifyContent="center" alignItems="center">
           <SettingsPanel
             settings={state.settings}
             onUpdate={(settings: Settings) =>
               setState((s) => ({ ...s, settings }))
             }
-            onClose={() => setState((s) => ({ ...s, showSettings: false }))}
+            onClose={() => setView('main')}
+          />
+        </Box>
+      ) : view === 'confirm-quit' ? (
+        <Box flexGrow={1} justifyContent="center" alignItems="center">
+          <Box
+            flexDirection="column"
+            borderStyle="round"
+            paddingX={3}
+            paddingY={1}
+            alignItems="center"
+          >
+            <Text bold>Quit codocs?</Text>
+            {(() => {
+              const active = getActiveAgents?.() ?? [];
+              if (active.length > 0) {
+                return (
+                  <Box flexDirection="column" marginTop={1} alignItems="center">
+                    <Text color="yellow" bold>
+                      {active.length} active agent{active.length !== 1 ? 's' : ''} will be killed:
+                    </Text>
+                    {active.map((a) => (
+                      <Text key={a.agentName} dimColor>
+                        {'  '}{a.agentName} (running {formatDuration(Date.now() - a.startedAt.getTime())})
+                      </Text>
+                    ))}
+                  </Box>
+                );
+              }
+              return <Text dimColor>This will close subscriptions and exit.</Text>;
+            })()}
+            <Box marginTop={1}>
+              <Text bold color="cyan">y</Text>
+              <Text> yes  </Text>
+              <Text bold color="cyan">n</Text>
+              <Text> cancel</Text>
+            </Box>
+          </Box>
+        </Box>
+      ) : (
+        <Box flexGrow={1}>
+          <AgentList
+            agents={state.agents}
+            maxAgents={state.settings.maxAgents}
+          />
+
+          <Box
+            borderStyle="single"
+            borderTop={false}
+            borderBottom={false}
+            borderRight={false}
+            borderLeft={true}
+          >
+            <Text> </Text>
+          </Box>
+
+          <ActivityLog
+            events={state.events}
+            scrollOffset={scrollOffset}
+            maxVisible={logMaxVisible}
+            debugMode={state.settings.debugMode}
+            docUrl={state.docUrl}
           />
         </Box>
       )}
+
+      <StatusBar stats={state.stats} paused={state.paused} />
+      <CommandBar paused={state.paused} debugMode={state.settings.debugMode} view={view} />
     </Box>
   );
 }

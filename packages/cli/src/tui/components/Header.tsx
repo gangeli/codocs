@@ -5,23 +5,27 @@ interface HeaderProps {
   docTitle: string;
   docUrl: string;
   connected: boolean;
+  debugMode: boolean;
+  statusMessage: string;
 }
 
-export function Header({ docTitle, docUrl, connected }: HeaderProps) {
-  // Shorten URL for display
-  const shortUrl = docUrl.replace('https://', '').replace('/edit', '');
-
+export function Header({ docTitle, docUrl, connected, debugMode, statusMessage }: HeaderProps) {
   return (
-    <Box borderStyle="single" borderBottom={false} borderLeft={false} borderRight={false} paddingX={1}>
+    <Box paddingX={1}>
       <Text bold color="cyan">codocs</Text>
-      <Text color="gray"> {' \u2500\u2500 '} </Text>
-      <Text bold>{docTitle}</Text>
-      <Text color="gray"> {' \u2500\u2500 '} </Text>
-      <Text dimColor>{shortUrl}</Text>
+      <Text dimColor> {'\u2502'} </Text>
+      <Text>{docTitle}</Text>
       <Box flexGrow={1} />
+      {debugMode && (
+        <>
+          <Text color="yellow" bold>DEBUG</Text>
+          <Text>  </Text>
+        </>
+      )}
       <Text color={connected ? 'green' : 'yellow'}>
-        {connected ? '\u25CF connected' : '\u25CB connecting...'}
+        {connected ? '\u25CF' : '\u25CB'}
       </Text>
+      <Text dimColor> {statusMessage}</Text>
     </Box>
   );
 }

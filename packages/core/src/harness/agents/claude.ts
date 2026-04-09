@@ -5,17 +5,28 @@
  * Sessions are managed via `--session-id` and `--resume`.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import type { AgentRunner, AgentRunOptions, AgentRunResult } from '../agent.js';
+import type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent } from '../agent.js';
 
 const DEFAULT_TIMEOUT = 300_000; // 5 minutes
 
+interface TrackedProcess {
+  child: ChildProcess;
+  agentName: string;
+  startedAt: Date;
+}
+
 export class ClaudeRunner implements AgentRunner {
   readonly name = 'claude';
+  private active = new Map<string, TrackedProcess>();
 
   constructor(private binaryPath: string = 'claude') {}
 
+  /**
+   * Run a prompt, optionally resuming an existing session.
+   * The agentName option is used to label the process for tracking.
+   */
   async run(
     prompt: string,
     sessionId: string | null,
@@ -23,6 +34,7 @@ export class ClaudeRunner implements AgentRunner {
   ): Promise<AgentRunResult> {
     const effectiveSessionId = sessionId ?? randomUUID();
     const timeout = opts?.timeout ?? DEFAULT_TIMEOUT;
+    const trackingId = randomUUID();
 
     const args = ['-p', prompt, '--session-id', effectiveSessionId];
     if (sessionId) {
@@ -36,6 +48,14 @@ export class ClaudeRunner implements AgentRunner {
         env: { ...process.env },
       });
 
+      this.active.set(trackingId, {
+        child,
+        agentName: opts?.agentName ?? effectiveSessionId,
+        startedAt: new Date(),
+      });
+
+      const cleanup = () => { this.active.delete(trackingId); };
+
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
 
@@ -44,16 +64,19 @@ export class ClaudeRunner implements AgentRunner {
 
       const timer = setTimeout(() => {
         child.kill('SIGTERM');
+        cleanup();
         reject(new Error(`Claude session ${effectiveSessionId} timed out after ${timeout}ms`));
       }, timeout);
 
       child.on('error', (err) => {
         clearTimeout(timer);
+        cleanup();
         reject(err);
       });
 
       child.on('close', (code) => {
         clearTimeout(timer);
+        cleanup();
         resolve({
           sessionId: effectiveSessionId,
           exitCode: code ?? 1,
@@ -65,5 +88,22 @@ export class ClaudeRunner implements AgentRunner {
       // Close stdin immediately — we pass the prompt via -p flag
       child.stdin.end();
     });
+  }
+
+  getActiveProcesses(): ActiveAgent[] {
+    return [...this.active.values()].map(({ agentName, startedAt }) => ({
+      agentName,
+      startedAt,
+    }));
+  }
+
+  killAll(): string[] {
+    const killed: string[] = [];
+    for (const [id, { child, agentName }] of this.active) {
+      child.kill('SIGTERM');
+      killed.push(agentName);
+      this.active.delete(id);
+    }
+    return killed;
   }
 }

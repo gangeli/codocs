@@ -30,9 +30,12 @@ The comment was placed on this highlighted text:
 The full document is at: ${ctx.mdFilePath}
 The highlighted text can be found by searching for the quoted text above in that file.
 
-Please edit ${ctx.mdFilePath} to address the comment. Focus your changes on the section related to the highlighted text. Keep unrelated sections unchanged.
+You have two ways to respond:
 
-When you're done editing, briefly explain what you changed.`;
+1. **Edit the document**: Any changes you make to ${ctx.mdFilePath} will be applied back to the Google Doc. This is the shared overview document that all collaborators see. your objective is to keep this document both concise, and up to date with the latest state of the code. Balance these objectives with your edits.
+
+2. **Reply to the comment**: Whatever you write to stdout (your final text response) will be posted as a reply to the user's comment on the Google Doc.
+`;
 }
 
 /**

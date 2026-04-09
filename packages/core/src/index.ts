@@ -39,11 +39,13 @@ export {
   buildConflictPrompt,
   writeTempContext,
   cleanupTempFiles,
+  generateAgentName,
 } from './harness/index.js';
 export type {
   AgentRunner,
   AgentRunOptions,
   AgentRunResult,
+  ActiveAgent,
   SessionStore,
   SessionMapping,
   OrchestratorConfig,

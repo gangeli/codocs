@@ -64,7 +64,7 @@ function parseEventStub(message: Message): {
   const documentId = extractDocumentId(message, payload);
   const commentId = payload?.comment?.id ?? '';
 
-  if (!documentId || !commentId) {
+  if (!documentId) {
     return null;
   }
 
@@ -155,46 +155,39 @@ export function listenForComments(
       return;
     }
 
-    debug(`  → Comment event: type=${stub.eventType} doc=${stub.documentId} comment=${stub.commentId}`);
+    debug(`  → Comment event: type=${stub.eventType} doc=${stub.documentId} comment=${stub.commentId || '(no id)'}`);
 
-    // Fetch full comment details from Drive API
-    try {
-      debug(`  → Fetching full comment from Drive API...`);
-      const comment = await driveApi.getComment(stub.documentId, stub.commentId);
-      debug(`  → Got comment: author=${comment.author?.displayName} content="${comment.content?.slice(0, 100)}"`);
+    // If we have a comment ID, fetch full details from Drive API
+    if (stub.commentId) {
+      try {
+        debug(`  → Fetching full comment from Drive API...`);
+        const comment = await driveApi.getComment(stub.documentId, stub.commentId);
+        debug(`  → Got comment: author=${comment.author?.displayName} content="${comment.content?.slice(0, 100)}"`);
 
-      const content = comment.content ?? '';
-      const event: CommentEvent = {
-        eventType: stub.eventType,
-        documentId: stub.documentId,
-        comment: {
-          id: stub.commentId,
-          content,
-          author: comment.author?.displayName ?? comment.author?.emailAddress ?? undefined,
-          quotedText: comment.quotedFileContent?.value ?? undefined,
-          createdTime: comment.createdTime ?? undefined,
-          mentions: extractMentions(content),
-        },
-        eventTime: stub.eventTime,
-      };
+        const content = comment.content ?? '';
+        const event: CommentEvent = {
+          eventType: stub.eventType,
+          documentId: stub.documentId,
+          comment: {
+            id: stub.commentId,
+            content,
+            author: comment.author?.displayName ?? comment.author?.emailAddress ?? undefined,
+            quotedText: comment.quotedFileContent?.value ?? undefined,
+            createdTime: comment.createdTime ?? undefined,
+            mentions: extractMentions(content),
+          },
+          eventTime: stub.eventTime,
+        };
 
-      onComment(event);
-    } catch (err: any) {
-      debug(`  → Failed to fetch comment: ${err.message}`);
-      // Still emit what we have from the event payload
-      onComment({
-        eventType: stub.eventType,
-        documentId: stub.documentId,
-        comment: {
-          id: stub.commentId,
-          content: undefined,
-          author: undefined,
-          quotedText: undefined,
-          createdTime: undefined,
-          mentions: [],
-        },
-        eventTime: stub.eventTime,
-      });
+        onComment(event);
+      } catch (err: any) {
+        debug(`  → Failed to fetch comment: ${err.message}`);
+        // Fall through to payload-based approach
+        emitFromPayload(stub, onComment);
+      }
+    } else {
+      debug(`  → No comment ID in payload, using payload data directly`);
+      emitFromPayload(stub, onComment);
     }
 
     message.ack();
@@ -210,6 +203,25 @@ export function listenForComments(
       onError(error);
     }
   };
+
+  function emitFromPayload(
+    stub: { eventType: string; documentId: string; commentId: string; eventTime: string },
+    cb: (event: CommentEvent) => void,
+  ) {
+    cb({
+      eventType: stub.eventType,
+      documentId: stub.documentId,
+      comment: {
+        id: stub.commentId || undefined,
+        content: undefined,
+        author: undefined,
+        quotedText: undefined,
+        createdTime: undefined,
+        mentions: [],
+      },
+      eventTime: stub.eventTime,
+    });
+  }
 
   subscription.on('message', messageHandler);
   subscription.on('error', errorHandler);

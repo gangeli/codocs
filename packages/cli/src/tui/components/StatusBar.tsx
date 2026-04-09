@@ -17,12 +17,7 @@ export function StatusBar({ stats, paused }: StatusBarProps) {
         {stats.commentCount} comment{stats.commentCount !== 1 ? 's' : ''}
       </Text>
       <Text dimColor> {'\u2502'} </Text>
-      <Text dimColor>cost: {formatCost(stats.totalCost)}</Text>
-      {stats.budget > 0 && (
-        <>
-          <Text dimColor> / {formatCost(stats.budget)}</Text>
-        </>
-      )}
+      <Text dimColor>spent: {formatCost(stats.totalCost)}</Text>
       <Text dimColor> {'\u2502'} </Text>
       <Text dimColor>uptime: {uptime}</Text>
       {paused && (

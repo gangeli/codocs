@@ -9,6 +9,8 @@ export interface AgentRunOptions {
   workingDirectory?: string;
   /** Timeout in ms. Defaults to 300_000 (5 min). */
   timeout?: number;
+  /** Agent name (used for tracking active processes). */
+  agentName?: string;
 }
 
 export interface AgentRunResult {
@@ -20,6 +22,13 @@ export interface AgentRunResult {
   stdout: string;
   /** Stderr from the agent. */
   stderr: string;
+}
+
+export interface ActiveAgent {
+  /** Agent name (e.g., the cute generated name). */
+  agentName: string;
+  /** When this agent started processing. */
+  startedAt: Date;
 }
 
 export interface AgentRunner {
@@ -39,4 +48,10 @@ export interface AgentRunner {
     sessionId: string | null,
     opts?: AgentRunOptions,
   ): Promise<AgentRunResult>;
+
+  /** Return currently active (in-flight) agent processes. */
+  getActiveProcesses(): ActiveAgent[];
+
+  /** Kill all active agent processes. Returns the names of killed agents. */
+  killAll(): string[];
 }

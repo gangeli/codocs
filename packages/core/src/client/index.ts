@@ -154,6 +154,25 @@ export class CodocsClient {
   }
 
   /**
+   * Reply to an existing comment on a Google Doc.
+   */
+  async replyToComment(docId: string, commentId: string, content: string): Promise<string> {
+    return this.driveApi.replyToComment(docId, commentId, content);
+  }
+
+  /**
+   * Share a doc with an email address. Idempotent.
+   * Used to grant the service account commenter access.
+   */
+  async ensureShared(
+    docId: string,
+    email: string,
+    role: 'commenter' | 'reader' | 'writer' = 'commenter',
+  ): Promise<void> {
+    return this.driveApi.ensureShared(docId, email, role);
+  }
+
+  /**
    * List all comments on a Google Doc.
    */
   async listComments(docId: string): Promise<DocComment[]> {

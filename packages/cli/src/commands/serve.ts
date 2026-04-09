@@ -11,25 +11,56 @@ import {
   listenForComments,
   AgentOrchestrator,
   ClaudeRunner,
+  generateAgentName,
   type AgentRunner,
   type CommentEvent,
   type CommentListenerHandle,
   type SubscriptionInfo,
 } from '@codocs/core';
-import { openDatabase, SessionStore } from '@codocs/db';
+import { openDatabase, SessionStore, AgentNameStore } from '@codocs/db';
 import { readConfig, readTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
-import { App, createInitialState, type TuiStateRef, type ActivityEvent } from '../tui/index.js';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { App, Welcome, Generating, createInitialState, type TuiStateRef, type ActivityEvent, type WelcomeChoice } from '../tui/index.js';
 
 /** Registry of available agent runners. */
 const AGENT_RUNNERS: Record<string, () => AgentRunner> = {
   claude: () => new ClaudeRunner(),
 };
 
-function generateDocName(): string {
+function fallbackDocName(): string {
   const now = new Date();
   const date = now.toISOString().slice(0, 10);
   return `Codocs ${date}`;
+}
+
+async function generateDocName(
+  description: string,
+  agentType: string,
+): Promise<string> {
+  if (!description.trim()) return fallbackDocName();
+
+  const runnerFactory = AGENT_RUNNERS[agentType];
+  if (!runnerFactory) return fallbackDocName();
+
+  try {
+    const runner = runnerFactory();
+    const result = await runner.run(
+      `Generate a short, descriptive document title (max 6 words, no quotes, no punctuation at the end) for a collaborative document about: ${description.trim()}\n\nRespond with ONLY the title, nothing else.`,
+      null,
+      { timeout: 15_000 },
+    );
+
+    const name = result.stdout.trim().replace(/^["']|["']$/g, '').trim();
+    if (name && name.length > 0 && name.length < 80) return name;
+  } catch {
+    // Agent failed — fall back silently
+  }
+
+  return fallbackDocName();
 }
 
 /** How often to renew subscriptions (6 days, well before 7-day expiry). */
@@ -77,6 +108,121 @@ function createEventEmitter(tuiRef: TuiStateRef | null) {
   };
 }
 
+/**
+ * Show the welcome screen and return the user's choice.
+ */
+async function showWelcome(useTui: boolean): Promise<WelcomeChoice> {
+  if (useTui) {
+    return new Promise<WelcomeChoice>((resolve) => {
+      const { unmount } = render(
+        React.createElement(Welcome, {
+          cwd: process.cwd(),
+          onChoice: (choice: WelcomeChoice) => { unmount(); resolve(choice); },
+        }),
+        { exitOnCtrlC: true },
+      );
+    });
+  }
+
+  // Plain text fallback
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const answer = await rl.question('Enter a Doc URL/ID, or press Enter to create new: ');
+  rl.close();
+  if (answer.trim()) {
+    return { type: 'open', docId: answer.trim() };
+  }
+  return { type: 'from-repo' };
+}
+
+/**
+ * Resolve a welcome choice into either an existing doc ID or markdown content.
+ */
+async function resolveWelcomeChoice(
+  choice: WelcomeChoice,
+  agentType: string,
+): Promise<{ docId?: string; content?: string }> {
+  switch (choice.type) {
+    case 'open':
+      return { docId: choice.docId };
+
+    case 'from-repo': {
+      const runnerFactory = AGENT_RUNNERS[agentType];
+      if (!runnerFactory) {
+        console.error(`Unknown agent type "${agentType}".`);
+        process.exit(1);
+      }
+      const runner = runnerFactory();
+
+      // Show animated generating screen while agent runs
+      const { unmount } = render(
+        React.createElement(Generating, { message: 'Generating document from codebase...' }),
+      );
+
+      try {
+        const result = await runner.run(
+          'Look at this repository and write an initial design document in markdown. ' +
+          'Include sections for: overview, architecture, key decisions, and open questions. ' +
+          'Be concise but thorough. Output ONLY the markdown, no preamble.',
+          null,
+          { timeout: 120_000 },
+        );
+        unmount();
+        if (result.exitCode !== 0) {
+          console.error(`Agent exited with code ${result.exitCode}.`);
+          if (result.stderr) console.error(result.stderr.slice(0, 500));
+          process.exit(1);
+        }
+        if (!result.stdout.trim()) {
+          console.error('Agent produced no output.');
+          process.exit(1);
+        }
+        return { content: result.stdout.trim() };
+      } catch (err: any) {
+        unmount();
+        console.error(`Agent failed: ${err.message}`);
+        process.exit(1);
+      }
+    }
+
+    case 'import-file': {
+      try {
+        const content = readFileSync(choice.path, 'utf-8');
+        return { content };
+      } catch (err: any) {
+        console.error(`Failed to read ${choice.path}: ${err.message}`);
+        process.exit(1);
+      }
+    }
+
+    case 'write-new': {
+      const editor = process.env.VISUAL || process.env.EDITOR || 'vim';
+      const tmpFile = join(tmpdir(), `codocs-${Date.now()}.md`);
+      writeFileSync(tmpFile, '# \n\n', 'utf-8');
+
+      console.error(`Opening ${editor}...`);
+      const result = spawnSync(editor, [tmpFile], { stdio: 'inherit' });
+
+      if (result.status !== 0) {
+        console.error(`Editor exited with code ${result.status}.`);
+        try { unlinkSync(tmpFile); } catch {}
+        process.exit(1);
+      }
+
+      try {
+        const content = readFileSync(tmpFile, 'utf-8');
+        unlinkSync(tmpFile);
+        if (!content.trim() || content.trim() === '#') {
+          console.error('Empty document, creating blank doc.');
+          return {};
+        }
+        return { content };
+      } catch {
+        return {};
+      }
+    }
+  }
+}
+
 export function registerServeCommand(program: Command) {
   program
     .command('serve', { isDefault: true })
@@ -86,7 +232,8 @@ export function registerServeCommand(program: Command) {
     .option('--no-tui', 'Disable the terminal UI (plain text output)')
     .option('--agent-type <type>', 'Agent runner type (e.g., claude)', 'claude')
     .option('--db-path <path>', 'SQLite database path')
-    .option('--fallback-agent <name>', 'Default agent for unattributed text', 'coordinator')
+    .option('--fallback-agent <name>', 'Default agent for unattributed text (auto-generated if omitted)')
+    .option('--no-bot-replies', 'Disable bot identity for comment replies (reply as yourself instead)')
     .action(
       withErrorHandler(async (docIds: string[], opts: {
         debug?: boolean;
@@ -94,35 +241,42 @@ export function registerServeCommand(program: Command) {
         agentType?: string;
         dbPath?: string;
         fallbackAgent?: string;
+        botReplies?: boolean;
       }) => {
         const debugMode = opts.debug ?? false;
         const useTui = opts.tui !== false;
 
         // ── Pre-TUI: interactive doc selection ────────────────────
-        if (docIds.length === 0) {
-          const rl = createInterface({ input: process.stdin, output: process.stderr });
-          const answer = await rl.question(
-            'No document specified. Enter a Doc URL/ID, or press Enter to create a new one: ',
-          );
+        // Clear screen for a fresh start
+        process.stderr.write('\x1b[2J\x1b[H');
 
-          if (answer.trim()) {
-            docIds = [answer.trim()];
+        if (docIds.length === 0) {
+          const choice = await showWelcome(useTui);
+          const initialMarkdown = await resolveWelcomeChoice(choice, opts.agentType ?? 'claude');
+
+          if (initialMarkdown.docId) {
+            // Existing doc
+            docIds = [initialMarkdown.docId];
           } else {
-            rl.close();
+            // Create new doc from content
             const config = readConfig();
             const tokens = readTokens();
             if (!tokens) { console.error('No tokens found. Run `codocs auth login` first.'); process.exit(1); }
             const client = new CodocsClient({
               oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
             });
-            const docName = generateDocName();
+            const agentType = opts.agentType ?? 'claude';
+            console.error('Generating document name...');
+            const docName = await generateDocName(initialMarkdown.content ?? '', agentType);
             console.error(`Creating "${docName}" in Codocs/ folder...`);
             const { docId } = await client.createDocInFolder(docName);
-            console.error(`\nCreated: https://docs.google.com/document/d/${docId}/edit`);
+            if (initialMarkdown.content) {
+              await client.writeMarkdown(docId, initialMarkdown.content);
+            }
+            console.error(`Created: https://docs.google.com/document/d/${docId}/edit`);
             console.error(`Location: My Drive > Codocs > ${docName}\n`);
             docIds = [docId];
           }
-          if (rl.terminal) rl.close();
         }
 
         // ── Auth & config ─────────────────────────────────────────
@@ -150,8 +304,26 @@ export function registerServeCommand(program: Command) {
         let listener: CommentListenerHandle | null = null;
         let renewalTimer: ReturnType<typeof setInterval> | null = null;
         let db: Awaited<ReturnType<typeof openDatabase>> | null = null;
+        let orchestrator: AgentOrchestrator | null = null;
 
         const shutdown = async () => {
+          // Kill any active agent processes first
+          if (orchestrator) {
+            const killed = orchestrator.killAll();
+            if (killed.length > 0) {
+              const msg = `Killed ${killed.length} active agent(s): ${killed.join(', ')}`;
+              if (tui.ref) {
+                tui.ref.addEvent({
+                  id: `shutdown-${Date.now()}`,
+                  time: new Date(),
+                  type: 'system',
+                  content: msg,
+                });
+              } else {
+                console.error(msg);
+              }
+            }
+          }
           if (renewalTimer) clearInterval(renewalTimer);
           if (listener) await listener.close();
           if (db) db.close();
@@ -165,8 +337,9 @@ export function registerServeCommand(program: Command) {
           render(React.createElement(App, {
             initialState,
             onShutdown: shutdown,
+            getActiveAgents: () => orchestrator?.getActiveAgents() ?? [],
             onStateRef: (ref: TuiStateRef) => { tui.ref = ref; },
-          }));
+          }), { exitOnCtrlC: false });
 
           // Wait for ref to be set
           await new Promise((r) => setTimeout(r, 50));
@@ -174,29 +347,35 @@ export function registerServeCommand(program: Command) {
 
         const emit = createEventEmitter(tui.ref);
 
-        const debug = debugMode
-          ? (msg: string) => {
-              if (useTui && tui.ref) {
-                tui.ref!.addEvent({
-                  id: `dbg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                  time: new Date(),
-                  type: 'system',
-                  content: `[debug] ${msg}`,
-                });
-              } else {
-                console.error(`[debug] ${msg}`);
-              }
-            }
-          : (_msg: string) => {};
+        // Debug always emits — the TUI filters based on debugMode setting.
+        // In --no-tui mode, only print if --debug was passed.
+        const debug = (msg: string) => {
+          if (useTui && tui.ref) {
+            tui.ref.addEvent({
+              id: `dbg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              time: new Date(),
+              type: 'debug',
+              content: msg,
+            });
+          } else if (debugMode) {
+            console.error(`[debug] ${msg}`);
+          }
+        };
 
         debug(`GCP Project: ${gcpProjectId}`);
         debug(`Pub/Sub Topic: ${fullTopic}`);
 
         // ── Subscriptions ─────────────────────────────────────────
-        emit({ time: new Date(), type: 'system', content: `Setting up subscriptions for ${normalizedDocIds.length} document(s)...` });
+        const setStatus = (msg: string) => {
+          if (tui.ref) tui.ref.setStatus(msg);
+          else console.error(msg);
+        };
+
+        setStatus('Setting up subscriptions...');
         const subscriptions: SubscriptionInfo[] = [];
 
         for (const docId of normalizedDocIds) {
+          setStatus(`Checking subscriptions for ${docId.slice(0, 12)}...`);
           try {
             const existing = await listSubscriptions(auth, docId);
             if (existing.length > 0) {
@@ -206,20 +385,21 @@ export function registerServeCommand(program: Command) {
                 subscriptions.push(sub);
               }
               if (subscriptions.some((s) => existing.includes(s))) {
-                emit({ time: new Date(), type: 'system', content: `Reusing subscription for ${docId.slice(0, 12)}...` });
+                setStatus(`Reusing subscription for ${docId.slice(0, 12)}...`);
                 continue;
               }
             }
           } catch { /* fall through */ }
 
           try {
+            setStatus(`Creating subscription for ${docId.slice(0, 12)}...`);
             const sub = await createCommentSubscription(auth, docId, fullTopic, debug);
             subscriptions.push(sub);
-            emit({ time: new Date(), type: 'system', content: `Subscription created (expires ${sub.expireTime || 'unknown'})` });
+            setStatus('Subscription created');
           } catch (err: any) {
             if (err.message?.includes('ALREADY_EXISTS')) {
               try { subscriptions.push(...(await listSubscriptions(auth, docId))); } catch { /* ignore */ }
-              emit({ time: new Date(), type: 'system', content: 'Reusing existing subscription' });
+              setStatus('Reusing existing subscription');
             } else {
               emit({ time: new Date(), type: 'error', content: `Subscription failed: ${err.message}` });
               process.exit(1);
@@ -239,22 +419,75 @@ export function registerServeCommand(program: Command) {
 
         db = await openDatabase(opts.dbPath);
         const sessionStore = new SessionStore(db);
+        const agentNameStore = new AgentNameStore(db);
+
+        // Resolve fallback agent name: use explicit flag, or generate a
+        // cute two-word name per document (persisted so resumes keep the name).
+        const fallbackAgent = opts.fallbackAgent
+          ? opts.fallbackAgent
+          : (documentId: string) =>
+              agentNameStore.getOrCreate(documentId, 'fallback', generateAgentName);
 
         const client = new CodocsClient({
           oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
         });
 
-        const orchestrator = new AgentOrchestrator({
+        // Fetch document title for the TUI header
+        try {
+          const doc = await client.getDocument(primaryDocId);
+          if (doc.title && tui.ref) tui.ref.setDocTitle(doc.title);
+        } catch { /* keep truncated ID fallback */ }
+
+        // Use a service account for comment replies so they appear from
+        // the Codocs bot identity rather than the user's account.
+        // Key provisioned by `make infra` (Terraform) at ~/.local/share/codocs/service-account.json
+        // Disable with --no-bot-replies to reply as yourself.
+        let replyClient: CodocsClient | undefined;
+        if (opts.botReplies !== false) {
+          const { loadServiceAccountKey, getBotEmail } = await import('../auth/service-account.js');
+          const saKey = loadServiceAccountKey();
+          if (saKey) {
+            const botEmail = getBotEmail()!;
+            debug(`Using Codocs bot for replies (${botEmail})`);
+            replyClient = new CodocsClient({ serviceAccountKey: saKey });
+
+            // Auto-share each doc with the bot so it has commenter access.
+            // Uses the user's OAuth2 client (which owns/has access to the doc).
+            for (const docId of normalizedDocIds) {
+              try {
+                await client.ensureShared(docId, botEmail, 'commenter');
+                debug(`Shared ${docId} with ${botEmail}`);
+              } catch (err: any) {
+                debug(`Failed to share ${docId} with bot: ${err.message}`);
+              }
+            }
+            emit({ time: new Date(), type: 'system', content: `Bot replies as ${botEmail}` });
+          } else {
+            debug('No service account key found (run `make infra` to provision). Replies will come from your account.');
+          }
+        }
+
+        orchestrator = new AgentOrchestrator({
           client,
+          replyClient,
           sessionStore,
           agentRunner,
-          fallbackAgent: opts.fallbackAgent ?? 'coordinator',
+          fallbackAgent,
+          onAgentAssigned: (agentName, task) => {
+            if (tui.ref) {
+              tui.ref.updateAgent(agentName, {
+                status: 'processing',
+                task,
+                taskStartTime: new Date(),
+              });
+            }
+          },
           debug,
         });
 
         // ── Pub/Sub listener ──────────────────────────────────────
         if (tui.ref) tui.ref.setConnected(true);
-        emit({ time: new Date(), type: 'system', content: 'Listening for comments...' });
+        setStatus('Listening for comments');
 
         listener = listenForComments(
           gcpProjectId,
@@ -271,24 +504,22 @@ export function registerServeCommand(program: Command) {
               content: event.comment.content ?? '(no content)',
             });
 
-            // Update TUI agent status
-            if (tui.ref) {
-              tui.ref.updateAgent('orchestrator', {
-                status: 'processing',
-                task: event.comment.content?.slice(0, 40),
-                taskStartTime: new Date(),
+            orchestrator.handleComment(event).then((result) => {
+              if (tui.ref) {
+                tui.ref.updateAgent(result.agentName, { status: 'idle', task: undefined });
+              }
+              const preview = result.replyPreview.length > 60
+                ? result.replyPreview.slice(0, 60) + '...'
+                : result.replyPreview;
+              emit({
+                time: new Date(),
+                type: 'agent-reply',
+                content: preview || 'Done',
+                agent: result.agentName,
+                editSummary: result.editSummary,
+                replyPreview: result.replyPreview,
               });
-            }
-
-            orchestrator.handleComment(event).then(() => {
-              if (tui.ref) {
-                tui.ref.updateAgent('orchestrator', { status: 'idle', task: undefined });
-              }
-              emit({ time: new Date(), type: 'agent-reply', content: 'Comment processed', agent: agentType });
             }).catch((err) => {
-              if (tui.ref) {
-                tui.ref.updateAgent('orchestrator', { status: 'error', task: err.message?.slice(0, 40) });
-              }
               emit({ time: new Date(), type: 'error', content: `Agent error: ${err.message}` });
             });
           },
@@ -303,7 +534,7 @@ export function registerServeCommand(program: Command) {
           for (const sub of subscriptions) {
             try {
               await renewSubscription(auth, sub.name);
-              emit({ time: new Date(), type: 'system', content: 'Subscription renewed' });
+              setStatus('Subscription renewed');
             } catch (err: any) {
               emit({ time: new Date(), type: 'error', content: `Renewal failed: ${err.message}` });
             }

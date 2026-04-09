@@ -102,6 +102,17 @@ export class DriveApi {
     });
   }
 
+  /** Reply to a comment with text content. */
+  async replyToComment(fileId: string, commentId: string, content: string): Promise<string> {
+    const res = await this.drive.replies.create({
+      fileId,
+      commentId,
+      fields: 'id',
+      requestBody: { content },
+    });
+    return res.data.id!;
+  }
+
   /** Resolve a comment by creating a "resolve" reply. */
   async resolveComment(fileId: string, commentId: string): Promise<void> {
     await this.drive.replies.create({
@@ -113,5 +124,32 @@ export class DriveApi {
         content: 'Resolved',
       },
     });
+  }
+
+  /**
+   * Share a file with an email address. Idempotent — silently succeeds
+   * if the permission already exists.
+   *
+   * @param role - 'commenter', 'reader', or 'writer'
+   */
+  async ensureShared(
+    fileId: string,
+    email: string,
+    role: 'commenter' | 'reader' | 'writer' = 'commenter',
+  ): Promise<void> {
+    try {
+      await this.drive.permissions.create({
+        fileId,
+        sendNotificationEmail: false,
+        requestBody: {
+          type: 'user',
+          role,
+          emailAddress: email,
+        },
+      });
+    } catch (err: any) {
+      // 409 = permission already exists, which is fine
+      if (err.code !== 409) throw err;
+    }
   }
 }
