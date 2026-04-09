@@ -1,0 +1,30 @@
+{
+  "name": "@codocs/cli",
+  "version": "0.1.0",
+  "description": "CLI for interacting with Google Docs",
+  "type": "module",
+  "bin": {
+    "codocs": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@codocs/core": "*",
+    "@codocs/db": "*",
+    "@types/react": "^19.2.14",
+    "commander": "^13.1.0",
+    "ink": "^7.0.0",
+    "open": "^10.2.0",
+    "react": "^19.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

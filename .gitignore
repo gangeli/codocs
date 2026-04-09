@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.env
+.env.*
+*.tsbuildinfo
+
+# Built CLI binary
+/codocs
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*

@@ -1,0 +1,113 @@
+{
+  "documentId": "test-doc-123",
+  "title": "Test Document",
+  "body": {
+    "content": [
+      {
+        "startIndex": 0,
+        "endIndex": 1,
+        "sectionBreak": {
+          "sectionStyle": {
+            "sectionType": "CONTINUOUS"
+          }
+        }
+      },
+      {
+        "startIndex": 1,
+        "endIndex": 11,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 1,
+              "endIndex": 11,
+              "textRun": {
+                "content": "My Title\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "HEADING_1"
+          }
+        }
+      },
+      {
+        "startIndex": 11,
+        "endIndex": 32,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 11,
+              "endIndex": 17,
+              "textRun": {
+                "content": "Hello ",
+                "textStyle": {}
+              }
+            },
+            {
+              "startIndex": 17,
+              "endIndex": 22,
+              "textRun": {
+                "content": "bold",
+                "textStyle": {
+                  "bold": true
+                }
+              }
+            },
+            {
+              "startIndex": 22,
+              "endIndex": 32,
+              "textRun": {
+                "content": " world.\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "NORMAL_TEXT"
+          }
+        }
+      },
+      {
+        "startIndex": 32,
+        "endIndex": 50,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 32,
+              "endIndex": 38,
+              "textRun": {
+                "content": "Some ",
+                "textStyle": {}
+              }
+            },
+            {
+              "startIndex": 38,
+              "endIndex": 45,
+              "textRun": {
+                "content": "italic",
+                "textStyle": {
+                  "italic": true
+                }
+              }
+            },
+            {
+              "startIndex": 45,
+              "endIndex": 50,
+              "textRun": {
+                "content": " text.\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "NORMAL_TEXT"
+          }
+        }
+      }
+    ]
+  },
+  "namedRanges": {},
+  "lists": {},
+  "inlineObjects": {}
+}

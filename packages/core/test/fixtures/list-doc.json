@@ -1,0 +1,99 @@
+{
+  "documentId": "test-doc-789",
+  "title": "List Document",
+  "body": {
+    "content": [
+      {
+        "startIndex": 0,
+        "endIndex": 1,
+        "sectionBreak": {
+          "sectionStyle": {
+            "sectionType": "CONTINUOUS"
+          }
+        }
+      },
+      {
+        "startIndex": 1,
+        "endIndex": 11,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 1,
+              "endIndex": 11,
+              "textRun": {
+                "content": "Item one\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "NORMAL_TEXT"
+          },
+          "bullet": {
+            "listId": "list-1",
+            "nestingLevel": 0
+          }
+        }
+      },
+      {
+        "startIndex": 11,
+        "endIndex": 21,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 11,
+              "endIndex": 21,
+              "textRun": {
+                "content": "Item two\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "NORMAL_TEXT"
+          },
+          "bullet": {
+            "listId": "list-1",
+            "nestingLevel": 0
+          }
+        }
+      },
+      {
+        "startIndex": 21,
+        "endIndex": 33,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 21,
+              "endIndex": 33,
+              "textRun": {
+                "content": "Item three\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "NORMAL_TEXT"
+          },
+          "bullet": {
+            "listId": "list-1",
+            "nestingLevel": 0
+          }
+        }
+      }
+    ]
+  },
+  "namedRanges": {},
+  "lists": {
+    "list-1": {
+      "listProperties": {
+        "nestingLevels": [
+          {
+            "glyphType": "GLYPH_TYPE_UNSPECIFIED"
+          }
+        ]
+      }
+    }
+  },
+  "inlineObjects": {}
+}

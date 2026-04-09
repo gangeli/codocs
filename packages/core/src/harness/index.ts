@@ -1,0 +1,13 @@
+export type { AgentRunner, AgentRunOptions, AgentRunResult } from './agent.js';
+export type { SessionStore, SessionMapping } from './types.js';
+export { ClaudeRunner } from './agents/claude.js';
+export { assignAgent, findQuotedTextIndices, buildFlatText } from './assign.js';
+export type { AssignmentConfig } from './assign.js';
+export { writeTempContext, cleanupTempFiles } from './context.js';
+export type { TempContext } from './context.js';
+export { buildPrompt, buildConflictPrompt } from './prompt.js';
+export type { PromptContext } from './prompt.js';
+export { parseSections, mergeDocuments, computeDocDiff } from './diff.js';
+export type { MdSection, MergeResult, DiffResult } from './diff.js';
+export { AgentOrchestrator } from './orchestrator.js';
+export type { OrchestratorConfig } from './orchestrator.js';

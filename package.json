@@ -1,0 +1,11 @@
+{
+  "name": "codocs",
+  "private": true,
+  "description": "Let coding models communicate with users through Google Docs",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  }
+}

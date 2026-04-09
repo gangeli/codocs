@@ -1,0 +1,125 @@
+{
+  "documentId": "test-doc-456",
+  "title": "Attributed Document",
+  "body": {
+    "content": [
+      {
+        "startIndex": 0,
+        "endIndex": 1,
+        "sectionBreak": {
+          "sectionStyle": {
+            "sectionType": "CONTINUOUS"
+          }
+        }
+      },
+      {
+        "startIndex": 1,
+        "endIndex": 20,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 1,
+              "endIndex": 20,
+              "textRun": {
+                "content": "Planner's section\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "HEADING_2"
+          }
+        }
+      },
+      {
+        "startIndex": 20,
+        "endIndex": 50,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 20,
+              "endIndex": 50,
+              "textRun": {
+                "content": "This was written by planner.\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "NORMAL_TEXT"
+          }
+        }
+      },
+      {
+        "startIndex": 50,
+        "endIndex": 68,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 50,
+              "endIndex": 68,
+              "textRun": {
+                "content": "Coder's section\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "HEADING_2"
+          }
+        }
+      },
+      {
+        "startIndex": 68,
+        "endIndex": 98,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 68,
+              "endIndex": 98,
+              "textRun": {
+                "content": "This was written by coder.\n",
+                "textStyle": {}
+              }
+            }
+          ],
+          "paragraphStyle": {
+            "namedStyleType": "NORMAL_TEXT"
+          }
+        }
+      }
+    ]
+  },
+  "namedRanges": {
+    "agent:planner": {
+      "namedRanges": [
+        {
+          "namedRangeId": "nr-1",
+          "name": "agent:planner",
+          "ranges": [
+            {
+              "startIndex": 1,
+              "endIndex": 50
+            }
+          ]
+        }
+      ]
+    },
+    "agent:coder": {
+      "namedRanges": [
+        {
+          "namedRangeId": "nr-2",
+          "name": "agent:coder",
+          "ranges": [
+            {
+              "startIndex": 50,
+              "endIndex": 98
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "lists": {},
+  "inlineObjects": {}
+}
