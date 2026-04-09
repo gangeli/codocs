@@ -1,36 +1,56 @@
 /**
  * Walk an mdast AST and produce:
- *  1. A flat plain-text string to insert into Google Docs
- *  2. A list of styling / structural requests to apply after insertion
+ *  1. Segments of content (text or tables) to insert into Google Docs
+ *  2. Styling / structural requests to apply after insertion
  *
- * All indexes are relative to an `insertionOffset` so callers can
- * control where in the document the content lands.
+ * Text segment indexes are relative (0-based within each segment) —
+ * the caller adjusts them to absolute document positions.
  */
 
 import type { docs_v1 } from 'googleapis';
 import type { Root, Content, Heading, List, ListItem, Table, TableRow, TableCell, Code, InlineCode, Link, Image, Paragraph, Blockquote } from 'mdast';
 import { headingDepthToNamedStyle, CODE_FONT_FAMILY, CODE_BLOCK_BG } from './style-map.js';
 
-export interface WalkResult {
-  /** The plain text to insert. */
+// ── Segment types ──────────────────────────────────────────────
+
+export interface TextSegment {
+  type: 'text';
+  /** Plain text to insert. */
   text: string;
-  /** Styling requests to apply after insertion, relative to insertionOffset. */
-  styleRequests: docs_v1.Schema$Request[];
-  /** Paragraph bullet requests. */
-  bulletRequests: docs_v1.Schema$Request[];
+  /** Style requests with offsets relative to segment start (0-based). */
+  styles: docs_v1.Schema$Request[];
+  /** Bullet requests with offsets relative to segment start (0-based). */
+  bullets: docs_v1.Schema$Request[];
 }
 
+export interface TableSegment {
+  type: 'table';
+  /** Cell content by row (array of rows, each row an array of cell strings). */
+  rows: string[][];
+  /** Number of columns. */
+  numColumns: number;
+}
+
+export type WalkSegment = TextSegment | TableSegment;
+
+export interface WalkResult {
+  /** Ordered segments of content. */
+  segments: WalkSegment[];
+}
+
+// ── Internal context ───────────────────────────────────────────
+
 interface WalkContext {
-  /** Current character offset (relative to insertion point). */
+  /** Current character offset within the active text segment (0-based). */
   offset: number;
-  /** Accumulated plain text. */
+  /** Accumulated plain text for the current segment. */
   buf: string;
-  /** Style requests collected during the walk. */
+  /** Style requests for the current segment (relative offsets). */
   styles: docs_v1.Schema$Request[];
-  /** Bullet requests collected during the walk. */
+  /** Bullet requests for the current segment. */
   bullets: docs_v1.Schema$Request[];
-  /** The document index where insertion starts. */
-  insertionOffset: number;
+  /** Accumulated segments. */
+  segments: WalkSegment[];
   /** Active inline styles (stack). */
   bold: boolean;
   italic: boolean;
@@ -39,13 +59,15 @@ interface WalkContext {
   link: string | null;
 }
 
-export function walkAst(root: Root, insertionOffset: number): WalkResult {
+// ── Public entry point ─────────────────────────────────────────
+
+export function walkAst(root: Root, _insertionOffset?: number): WalkResult {
   const ctx: WalkContext = {
     offset: 0,
     buf: '',
     styles: [],
     bullets: [],
-    insertionOffset,
+    segments: [],
     bold: false,
     italic: false,
     strikethrough: false,
@@ -55,18 +77,36 @@ export function walkAst(root: Root, insertionOffset: number): WalkResult {
 
   walkChildren(root.children, ctx, 0, false);
 
-  // Remove trailing newline if present (Docs always has one)
-  if (ctx.buf.endsWith('\n')) {
-    ctx.buf = ctx.buf.slice(0, -1);
-    ctx.offset--;
+  // Flush remaining text segment
+  flushTextSegment(ctx);
+
+  // Remove trailing newline from last text segment (Docs always has one)
+  const last = ctx.segments[ctx.segments.length - 1];
+  if (last?.type === 'text' && last.text.endsWith('\n')) {
+    last.text = last.text.slice(0, -1);
   }
 
-  return {
-    text: ctx.buf,
-    styleRequests: ctx.styles,
-    bulletRequests: ctx.bullets,
-  };
+  return { segments: ctx.segments };
 }
+
+// ── Segment management ─────────────────────────────────────────
+
+function flushTextSegment(ctx: WalkContext) {
+  if (ctx.buf.length > 0 || ctx.styles.length > 0 || ctx.bullets.length > 0) {
+    ctx.segments.push({
+      type: 'text',
+      text: ctx.buf,
+      styles: [...ctx.styles],
+      bullets: [...ctx.bullets],
+    });
+  }
+  ctx.buf = '';
+  ctx.offset = 0;
+  ctx.styles = [];
+  ctx.bullets = [];
+}
+
+// ── AST walking ────────────────────────────────────────────────
 
 function walkChildren(
   children: Content[],
@@ -151,17 +191,18 @@ function walkNode(
   }
 }
 
+// ── Node handlers ──────────────────────────────────────────────
+
 function walkHeading(node: Heading, ctx: WalkContext) {
   const startOffset = ctx.offset;
   walkChildren(node.children as Content[], ctx, 0, false);
   ensureNewline(ctx);
 
-  const abs = ctx.insertionOffset;
   ctx.styles.push({
     updateParagraphStyle: {
       range: {
-        startIndex: abs + startOffset,
-        endIndex: abs + ctx.offset,
+        startIndex: startOffset,
+        endIndex: ctx.offset,
       },
       paragraphStyle: {
         namedStyleType: headingDepthToNamedStyle(node.depth),
@@ -192,10 +233,9 @@ function walkLink(
   const end = ctx.offset;
 
   if (end > start) {
-    const abs = ctx.insertionOffset;
     ctx.styles.push({
       updateTextStyle: {
-        range: { startIndex: abs + start, endIndex: abs + end },
+        range: { startIndex: start, endIndex: end },
         textStyle: {
           link: { url: node.url },
         },
@@ -229,10 +269,9 @@ function emitText(text: string, ctx: WalkContext) {
   }
 
   if (fields.length > 0 && end > start) {
-    const abs = ctx.insertionOffset;
     ctx.styles.push({
       updateTextStyle: {
-        range: { startIndex: abs + start, endIndex: abs + end },
+        range: { startIndex: start, endIndex: end },
         textStyle,
         fields: fields.join(','),
       },
@@ -246,10 +285,9 @@ function emitInlineCode(value: string, ctx: WalkContext) {
   ctx.offset += value.length;
   const end = ctx.offset;
 
-  const abs = ctx.insertionOffset;
   ctx.styles.push({
     updateTextStyle: {
-      range: { startIndex: abs + start, endIndex: abs + end },
+      range: { startIndex: start, endIndex: end },
       textStyle: {
         weightedFontFamily: { fontFamily: CODE_FONT_FAMILY },
         backgroundColor: CODE_BLOCK_BG,
@@ -266,10 +304,9 @@ function emitCodeBlock(node: Code, ctx: WalkContext) {
   ensureNewline(ctx);
   const end = ctx.offset;
 
-  const abs = ctx.insertionOffset;
   ctx.styles.push({
     updateTextStyle: {
-      range: { startIndex: abs + start, endIndex: abs + end },
+      range: { startIndex: start, endIndex: end },
       textStyle: {
         weightedFontFamily: { fontFamily: CODE_FONT_FAMILY },
       },
@@ -278,7 +315,7 @@ function emitCodeBlock(node: Code, ctx: WalkContext) {
   });
   ctx.styles.push({
     updateParagraphStyle: {
-      range: { startIndex: abs + start, endIndex: abs + end },
+      range: { startIndex: start, endIndex: end },
       paragraphStyle: {
         shading: { backgroundColor: CODE_BLOCK_BG },
       },
@@ -296,10 +333,9 @@ function emitImage(node: Image, ctx: WalkContext) {
   ctx.offset += alt.length;
   ensureNewline(ctx);
 
-  const abs = ctx.insertionOffset;
   ctx.styles.push({
     updateTextStyle: {
-      range: { startIndex: abs + start, endIndex: abs + start + alt.length },
+      range: { startIndex: start, endIndex: start + alt.length },
       textStyle: {
         link: { url: node.url },
       },
@@ -323,10 +359,9 @@ function walkList(
     walkListItem(item, ctx, listDepth + 1, inBlockquote);
     const itemEnd = ctx.offset;
 
-    const abs = ctx.insertionOffset;
     ctx.bullets.push({
       createParagraphBullets: {
-        range: { startIndex: abs + itemStart, endIndex: abs + itemEnd },
+        range: { startIndex: itemStart, endIndex: itemEnd },
         bulletPreset: node.ordered
           ? 'NUMBERED_DECIMAL_NESTED'
           : 'BULLET_DISC_CIRCLE_SQUARE',
@@ -352,27 +387,35 @@ function walkListItem(
 }
 
 function walkTable(node: Table, ctx: WalkContext) {
-  // Tables require InsertTableRequest then filling cells.
-  // For the initial implementation, render as plain text grid.
-  const rows = node.children as TableRow[];
-  for (const row of rows) {
-    const cells = row.children as TableCell[];
-    const cellTexts = cells.map((cell) => {
-      // Flatten cell content to text
+  // Flush any preceding text as its own segment
+  flushTextSegment(ctx);
+
+  // Extract cell content
+  const rows = (node.children as TableRow[]).map((row) => {
+    return (row.children as TableCell[]).map((cell) => {
       let text = '';
       for (const child of cell.children as Content[]) {
         if (child.type === 'text') text += child.value;
+        else if (child.type === 'inlineCode') text += (child as InlineCode).value;
         else if ('children' in child) {
           for (const gc of (child as any).children) {
             if (gc.type === 'text') text += gc.value;
+            else if (gc.type === 'inlineCode') text += gc.value;
           }
         }
       }
       return text;
     });
-    ctx.buf += cellTexts.join('\t') + '\n';
-    ctx.offset += cellTexts.join('\t').length + 1;
+  });
+
+  const numColumns = rows.length > 0 ? Math.max(...rows.map((r) => r.length)) : 0;
+
+  // Pad rows to numColumns
+  for (const row of rows) {
+    while (row.length < numColumns) row.push('');
   }
+
+  ctx.segments.push({ type: 'table', rows, numColumns });
 }
 
 function emitHorizontalRule(ctx: WalkContext) {

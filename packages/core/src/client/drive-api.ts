@@ -102,7 +102,7 @@ export class DriveApi {
     });
   }
 
-  /** Reply to a comment with text content. */
+  /** Reply to a comment with text content. Returns the reply ID. */
   async replyToComment(fileId: string, commentId: string, content: string): Promise<string> {
     const res = await this.drive.replies.create({
       fileId,
@@ -111,6 +111,17 @@ export class DriveApi {
       requestBody: { content },
     });
     return res.data.id!;
+  }
+
+  /** Update an existing reply's content. */
+  async updateReply(fileId: string, commentId: string, replyId: string, content: string): Promise<void> {
+    await this.drive.replies.update({
+      fileId,
+      commentId,
+      replyId,
+      fields: 'id',
+      requestBody: { content },
+    });
   }
 
   /** Resolve a comment by creating a "resolve" reply. */

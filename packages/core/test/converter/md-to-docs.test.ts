@@ -142,4 +142,59 @@ describe('markdownToDocsRequests', () => {
     const insert = requests.find((r) => r.insertText);
     expect(insert!.insertText!.location!.index).toBe(50);
   });
+
+  it('converts a markdown table to an insertTable request', () => {
+    const md = '| Name | Value |\n| --- | --- |\n| foo | 42 |';
+    const { requests } = markdownToDocsRequests(md);
+
+    // Should have an insertTable request
+    const tableReq = requests.find((r) => r.insertTable);
+    expect(tableReq).toBeDefined();
+    expect(tableReq!.insertTable!.rows).toBe(2);
+    expect(tableReq!.insertTable!.columns).toBe(2);
+    expect(tableReq!.insertTable!.location!.index).toBe(1);
+
+    // Should have insertText requests for cell content
+    const cellInserts = requests.filter(
+      (r) => r.insertText && r.insertText !== tableReq?.insertText,
+    );
+    const cellTexts = cellInserts.map((r) => r.insertText!.text);
+    expect(cellTexts).toContain('Name');
+    expect(cellTexts).toContain('Value');
+    expect(cellTexts).toContain('foo');
+    expect(cellTexts).toContain('42');
+
+    // Should have header row styling (bold + background)
+    const boldReq = requests.find(
+      (r) => r.updateTextStyle?.textStyle?.bold === true,
+    );
+    expect(boldReq).toBeDefined();
+
+    const headerBgReq = requests.find((r) => r.updateTableCellStyle);
+    expect(headerBgReq).toBeDefined();
+    expect(
+      headerBgReq!.updateTableCellStyle!.tableRange!.tableCellLocation!.rowIndex,
+    ).toBe(0);
+
+    // Should have column width requests
+    const colWidthReqs = requests.filter((r) => r.updateTableColumnProperties);
+    expect(colWidthReqs).toHaveLength(2);
+  });
+
+  it('converts text before and after a table', () => {
+    const md = 'Before\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nAfter';
+    const { text, requests } = markdownToDocsRequests(md);
+
+    // Text segments should contain surrounding text
+    expect(text).toContain('Before');
+    expect(text).toContain('After');
+
+    // Should have both insertText (for text) and insertTable (for table)
+    const textInserts = requests.filter(
+      (r) => r.insertText && !r.insertTable,
+    );
+    const tableInserts = requests.filter((r) => r.insertTable);
+    expect(textInserts.length).toBeGreaterThanOrEqual(2); // "Before\n" + cell inserts + "After"
+    expect(tableInserts).toHaveLength(1);
+  });
 });

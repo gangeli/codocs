@@ -5,7 +5,11 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "build": "npm run build --workspaces",
+    "build:binary": "bun build packages/cli/src/index.ts --compile --outfile dist/codocs",
     "test": "npm run test --workspaces",
     "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "react-devtools-core": "^7.0.1"
   }
 }

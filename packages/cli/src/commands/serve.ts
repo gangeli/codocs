@@ -164,7 +164,7 @@ async function resolveWelcomeChoice(
           'Include sections for: overview, architecture, key decisions, and open questions. ' +
           'Be concise but thorough. Output ONLY the markdown, no preamble.',
           null,
-          { timeout: 120_000 },
+          { timeout: 1_200_000 },
         );
         unmount();
         if (result.exitCode !== 0) {
@@ -258,7 +258,7 @@ export function registerServeCommand(program: Command) {
             // Existing doc
             docIds = [initialMarkdown.docId];
           } else {
-            // Create new doc from content
+            // Create new doc from content — show progress in TUI
             const config = readConfig();
             const tokens = readTokens();
             if (!tokens) { console.error('No tokens found. Run `codocs auth login` first.'); process.exit(1); }
@@ -266,14 +266,31 @@ export function registerServeCommand(program: Command) {
               oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
             });
             const agentType = opts.agentType ?? 'claude';
-            console.error('Generating document name...');
+
+            // Step state for the Generating component
+            let stepMessage = 'Generating document name';
+            let stepSub = '';
+            const stepEl = () => React.createElement(Generating, { message: stepMessage, subMessage: stepSub });
+            const { unmount: unmountStep, rerender } = render(stepEl());
+            const updateStep = (msg: string, sub?: string) => {
+              stepMessage = msg;
+              stepSub = sub ?? '';
+              rerender(stepEl());
+            };
+
             const docName = await generateDocName(initialMarkdown.content ?? '', agentType);
-            console.error(`Creating "${docName}" in Codocs/ folder...`);
+
+            updateStep('Creating document', `"${docName}" in Codocs/ folder`);
             const { docId } = await client.createDocInFolder(docName);
+
             if (initialMarkdown.content) {
+              updateStep('Writing content to document', `${initialMarkdown.content.length} characters`);
               await client.writeMarkdown(docId, initialMarkdown.content);
             }
-            console.error(`Created: https://docs.google.com/document/d/${docId}/edit`);
+
+            unmountStep();
+            const docUrl = `https://docs.google.com/document/d/${docId}/edit`;
+            console.error(`Created: ${docUrl}`);
             console.error(`Location: My Drive > Codocs > ${docName}\n`);
             docIds = [docId];
           }

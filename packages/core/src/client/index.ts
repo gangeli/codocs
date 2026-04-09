@@ -161,6 +161,13 @@ export class CodocsClient {
   }
 
   /**
+   * Update an existing reply on a comment.
+   */
+  async updateReply(docId: string, commentId: string, replyId: string, content: string): Promise<void> {
+    return this.driveApi.updateReply(docId, commentId, replyId, content);
+  }
+
+  /**
    * Share a doc with an email address. Idempotent.
    * Used to grant the service account commenter access.
    */

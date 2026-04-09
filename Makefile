@@ -1,4 +1,4 @@
-.PHONY: all build build-core build-cli clean test typecheck check infra gcloud-auth
+.PHONY: all build build-core build-cli dist clean test typecheck check infra gcloud-auth
 
 all: codocs
 
@@ -14,6 +14,13 @@ codocs: build-cli
 	@echo '#!/bin/sh' > codocs
 	@echo 'exec node "$(CURDIR)/packages/cli/dist/index.js" "$$@"' >> codocs
 	chmod +x codocs
+
+dist:
+	bun build packages/cli/src/index.ts --compile --target=bun-darwin-arm64 --outfile dist/codocs-darwin-arm64
+	bun build packages/cli/src/index.ts --compile --target=bun-darwin-x64 --outfile dist/codocs-darwin-x64
+	bun build packages/cli/src/index.ts --compile --target=bun-linux-x64 --outfile dist/codocs-linux-x64
+	bun build packages/cli/src/index.ts --compile --target=bun-linux-arm64 --outfile dist/codocs-linux-arm64
+	bun build packages/cli/src/index.ts --compile --target=bun-windows-x64 --outfile dist/codocs-windows-x64
 
 test:
 	npm run test -w @codocs/core
@@ -35,4 +42,4 @@ infra: gcloud-auth
 	cd terraform && terraform init -upgrade && terraform apply
 
 clean:
-	rm -rf packages/core/dist packages/cli/dist codocs
+	rm -rf packages/core/dist packages/cli/dist dist codocs

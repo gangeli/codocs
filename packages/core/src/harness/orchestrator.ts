@@ -108,7 +108,22 @@ export class AgentOrchestrator {
     this.debug(`Assigned to agent: ${agentName}`);
     this.onAgentAssigned(agentName, commentText.slice(0, 60));
 
-    // Step 3: Snapshot the document as markdown (the "base" for 3-way merge)
+    // Step 3: Post a thinking reply so the user knows the agent picked it up
+    let thinkingReplyId: string | null = null;
+    if (comment.id) {
+      try {
+        thinkingReplyId = await this.replyClient.replyToComment(
+          documentId,
+          comment.id,
+          '\u{1F914}',
+        );
+        this.debug('Posted thinking reply');
+      } catch (err) {
+        this.debug(`Failed to post thinking reply: ${err}`);
+      }
+    }
+
+    // Step 4: Snapshot the document as markdown (the "base" for 3-way merge)
     const baseMarkdown = docsToMarkdown(document);
 
     // Step 4: Write temp files in a dedicated workspace directory
@@ -205,15 +220,20 @@ export class AgentOrchestrator {
         this.debug('No changes to apply');
       }
 
-      // Step 13: Reply to the comment with the agent's response
+      // Step 13: Update the thinking reply with the agent's actual response
       const agentResponse = result.stdout.trim();
       const replyContent = agentResponse
-        || (diffResult.hasChanges ? 'Done — changes applied to the document.' : 'Done — no changes needed.');
+        || (diffResult.hasChanges ? 'Done \u2014 changes applied to the document.' : 'Done \u2014 no changes needed.');
 
       if (comment.id) {
         try {
-          await this.replyClient.replyToComment(documentId, comment.id, replyContent);
-          this.debug('Replied to comment');
+          if (thinkingReplyId) {
+            await this.replyClient.updateReply(documentId, comment.id, thinkingReplyId, replyContent);
+            this.debug('Updated thinking reply with response');
+          } else {
+            await this.replyClient.replyToComment(documentId, comment.id, replyContent);
+            this.debug('Replied to comment');
+          }
         } catch (err) {
           this.debug(`Failed to reply to comment: ${err}`);
         }

@@ -58,3 +58,10 @@ export const CODE_BLOCK_BG: docs_v1.Schema$OptionalColor = {
     rgbColor: { red: 0.95, green: 0.95, blue: 0.95 },
   },
 };
+
+/** Light blue background for table header rows. */
+export const TABLE_HEADER_BG = {
+  color: {
+    rgbColor: { red: 0.82, green: 0.91, blue: 0.98 },
+  },
+};
