@@ -68,6 +68,10 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Upgrade npm for OIDC trusted publishing
+        if: steps.version.outputs.bumped == 'true'
+        run: npm install -g npm@latest
+
       - uses: oven-sh/setup-bun@v2
         if: steps.version.outputs.bumped == 'true'
 
