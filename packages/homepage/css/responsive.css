@@ -1,0 +1,156 @@
+/* ── Tablet (768px) ── */
+
+@media (max-width: 768px) {
+  :root {
+    --section-gap: 4rem;
+  }
+
+  h1 {
+    font-size: 2.2rem;
+  }
+
+  .hero-word {
+    font-size: 2.4rem;
+  }
+
+  /* Flow: horizontal scroll or wrap */
+  .flow-track {
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .flow-step {
+    width: 140px;
+  }
+
+  .flow-connector {
+    width: 32px;
+  }
+
+  /* Features: 1 column */
+  .features-grid {
+    grid-template-columns: 1fr;
+    max-width: 480px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  /* Google Doc: stack page + sidebar */
+  .gdoc-page-area {
+    flex-direction: column;
+  }
+
+  .gdoc-page {
+    margin: 12px;
+    padding: 24px 20px;
+    max-width: none;
+  }
+
+  .gdoc-sidebar {
+    width: auto;
+    padding: 0 12px 12px;
+  }
+
+  /* TUI: hide agent panel, show only activity */
+  .tui-agents {
+    display: none;
+  }
+
+  .tui-divider-v {
+    display: none;
+  }
+
+  .tui-event-detail {
+    padding-left: 2em;
+  }
+
+  /* Footer: stack */
+  .footer-container {
+    flex-direction: column;
+    gap: 1rem;
+    text-align: center;
+  }
+}
+
+/* ── Mobile (480px) ── */
+
+@media (max-width: 480px) {
+  body {
+    font-size: 15px;
+  }
+
+  #hero {
+    padding: 5rem 0 3rem;
+  }
+
+  .hero-word {
+    font-size: 1.8rem;
+  }
+
+  .hero-arrow {
+    font-size: 1.2rem;
+  }
+
+  h1 {
+    font-size: 1.8rem;
+  }
+
+  h2 {
+    font-size: 1.3rem;
+  }
+
+  /* Flow: vertical stack */
+  .flow-track {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .flow-connector {
+    width: 2px;
+    height: 32px;
+    flex-direction: column;
+  }
+
+  .flow-pulse {
+    width: 2px;
+    height: 100%;
+  }
+
+  .flow-pulse::after {
+    transform: scaleY(0);
+    transform-origin: top;
+  }
+
+  .flow-track.playing .flow-connector .flow-pulse::after {
+    transform: scaleY(1);
+  }
+
+  /* Google Doc: tighter spacing */
+  .gdoc-page {
+    padding: 16px 14px;
+    font-size: 0.82rem;
+  }
+
+  .gdoc-heading {
+    font-size: 1.2rem;
+  }
+
+  .gdoc-heading-2 {
+    font-size: 0.95rem;
+  }
+
+  .gdoc-legend {
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  /* TUI: smaller text */
+  .tui-window {
+    font-size: 11px;
+  }
+
+  .tui-commandbar {
+    flex-wrap: wrap;
+  }
+}

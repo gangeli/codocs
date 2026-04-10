@@ -1,4 +1,4 @@
-.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth
+.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e
 
 all: codocs
 
@@ -45,6 +45,9 @@ gcloud-auth:
 
 infra: gcloud-auth
 	cd terraform && terraform init -upgrade && terraform apply
+
+e2e: build
+	npx tsx scripts/e2e-visual-test.ts
 
 clean:
 	rm -rf packages/core/dist packages/db/dist packages/cli/dist dist codocs

@@ -395,7 +395,6 @@ export async function computeDocDiff(
     if (hunks.length === 0) continue; // no actual line changes
 
     // Build a line-to-doc-index map for the old section.
-    // Each line in the section maps to a doc index via the indexMap.
     const sectionMdStart = computeMdOffset(change.theirsSection, theirsSections);
     const lineDocIndices = buildLineDocIndices(
       oldLines,
@@ -404,16 +403,18 @@ export async function computeDocDiff(
       change.docEndIndex,
     );
 
-    // Process hunks in reverse order to preserve indices
+    // Google Docs batchUpdate processes requests sequentially.
+    // Process hunks in reverse order (highest index first) so that
+    // deletes don't shift the indices of subsequent operations.
+    // Within each hunk: delete first, then insert at the same position.
+    // Since we go in reverse, earlier hunks' positions are unaffected.
+
     for (let h = hunks.length - 1; h >= 0; h--) {
       const hunk = hunks[h];
       const oldOffset = hunk.buffer1.offset;
       const oldLength = hunk.buffer1.length;
       const newContent = hunk.buffer2.chunk.join('\n');
 
-      // Find the doc index range for the lines being replaced.
-      // If the offset is past the end of the old content (pure append),
-      // use the section end index so the insert goes after existing content.
       const deleteStartIdx = oldOffset < lineDocIndices.length
         ? lineDocIndices[oldOffset]
         : change.docEndIndex;
@@ -421,11 +422,9 @@ export async function computeDocDiff(
       const deleteEndIdx = deleteEndLine < lineDocIndices.length
         ? lineDocIndices[deleteEndLine]
         : change.docEndIndex;
-
-      // Clamp to body end
       const clampedEnd = deleteEndIdx >= bodyEndIndex ? bodyEndIndex - 1 : deleteEndIdx;
 
-      // Delete the old lines
+      // Step 1: DELETE old content
       if (oldLength > 0 && clampedEnd > deleteStartIdx) {
         requests.push({
           deleteContentRange: {
@@ -434,16 +433,19 @@ export async function computeDocDiff(
         });
       }
 
-      // Insert the new lines
+      // Step 2: INSERT new content at the same position
       if (newContent.length > 0) {
-        // Clamp insert position to before the body's trailing newline
         const insertAt = Math.min(deleteStartIdx, bodyEndIndex - 1);
 
-        // When inserting without deleting (pure append), we need a \n
-        // before the new content to start a new paragraph. Without it,
-        // the text merges into the previous paragraph (e.g., heading).
-        // Insert the \n as a raw request since the markdown parser strips
-        // leading whitespace.
+        // Pure append (no delete): need a \n to separate from preceding paragraph.
+        // Insert it as part of the markdown content by wrapping in a paragraph.
+        const contentToInsert = (oldLength === 0 && insertAt > 1)
+          ? '\n' + newContent
+          : newContent;
+
+        // For the \n prefix: insert it as raw text first, then the markdown content after.
+        // This avoids the markdown parser stripping the leading newline.
+        let actualInsertAt = insertAt;
         if (oldLength === 0 && insertAt > 1) {
           requests.push({
             insertText: {
@@ -451,17 +453,19 @@ export async function computeDocDiff(
               text: '\n',
             },
           });
+          actualInsertAt = insertAt + 1;
         }
 
         const { text, requests: insertRequests } = markdownToDocsRequests(
           newContent,
-          oldLength === 0 && insertAt > 1 ? insertAt + 1 : insertAt,
+          actualInsertAt,
           false,
           bodyEndIndex,
         );
         requests.push(...insertRequests);
+
         if (text.length > 0) {
-          requests.push(...createAttributionRequests(agentName, insertAt, insertAt + text.length));
+          requests.push(...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length));
         }
       }
     }
@@ -534,7 +538,12 @@ function computeMdOffset(section: MdSection, allSections: MdSection[]): number {
  * Google Doc index, using the indexMap entries.
  *
  * Each entry lineDocIndices[i] is the doc index where line i starts.
- * We interpolate between known indexMap entries based on character offsets.
+ *
+ * Strategy: for each line, find the closest indexMap entry and use its
+ * doc index directly if it's within a small tolerance. Otherwise
+ * interpolate from the nearest entry. This avoids cumulative drift
+ * from markdown formatting characters (e.g., "# " in headings) that
+ * don't exist in the Google Doc.
  */
 function buildLineDocIndices(
   lines: string[],
@@ -545,22 +554,40 @@ function buildLineDocIndices(
   const result: number[] = [];
   let mdOffset = sectionMdStart;
 
+  // Build a quick lookup: for each indexMap entry, track which line
+  // boundary it's closest to.
   for (let i = 0; i < lines.length; i++) {
-    // Find the best matching indexMap entry for this md offset
     let docIndex = sectionDocEnd; // fallback
+
+    // Check for an exact or near-exact indexMap entry for this line.
+    // "Near" means within a few characters — accounts for markdown
+    // syntax chars like "# ", "- ", etc.
     let bestEntry: IndexMapEntry | null = null;
+    let bestDist = Infinity;
 
     for (const entry of indexMap) {
-      if (entry.mdOffset <= mdOffset) {
+      const dist = Math.abs(entry.mdOffset - mdOffset);
+      if (dist < bestDist) {
+        bestDist = dist;
         bestEntry = entry;
-      } else {
-        break;
       }
     }
 
     if (bestEntry) {
-      // Interpolate: doc index = entry's doc index + (md offset - entry's md offset)
-      docIndex = bestEntry.docIndex + (mdOffset - bestEntry.mdOffset);
+      if (bestDist <= 5) {
+        // Close enough — use the entry's doc index directly
+        docIndex = bestEntry.docIndex;
+      } else {
+        // Far from any entry — interpolate from the closest preceding entry
+        let preceding: IndexMapEntry | null = null;
+        for (const entry of indexMap) {
+          if (entry.mdOffset <= mdOffset) preceding = entry;
+          else break;
+        }
+        if (preceding) {
+          docIndex = preceding.docIndex + (mdOffset - preceding.mdOffset);
+        }
+      }
     }
 
     result.push(docIndex);

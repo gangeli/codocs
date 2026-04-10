@@ -8,7 +8,7 @@ import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import type { Root } from 'mdast';
 import { walkAst, type WalkSegment, type TextSegment, type TableSegment } from './ast-walker.js';
-import { TABLE_HEADER_BG } from './style-map.js';
+import { styleTable } from './table-style.js';
 
 export interface MdToDocsResult {
   /** The plain text that will be inserted (for text segments only). */
@@ -16,12 +16,6 @@ export interface MdToDocsResult {
   /** All batchUpdate requests, in the order they should be sent. */
   requests: docs_v1.Schema$Request[];
 }
-
-/**
- * Google Docs page body width in points (US Letter, 1-inch margins).
- * Used to distribute table column widths proportionally.
- */
-const PAGE_WIDTH_PT = 468;
 
 /**
  * Convert markdown to a set of Google Docs batchUpdate requests.
@@ -158,7 +152,9 @@ function processTableSegment(
     },
   });
 
-  const tableStart = docIndex;
+  // insertTable at docIndex inserts the table structure starting at
+  // docIndex + 1 (the existing content at docIndex is pushed right).
+  const tableStart = docIndex + 1;
 
   // Fill cells with content, working BACKWARDS to avoid index shifting.
   // Each cell's \n is at: tableStart + 3 + r*(2C+1) + 2c
@@ -188,87 +184,12 @@ function processTableSegment(
   const tableStructureSize = 2 + R + 2 * R * C;
   const tableSize = tableStructureSize + totalCellTextLength;
 
-  // Bold the header row text
-  // After cell text is inserted, cell(0, c) text starts at:
-  //   tableStart + 3 + 2*c (the base position)
-  // and occupies rows[0][c].length characters
-  for (let c = 0; c < C; c++) {
-    const headerText = segment.rows[0][c];
-    if (!headerText) continue;
-    const cellContentIndex = tableStart + 3 + 2 * c;
-    allStyles.push({
-      updateTextStyle: {
-        range: {
-          startIndex: cellContentIndex,
-          endIndex: cellContentIndex + headerText.length,
-        },
-        textStyle: { bold: true },
-        fields: 'bold',
-      },
-    });
-  }
+  // Apply table styling (header, padding, column widths, alignment)
+  allStyles.push(...styleTable(tableStart, segment.rows, C));
 
-  // Light blue background on header row cells
-  allStyles.push({
-    updateTableCellStyle: {
-      tableRange: {
-        tableCellLocation: {
-          tableStartLocation: { index: tableStart },
-          rowIndex: 0,
-          columnIndex: 0,
-        },
-        rowSpan: 1,
-        columnSpan: C,
-      },
-      tableCellStyle: {
-        backgroundColor: TABLE_HEADER_BG,
-      },
-      fields: 'backgroundColor',
-    },
-  });
-
-  // Set column widths proportional to max content length
-  const colWidths = computeColumnWidths(segment.rows, C);
-  for (let c = 0; c < C; c++) {
-    allStyles.push({
-      updateTableColumnProperties: {
-        tableStartLocation: { index: tableStart },
-        columnIndices: [c],
-        tableColumnProperties: {
-          widthType: 'FIXED_WIDTH',
-          width: {
-            magnitude: colWidths[c],
-            unit: 'PT',
-          },
-        },
-        fields: 'widthType,width',
-      },
-    });
-  }
-
-  return docIndex + tableSize;
-}
-
-/**
- * Compute column widths in points, distributed proportionally
- * based on the longest cell content in each column.
- */
-function computeColumnWidths(rows: string[][], numColumns: number): number[] {
-  const maxLengths = new Array(numColumns).fill(0);
-  for (const row of rows) {
-    for (let c = 0; c < numColumns; c++) {
-      maxLengths[c] = Math.max(maxLengths[c], (row[c] ?? '').length);
-    }
-  }
-
-  // Ensure a minimum width so narrow columns aren't crushed
-  const MIN_COL_CHARS = 5;
-  for (let c = 0; c < numColumns; c++) {
-    maxLengths[c] = Math.max(maxLengths[c], MIN_COL_CHARS);
-  }
-
-  const totalChars = maxLengths.reduce((a, b) => a + b, 0);
-  return maxLengths.map((len) => Math.round((len / totalChars) * PAGE_WIDTH_PT));
+  // +1 because insertTable pushes existing content right by 1
+  // (the table starts at docIndex+1, not docIndex)
+  return docIndex + tableSize + 1;
 }
 
 // ── Helpers ────────────────────────────────────────────────────

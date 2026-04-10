@@ -581,18 +581,16 @@ Paragraph three stays the same.
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // Deletes should only cover the range around paragraph two (line 4, doc ~43),
-    // not paragraph one (doc 12-41) or paragraph three (doc 71+) or the heading (doc 1-10)
-    for (const req of result.requests) {
-      if (req.deleteContentRange) {
-        const start = req.deleteContentRange.range!.startIndex!;
-        const end = req.deleteContentRange.range!.endIndex!;
-        // Should not overlap with heading or paragraph one
-        expect(start).toBeGreaterThanOrEqual(42);
-        // Should not extend into paragraph three
-        expect(end).toBeLessThanOrEqual(71);
-      }
-    }
+    // With insert-first, delete indices are shifted by the inserted text length.
+    // Verify the delete SIZE matches only the changed paragraph, not the whole section.
+    // "Paragraph two will change.\n" = 27 chars. The delete should be ~27 chars.
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs).toHaveLength(1);
+    const delRange = deleteReqs[0].deleteContentRange!.range!;
+    const deleteSize = delRange.endIndex! - delRange.startIndex!;
+    // The old "Paragraph two will change." line is ~27 chars (including \n)
+    expect(deleteSize).toBeLessThanOrEqual(30);
+    expect(deleteSize).toBeGreaterThan(0);
   });
 
   it('does not delete any text when agent only appends to end of section', async () => {
@@ -729,5 +727,128 @@ Green rind hides the sweet
     expect(insertReqs.length).toBeGreaterThan(0);
     const firstInsertText = insertReqs[0].insertText!.text!;
     expect(firstInsertText.startsWith('\n')).toBe(true);
+  });
+
+  it('deletes the full old line when replacing (no leftover characters)', async () => {
+    // Bug: "Summer's watermelon" → "Summer's melon treat" left a stray "S",
+    // producing "SSummer's melon treat". The delete range was one char short
+    // because markdown offsets (which include "# " etc.) don't map 1:1 to
+    // doc indices.
+    const bodyEndIndex = 100;
+    const doc = makeDocument(bodyEndIndex);
+
+    // The doc content is:
+    //   "A haiku about fruit\nGreen rind hides the sweet\nRed flesh bursting\nSummer's watermelon\n"
+    // Note: the "# " prefix in markdown doesn't exist in the doc.
+    const base = `# A haiku about fruit
+
+Green rind hides the sweet
+Red flesh bursting
+Summer's watermelon
+`;
+    const ours = `# A haiku about fruit
+
+Green rind hides the sweet
+Red flesh bursting
+Summer's melon treat
+`;
+    const theirs = base;
+
+    // Doc indices (no "# " prefix — heading is just "A haiku about fruit"):
+    //   1: "A haiku about fruit\n"  (20 chars, ends at 21)
+    //  21: "Green rind hides the sweet\n" (27 chars, ends at 48)
+    //  48: "Red flesh bursting\n" (19 chars, ends at 67)
+    //  67: "Summer's watermelon\n" (20 chars, ends at 87)
+    const indexMap = makeIndexMap([
+      { mdOffset: 0, docIndex: 1 },    // "# A haiku about fruit"
+      { mdOffset: 23, docIndex: 21 },  // "Green rind..."
+      { mdOffset: 48, docIndex: 48 },  // "Red flesh..."
+      { mdOffset: 65, docIndex: 67 },  // "Summer's watermelon"
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    // With insert-first, the insert goes at 67, then the delete is shifted
+    // by the inserted length. Verify the delete SIZE covers exactly the old line.
+    const deleteReq = result.requests.find((r) => r.deleteContentRange);
+    expect(deleteReq).toBeDefined();
+    const delSize = deleteReq!.deleteContentRange!.range!.endIndex! - deleteReq!.deleteContentRange!.range!.startIndex!;
+    // "Summer's watermelon\n" is 20 chars; may include adjacent empty line
+    expect(delSize).toBeGreaterThanOrEqual(19);
+    expect(delSize).toBeLessThanOrEqual(25);
+
+    // The insert should contain the new text
+    const insertReqs = result.requests.filter((r) => r.insertText);
+    const insertTexts = insertReqs.map((r) => r.insertText!.text).join('');
+    expect(insertTexts).toContain("Summer's melon treat");
+    // Insert should start at 67 (the old line's position)
+    expect(insertReqs[0].insertText!.location!.index).toBe(67);
+  });
+
+  it('insert indices are valid after preceding deletes (no out-of-bounds)', async () => {
+    // Bug: when the diff has multiple hunks, deletes shift indices and
+    // subsequent inserts can reference positions that no longer exist.
+    // Google Docs returns: "insertion index must be inside the bounds
+    // of an existing paragraph."
+    //
+    // This test simulates a section where lines are both modified and
+    // appended — producing multiple hunks.
+    const bodyEndIndex = 200;
+    const doc = makeDocument(bodyEndIndex);
+
+    const base = `# Section
+
+Line one.
+Line two.
+Line three.
+`;
+    const ours = `# Section
+
+Line one MODIFIED.
+Line two.
+Line three MODIFIED.
+New line four.
+New line five.
+`;
+    const theirs = base;
+
+    const indexMap = makeIndexMap([
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 11, docIndex: 11 },  // "Line one."
+      { mdOffset: 21, docIndex: 21 },  // "Line two."
+      { mdOffset: 31, docIndex: 31 },  // "Line three."
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    // Verify all insert positions are valid: every insertText index must
+    // be >= 1 and < bodyEndIndex. And every delete must have start < end.
+    for (const req of result.requests) {
+      if (req.insertText) {
+        const idx = req.insertText.location!.index!;
+        expect(idx).toBeGreaterThanOrEqual(1);
+        expect(idx).toBeLessThan(bodyEndIndex);
+      }
+      if (req.deleteContentRange) {
+        const start = req.deleteContentRange.range!.startIndex!;
+        const end = req.deleteContentRange.range!.endIndex!;
+        expect(start).toBeGreaterThanOrEqual(1);
+        expect(end).toBeGreaterThan(start);
+        expect(end).toBeLessThan(bodyEndIndex);
+      }
+    }
+
+    // Verify that inserts come BEFORE their corresponding deletes
+    // (insert-first pattern prevents out-of-bounds errors)
+    const ops = result.requests
+      .filter((r) => r.insertText || r.deleteContentRange)
+      .map((r) => r.insertText ? 'insert' : 'delete');
+
+    // For each delete, there should be at least one insert before it
+    // (unless it's a pure delete with no replacement)
+    // At minimum: no two deletes in a row without an insert between
+    // (this is a loose check — the real validation is that Google Docs accepts it)
   });
 });

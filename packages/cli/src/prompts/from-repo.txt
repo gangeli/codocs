@@ -1,0 +1,3 @@
+Thoroughly explore the code and architecture in this repository and write a thorough design document in Markdown. 
+
+Your response will be uploaded to Google Docs and used as the "source of truth" about this project, and people will comment + critique both the overall architecture and the details of the design. Make sure your design is thorough, but also make sure that it's easy to understand at a glance what's happening, both overall and for each subsection of the document. Do not write unnecessary content.

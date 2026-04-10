@@ -143,6 +143,26 @@ describe('markdownToDocsRequests', () => {
     expect(insert!.insertText!.location!.index).toBe(50);
   });
 
+  it('table cell inserts use correct indices (tableStart + 1 offset)', () => {
+    // Google Docs insertTable at index N creates the table structure starting
+    // at N+1. Cell content indices must be relative to N+1, not N.
+    // A 2x2 table inserted at index 1 should have:
+    //   Cell(0,0) at 1+1+3+0 = 5
+    //   Cell(0,1) at 1+1+3+2 = 7
+    //   Cell(1,0) at 1+1+3+5 = 10
+    //   Cell(1,1) at 1+1+3+7 = 12
+    const md = '| A | B |\n| - | - |\n| C | D |';
+    const { requests } = markdownToDocsRequests(md, 1);
+
+    const cellInserts = requests.filter((r) => r.insertText);
+    const cellByText = (t: string) => cellInserts.find((r) => r.insertText!.text === t);
+
+    expect(cellByText('A')!.insertText!.location!.index).toBe(5);
+    expect(cellByText('B')!.insertText!.location!.index).toBe(7);
+    expect(cellByText('C')!.insertText!.location!.index).toBe(10);
+    expect(cellByText('D')!.insertText!.location!.index).toBe(12);
+  });
+
   it('converts a markdown table to an insertTable request', () => {
     const md = '| Name | Value |\n| --- | --- |\n| foo | 42 |';
     const { requests } = markdownToDocsRequests(md);

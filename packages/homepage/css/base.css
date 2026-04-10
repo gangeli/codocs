@@ -1,0 +1,141 @@
+/* ── Design System ── */
+
+:root {
+  --parchment: #f4f0e8;
+  --parchment-light: #faf8f3;
+  --ink: #1a1a1a;
+  --ink-dim: #6b6560;
+  --ink-faint: #a09890;
+  --accent: #2a6e6e;
+  --accent-light: #3a8e8e;
+  --accent-bg: rgba(42, 110, 110, 0.08);
+  --agent-blue: #4285f4;
+  --agent-green: #34a853;
+  --agent-amber: #f9ab00;
+  --code-bg: #f0ece3;
+  --shadow-fold: 0 1px 3px rgba(0, 0, 0, 0.06), 0 6px 16px rgba(0, 0, 0, 0.04);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 3px 10px rgba(0, 0, 0, 0.03);
+  --font-body: 'Georgia', 'Times New Roman', serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  --max-width: 960px;
+  --section-gap: 6rem;
+}
+
+/* ── Reset ── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ── Body & Parchment Texture ── */
+
+body {
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--ink);
+  background-color: var(--parchment);
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      transparent, transparent 50px,
+      rgba(0, 0, 0, 0.012) 50px, rgba(0, 0, 0, 0.012) 51px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent, transparent 50px,
+      rgba(0, 0, 0, 0.008) 50px, rgba(0, 0, 0, 0.008) 51px
+    );
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Typography ── */
+
+h1, h2, h3 {
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+h1 {
+  font-size: 2.8rem;
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+  margin-bottom: 1rem;
+}
+
+h3 {
+  font-size: 1.15rem;
+}
+
+p {
+  margin-bottom: 1rem;
+  color: var(--ink-dim);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+a:hover {
+  color: var(--accent-light);
+}
+
+code, pre {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+
+/* ── Layout ── */
+
+.container {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+section {
+  padding: var(--section-gap) 0;
+}
+
+/* ── Scroll-triggered Animation Base ── */
+
+.animate-on-scroll {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.animate-on-scroll.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ── Reduced Motion ── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .animate-on-scroll {
+    opacity: 1;
+    transform: none;
+  }
+}

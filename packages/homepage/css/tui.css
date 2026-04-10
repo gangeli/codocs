@@ -1,0 +1,253 @@
+/* ── TUI Recreation ── */
+
+.tui-wrapper {
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+.tui-window {
+  background: #1a1a2e;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.15);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #c8c8d8;
+}
+
+/* ── macOS Chrome ── */
+
+.tui-chrome {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  background: #16162a;
+}
+
+.tui-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+}
+
+.tui-dot--close { background: #ff5f57; }
+.tui-dot--minimize { background: #febc2e; }
+.tui-dot--maximize { background: #28c840; }
+
+/* ── Header ── */
+
+.tui-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 6px 14px;
+  border-bottom: 1px solid #2a2a44;
+}
+
+.tui-brand {
+  color: #5ce0d8;
+  font-weight: 700;
+}
+
+.tui-sep {
+  color: #3a3a55;
+}
+
+.tui-doc-title {
+  color: #c8c8d8;
+}
+
+.tui-spacer {
+  flex: 1;
+}
+
+.tui-connected {
+  color: #34a853;
+  font-size: 1.4em;
+  line-height: 1;
+}
+
+.tui-status-text {
+  color: #6b6b88;
+  font-size: 0.9em;
+}
+
+/* ── Main Area ── */
+
+.tui-main {
+  display: flex;
+  min-height: 200px;
+}
+
+/* ── Agent Panel ── */
+
+.tui-agents {
+  width: 200px;
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+
+.tui-section-header {
+  font-weight: 700;
+  color: #6b6b88;
+  font-size: 0.85em;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.tui-divider-h {
+  height: 1px;
+  background: #2a2a44;
+  margin-bottom: 8px;
+}
+
+.tui-agent {
+  margin-bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+}
+
+.tui-agent-icon {
+  font-size: 1.2em;
+  line-height: 1;
+}
+
+.tui-agent--processing {
+  color: #34a853;
+}
+
+.tui-agent--idle {
+  color: #6b6b88;
+}
+
+.tui-agent-name {
+  font-weight: 700;
+  color: #e0e0f0;
+}
+
+.tui-agent-task {
+  width: 100%;
+  color: #6b6b88;
+  font-size: 0.9em;
+  padding-left: 1.5em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Vertical Divider ── */
+
+.tui-divider-v {
+  width: 1px;
+  background: #2a2a44;
+}
+
+/* ── Activity Log ── */
+
+.tui-activity {
+  flex: 1;
+  padding: 8px 12px;
+  min-width: 0;
+}
+
+.tui-events {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tui-event {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+}
+
+.tui-time {
+  color: #5a5a75;
+  font-size: 0.85em;
+  width: 5.5em;
+  flex-shrink: 0;
+}
+
+.tui-event-icon {
+  width: 1.8em;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.tui-event--system { color: #6b6b88; }
+.tui-event--comment { /* emoji, no color needed */ }
+.tui-event--reply { color: #34a853; }
+
+.tui-bold {
+  font-weight: 700;
+  color: #e0e0f0;
+}
+
+.tui-dim {
+  color: #6b6b88;
+}
+
+.tui-event-detail {
+  width: 100%;
+  padding-left: 7.5em;
+  color: #8888a8;
+  font-size: 0.9em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tui-event--active {
+  background: rgba(52, 168, 83, 0.06);
+  border-radius: 3px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+
+.tui-blink {
+  animation: tui-blink 1.5s ease-in-out infinite;
+}
+
+@keyframes tui-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Status Bar ── */
+
+.tui-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  padding: 5px 14px;
+  border-top: 1px solid #2a2a44;
+  font-size: 0.85em;
+}
+
+/* ── Command Bar ── */
+
+.tui-commandbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 5px 14px;
+  border-top: 1px solid #2a2a44;
+  font-size: 0.85em;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.tui-key {
+  color: #5ce0d8;
+  font-weight: 700;
+}
+
+.tui-cmd-sep {
+  color: #3a3a55;
+  margin: 0 0.2em;
+}

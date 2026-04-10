@@ -175,10 +175,9 @@ async function resolveWelcomeChoice(
       );
 
       try {
+        const fromRepoPrompt = readFileSync(new URL('./prompts/from-repo.txt', import.meta.url), 'utf-8');
         const result = await runner.run(
-          'Look at this repository and write an initial design document in markdown. ' +
-          'Include sections for: overview, architecture, key decisions, and open questions. ' +
-          'Be concise but thorough. Output ONLY the markdown, no preamble.',
+          fromRepoPrompt,
           null,
           { timeout: 1_200_000 },
         );

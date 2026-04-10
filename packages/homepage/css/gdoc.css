@@ -1,0 +1,218 @@
+/* ── Mock Google Doc ── */
+
+#mock-doc {
+  background: rgba(0, 0, 0, 0.015);
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.gdoc-wrapper {
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.gdoc-chrome {
+  background: #fff;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-fold);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* ── Toolbar ── */
+
+.gdoc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid #e8e8e8;
+  background: #f8f9fa;
+}
+
+.gdoc-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.gdoc-doc-icon {
+  display: flex;
+}
+
+.gdoc-title {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 1.05rem;
+  font-weight: 500;
+  color: #1a1a1a;
+}
+
+.gdoc-share-btn {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #fff;
+  background: #1a73e8;
+  border-radius: 20px;
+  padding: 0.35rem 1rem;
+}
+
+/* ── Page Area ── */
+
+.gdoc-page-area {
+  display: flex;
+  background: #f0f0f0;
+  min-height: 340px;
+}
+
+.gdoc-page {
+  flex: 1;
+  background: #fff;
+  margin: 20px 0 20px 40px;
+  padding: 40px 48px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  color: #333;
+  max-width: 580px;
+}
+
+.gdoc-heading {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 1.5rem;
+  font-weight: 400;
+  color: #1a1a1a;
+  margin-bottom: 0.75rem;
+  letter-spacing: 0;
+}
+
+.gdoc-heading-2 {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 1.1rem;
+  font-weight: 400;
+  color: #1a1a1a;
+  margin: 1.25rem 0 0.5rem;
+}
+
+.gdoc-text {
+  margin-bottom: 0.75rem;
+  color: #333;
+}
+
+/* ── Agent Attribution Colors ── */
+
+.gdoc-attr[data-agent="swift-falcon"] {
+  border-left: 3px solid var(--agent-blue);
+  padding-left: 8px;
+  display: block;
+  color: #333;
+}
+
+.gdoc-attr[data-agent="gentle-otter"] {
+  border-left: 3px solid var(--agent-green);
+  padding-left: 8px;
+  display: block;
+  color: #333;
+}
+
+.gdoc-attr[data-agent="keen-hawk"] {
+  border-left: 3px solid var(--agent-amber);
+  padding-left: 8px;
+  display: block;
+  color: #333;
+}
+
+/* ── Comment Sidebar ── */
+
+.gdoc-sidebar {
+  width: 260px;
+  padding: 20px 16px;
+  flex-shrink: 0;
+}
+
+.gdoc-comment {
+  background: #fff;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  padding: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 0.8rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.gdoc-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.gdoc-comment-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.gdoc-avatar--agent {
+  background: var(--agent-amber);
+}
+
+.gdoc-comment-author {
+  font-weight: 600;
+  color: #1a1a1a;
+  font-size: 0.78rem;
+}
+
+.gdoc-author--agent {
+  color: var(--agent-amber);
+}
+
+.gdoc-comment-time {
+  font-size: 0.7rem;
+  color: #999;
+}
+
+.gdoc-comment-text {
+  color: #333;
+  line-height: 1.5;
+  margin-bottom: 0;
+}
+
+.gdoc-comment-reply {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
+}
+
+/* ── Agent Legend ── */
+
+.gdoc-legend {
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  margin-top: 1.25rem;
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+
+.gdoc-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.gdoc-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
