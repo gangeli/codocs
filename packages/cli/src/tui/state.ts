@@ -2,6 +2,39 @@
  * Shared state types for the TUI.
  */
 
+export type { PermissionMode } from '@codocs/core';
+import type { PermissionMode } from '@codocs/core';
+
+/**
+ * Tools allowed in "tools" permission mode.
+ * Includes all core tools plus scoped Bash commands that are
+ * read-only or commonly needed for builds/tests.
+ */
+export const ALLOWED_TOOLS = [
+  // Core file tools
+  'Read', 'Edit', 'Write', 'Glob', 'Grep', 'NotebookEdit',
+  // Agent and web
+  'Agent', 'WebSearch', 'WebFetch',
+  // Scoped Bash: build & test
+  'Bash(make:*)', 'Bash(npm:*)', 'Bash(npx:*)',
+  'Bash(node:*)', 'Bash(bun:*)', 'Bash(deno:*)',
+  'Bash(cargo:*)', 'Bash(go:*)', 'Bash(python:*)', 'Bash(python3:*)', 'Bash(pytest:*)',
+  'Bash(pip:*)', 'Bash(uv:*)',
+  // Scoped Bash: version control
+  'Bash(git:*)',
+  // Scoped Bash: filesystem read
+  'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)',
+  'Bash(find:*)', 'Bash(wc:*)', 'Bash(file:*)', 'Bash(which:*)',
+  // Scoped Bash: common utilities
+  'Bash(echo:*)', 'Bash(env:*)', 'Bash(pwd:*)', 'Bash(date:*)',
+  'Bash(sort:*)', 'Bash(uniq:*)', 'Bash(diff:*)', 'Bash(jq:*)',
+];
+
+/** Tools explicitly denied in "tools" permission mode. */
+export const DISALLOWED_TOOLS = [
+  'Bash(git push --force:*)', 'Bash(git push -f:*)',
+];
+
 export interface Agent {
   name: string;
   status: 'idle' | 'processing' | 'paused' | 'error';
@@ -43,6 +76,7 @@ export interface Stats {
 export interface Settings {
   maxAgents: number;
   onBudgetExhausted: 'pause' | 'warn' | 'stop';
+  permissionMode: PermissionMode;
   debugMode: boolean;
 }
 
@@ -58,16 +92,21 @@ export interface TuiState {
   settings: Settings;
   showSettings: boolean;
   paused: boolean;
+  /** Which agent runner is in use (e.g. "claude"). */
+  agentType: string;
+  /** Whether --permission-mode auto is available for this account. */
+  autoModeAvailable: boolean;
 }
 
 export function createInitialState(
   docId: string,
-  docTitle?: string,
+  opts?: { docTitle?: string; agentType?: string; autoModeAvailable?: boolean },
 ): TuiState {
   const docUrl = `https://docs.google.com/document/d/${docId}/edit`;
+  const autoModeAvailable = opts?.autoModeAvailable ?? false;
   return {
     docUrl,
-    docTitle: docTitle ?? docId.slice(0, 12) + '...',
+    docTitle: opts?.docTitle ?? docId.slice(0, 12) + '...',
     connected: false,
     statusMessage: 'Starting up...',
     agents: [],
@@ -81,9 +120,14 @@ export function createInitialState(
     settings: {
       maxAgents: 3,
       onBudgetExhausted: 'pause',
+      permissionMode: autoModeAvailable
+        ? { type: 'auto', allowedTools: ALLOWED_TOOLS }
+        : { type: 'allowedTools', tools: ALLOWED_TOOLS, disallowedTools: DISALLOWED_TOOLS },
       debugMode: false,
     },
     showSettings: false,
     paused: false,
+    agentType: opts?.agentType ?? 'claude',
+    autoModeAvailable,
   };
 }

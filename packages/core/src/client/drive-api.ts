@@ -44,12 +44,13 @@ export class DriveApi {
     return comments;
   }
 
-  /** Get a single comment by ID. */
+  /** Get a single comment by ID, including its reply thread. */
   async getComment(fileId: string, commentId: string): Promise<drive_v3.Schema$Comment> {
     const res = await this.drive.comments.get({
       fileId,
       commentId,
-      fields: 'id,content,author,quotedFileContent,resolved,createdTime',
+      fields: 'id,content,author,quotedFileContent,resolved,createdTime,replies(id,content,author,createdTime,action)',
+      includeDeleted: false,
     });
     return res.data;
   }
@@ -111,6 +112,11 @@ export class DriveApi {
       requestBody: { content },
     });
     return res.data.id!;
+  }
+
+  /** Delete a reply. */
+  async deleteReply(fileId: string, commentId: string, replyId: string): Promise<void> {
+    await this.drive.replies.delete({ fileId, commentId, replyId });
   }
 
   /** Update an existing reply's content. */

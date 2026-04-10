@@ -168,6 +168,13 @@ export class CodocsClient {
   }
 
   /**
+   * Delete a reply on a comment.
+   */
+  async deleteReply(docId: string, commentId: string, replyId: string): Promise<void> {
+    return this.driveApi.deleteReply(docId, commentId, replyId);
+  }
+
+  /**
    * Share a doc with an email address. Idempotent.
    * Used to grant the service account commenter access.
    */
@@ -244,12 +251,18 @@ export class CodocsClient {
       .flatMap((s) => s.ranges)
       .sort((a, b) => b.startIndex - a.startIndex);
 
+    // Google Docs forbids deleting the trailing newline at the end of the body segment
+    const bodyEnd = getBodyEndIndex(doc.body);
+
     for (const range of allRanges) {
-      deleteRequests.push({
-        deleteContentRange: {
-          range: { startIndex: range.startIndex, endIndex: range.endIndex },
-        },
-      });
+      const endIndex = range.endIndex >= bodyEnd ? bodyEnd - 1 : range.endIndex;
+      if (endIndex > range.startIndex) {
+        deleteRequests.push({
+          deleteContentRange: {
+            range: { startIndex: range.startIndex, endIndex },
+          },
+        });
+      }
     }
 
     // Batch 1: delete named ranges and content

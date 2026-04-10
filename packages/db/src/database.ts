@@ -29,6 +29,29 @@ const SCHEMA = `
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (document_id, role)
   );
+
+  CREATE TABLE IF NOT EXISTS agent_queue (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_name    TEXT NOT NULL,
+    document_id   TEXT NOT NULL,
+    comment_event TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at    TEXT,
+    completed_at  TEXT,
+    error         TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_queue_agent_status
+    ON agent_queue (agent_name, status, created_at);
+
+  CREATE TABLE IF NOT EXISTS settings (
+    directory     TEXT NOT NULL,
+    key           TEXT NOT NULL,
+    value         TEXT NOT NULL,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (directory, key)
+  );
 `;
 
 function getDataDir(): string {

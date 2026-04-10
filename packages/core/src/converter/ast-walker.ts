@@ -218,8 +218,26 @@ function walkParagraph(
   listDepth: number,
   inBlockquote: boolean,
 ) {
+  const startOffset = ctx.offset;
   walkChildren(node.children as Content[], ctx, listDepth, inBlockquote);
   ensureNewline(ctx);
+
+  // Explicitly set NORMAL_TEXT so paragraphs don't inherit the style of
+  // the insertion point (e.g., a heading style when inserting after a heading).
+  if (ctx.offset > startOffset) {
+    ctx.styles.push({
+      updateParagraphStyle: {
+        range: {
+          startIndex: startOffset,
+          endIndex: ctx.offset,
+        },
+        paragraphStyle: {
+          namedStyleType: 'NORMAL_TEXT',
+        },
+        fields: 'namedStyleType',
+      },
+    });
+  }
 }
 
 function walkLink(

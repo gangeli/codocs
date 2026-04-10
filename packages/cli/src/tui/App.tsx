@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp, useStdout } from 'ink';
 import open from 'open';
 import { Header } from './components/Header.js';
@@ -30,6 +30,8 @@ interface AppProps {
   getActiveAgents?: () => ActiveAgentInfo[];
   /** Ref callback to let serve.ts push state updates */
   onStateRef?: (ref: TuiStateRef) => void;
+  /** Called when settings change (for persistence). */
+  onSettingsChange?: (settings: Settings) => void;
 }
 
 export interface TuiStateRef {
@@ -41,16 +43,18 @@ export interface TuiStateRef {
   incrementComments: () => void;
   addCost: (amount: number) => void;
   setDocTitle: (title: string) => void;
+  getSettings: () => Settings;
 }
 
 type View = 'main' | 'settings' | 'confirm-quit';
 
-export function App({ initialState, onShutdown, getActiveAgents, onStateRef }: AppProps) {
+export function App({ initialState, onShutdown, getActiveAgents, onStateRef, onSettingsChange }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 24;
 
   const [state, setState] = useState<TuiState>(initialState);
+  const settingsRef = useRef(initialState.settings);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [view, setView] = useState<View>('main');
 
@@ -98,6 +102,7 @@ export function App({ initialState, onShutdown, getActiveAgents, onStateRef }: A
       })),
     setDocTitle: (title) =>
       setState((s) => ({ ...s, docTitle: title })),
+    getSettings: () => settingsRef.current,
   };
 
   React.useEffect(() => {
@@ -181,10 +186,14 @@ export function App({ initialState, onShutdown, getActiveAgents, onStateRef }: A
         <Box flexGrow={1} justifyContent="center" alignItems="center">
           <SettingsPanel
             settings={state.settings}
-            onUpdate={(settings: Settings) =>
-              setState((s) => ({ ...s, settings }))
-            }
+            onUpdate={(settings: Settings) => {
+              settingsRef.current = settings;
+              setState((s) => ({ ...s, settings }));
+              onSettingsChange?.(settings);
+            }}
             onClose={() => setView('main')}
+            agentType={state.agentType}
+            autoModeAvailable={state.autoModeAvailable}
           />
         </Box>
       ) : view === 'confirm-quit' ? (

@@ -181,6 +181,110 @@ describe('markdownToDocsRequests', () => {
     expect(colWidthReqs).toHaveLength(2);
   });
 
+  // ── Style inheritance / reset tests ───────────────────────────
+
+  it('resets paragraph style to NORMAL_TEXT after a heading', () => {
+    const md = '# Title\n\nNormal paragraph here.';
+    const { requests } = markdownToDocsRequests(md);
+
+    const paraStyles = requests.filter((r) => r.updateParagraphStyle);
+    const types = paraStyles.map(
+      (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType,
+    );
+
+    // Should have HEADING_1 for the title AND NORMAL_TEXT for the paragraph
+    expect(types).toContain('HEADING_1');
+    expect(types).toContain('NORMAL_TEXT');
+  });
+
+  it('every non-heading paragraph gets NORMAL_TEXT style', () => {
+    const md = '## Heading\n\nParagraph one.\n\nParagraph two.\n\n### Another\n\nParagraph three.';
+    const { requests } = markdownToDocsRequests(md);
+
+    const paraStyles = requests.filter((r) => r.updateParagraphStyle);
+    const normalCount = paraStyles.filter(
+      (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType === 'NORMAL_TEXT',
+    ).length;
+
+    // Three normal paragraphs should each get NORMAL_TEXT
+    expect(normalCount).toBe(3);
+  });
+
+  it('NORMAL_TEXT range does not overlap heading range', () => {
+    const md = '# Title\n\nBody text.';
+    const { requests } = markdownToDocsRequests(md);
+
+    const paraStyles = requests.filter((r) => r.updateParagraphStyle);
+    const heading = paraStyles.find(
+      (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType === 'HEADING_1',
+    );
+    const normal = paraStyles.find(
+      (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType === 'NORMAL_TEXT',
+    );
+
+    expect(heading).toBeDefined();
+    expect(normal).toBeDefined();
+
+    const headingEnd = heading!.updateParagraphStyle!.range!.endIndex!;
+    const normalStart = normal!.updateParagraphStyle!.range!.startIndex!;
+
+    // Normal paragraph should start at or after the heading ends
+    expect(normalStart).toBeGreaterThanOrEqual(headingEnd);
+  });
+
+  it('plain text without headings still gets NORMAL_TEXT style', () => {
+    const md = 'Just a simple paragraph.';
+    const { requests } = markdownToDocsRequests(md);
+
+    const normalStyle = requests.find(
+      (r) => r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'NORMAL_TEXT',
+    );
+    expect(normalStyle).toBeDefined();
+  });
+
+  it('list items get NORMAL_TEXT so they do not inherit heading style', () => {
+    const md = '# Section\n\n- item one\n- item two';
+    const { requests } = markdownToDocsRequests(md);
+
+    // Bullet items are paragraphs — should get NORMAL_TEXT
+    const paraStyles = requests.filter((r) => r.updateParagraphStyle);
+    const normalStyles = paraStyles.filter(
+      (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType === 'NORMAL_TEXT',
+    );
+    // At least 2 NORMAL_TEXT for the two list items
+    expect(normalStyles.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('bold/italic inside a paragraph does not bleed to adjacent text', () => {
+    const md = 'normal **bold** normal';
+    const { text, requests } = markdownToDocsRequests(md);
+    expect(text).toBe('normal bold normal');
+
+    const boldStyle = requests.find(
+      (r) => r.updateTextStyle?.textStyle?.bold === true,
+    );
+    expect(boldStyle).toBeDefined();
+
+    // Bold should only cover "bold" (indices 7-11 at insertion offset 1)
+    const start = boldStyle!.updateTextStyle!.range!.startIndex!;
+    const end = boldStyle!.updateTextStyle!.range!.endIndex!;
+    expect(end - start).toBe(4); // "bold" is 4 chars
+  });
+
+  it('insertion at non-default offset applies correct ranges', () => {
+    const md = '# Title\n\nBody.';
+    const { requests } = markdownToDocsRequests(md, 100);
+
+    const insert = requests.find((r) => r.insertText);
+    expect(insert!.insertText!.location!.index).toBe(100);
+
+    // All paragraph style ranges should be offset by 100
+    const paraStyles = requests.filter((r) => r.updateParagraphStyle);
+    for (const ps of paraStyles) {
+      expect(ps.updateParagraphStyle!.range!.startIndex!).toBeGreaterThanOrEqual(100);
+    }
+  });
+
   it('converts text before and after a table', () => {
     const md = 'Before\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nAfter';
     const { text, requests } = markdownToDocsRequests(md);

@@ -4,13 +4,20 @@
  * Implement this to integrate different coding agents (Claude, Cursor, etc.).
  */
 
+export type PermissionMode =
+  | { type: 'auto'; allowedTools?: string[] }
+  | { type: 'bypass' }
+  | { type: 'allowedTools'; tools: string[]; disallowedTools?: string[] };
+
 export interface AgentRunOptions {
   /** Working directory for the agent process. */
   workingDirectory?: string;
-  /** Timeout in ms. Defaults to 300_000 (5 min). */
+  /** Timeout in ms. Defaults to 3_600_000 (1 hour). */
   timeout?: number;
   /** Agent name (used for tracking active processes). */
   agentName?: string;
+  /** How tool permissions are handled for the agent process. */
+  permissionMode?: PermissionMode;
 }
 
 export interface AgentRunResult {

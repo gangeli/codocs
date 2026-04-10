@@ -6,7 +6,7 @@
  * from "theirs" to preserve attribution and formatting.
  */
 
-import { merge as diff3Merge } from 'node-diff3';
+import { merge as diff3Merge, diffPatch } from 'node-diff3';
 import type { docs_v1 } from 'googleapis';
 import type { IndexMapEntry } from '../converter/element-parser.js';
 import { markdownToDocsRequests } from '../converter/md-to-docs.js';
@@ -355,38 +355,114 @@ export async function computeDocDiff(
   changedSections.sort((a, b) => b.docStartIndex - a.docStartIndex);
 
   for (const change of changedSections) {
-    if (change.theirsSection && change.docStartIndex > 0) {
-      // Delete the existing content
-      requests.push({
-        deleteContentRange: {
-          range: {
-            startIndex: change.docStartIndex,
-            endIndex: change.docEndIndex,
-          },
-        },
-      });
+    if (!change.theirsSection) {
+      // New section — just insert at end
+      if (change.mergedSection) {
+        const insertAt = bodyEndIndex - 1;
+        const { text, requests: insertRequests } = markdownToDocsRequests(
+          change.mergedSection.content,
+          insertAt,
+          false,
+          bodyEndIndex,
+        );
+        requests.push(...insertRequests);
+        if (text.length > 0) {
+          requests.push(...createAttributionRequests(agentName, insertAt, insertAt + text.length));
+        }
+      }
+      continue;
     }
 
-    if (change.mergedSection) {
-      // Insert the new content
-      const insertAt = change.theirsSection ? change.docStartIndex : bodyEndIndex - 1;
-      const { text, requests: insertRequests } = markdownToDocsRequests(
-        change.mergedSection.content,
-        insertAt,
-        false,
-        bodyEndIndex,
-      );
+    if (!change.mergedSection) {
+      // Deleted section — delete the whole range
+      const endIndex = change.docEndIndex >= bodyEndIndex ? bodyEndIndex - 1 : change.docEndIndex;
+      if (endIndex > change.docStartIndex) {
+        requests.push({
+          deleteContentRange: {
+            range: { startIndex: change.docStartIndex, endIndex },
+          },
+        });
+      }
+      continue;
+    }
 
-      requests.push(...insertRequests);
+    // Both exist — use line-level diff to produce minimal operations.
+    // This preserves unchanged lines (and any comments anchored to them).
+    const oldLines = change.theirsSection.content.split('\n');
+    const newLines = change.mergedSection.content.split('\n');
+    const hunks = diffPatch(oldLines, newLines);
 
-      // Add attribution for the agent
-      if (text.length > 0) {
-        const attrRequests = createAttributionRequests(
-          agentName,
-          insertAt,
-          insertAt + text.length,
+    if (hunks.length === 0) continue; // no actual line changes
+
+    // Build a line-to-doc-index map for the old section.
+    // Each line in the section maps to a doc index via the indexMap.
+    const sectionMdStart = computeMdOffset(change.theirsSection, theirsSections);
+    const lineDocIndices = buildLineDocIndices(
+      oldLines,
+      sectionMdStart,
+      indexMap,
+      change.docEndIndex,
+    );
+
+    // Process hunks in reverse order to preserve indices
+    for (let h = hunks.length - 1; h >= 0; h--) {
+      const hunk = hunks[h];
+      const oldOffset = hunk.buffer1.offset;
+      const oldLength = hunk.buffer1.length;
+      const newContent = hunk.buffer2.chunk.join('\n');
+
+      // Find the doc index range for the lines being replaced.
+      // If the offset is past the end of the old content (pure append),
+      // use the section end index so the insert goes after existing content.
+      const deleteStartIdx = oldOffset < lineDocIndices.length
+        ? lineDocIndices[oldOffset]
+        : change.docEndIndex;
+      const deleteEndLine = oldOffset + oldLength;
+      const deleteEndIdx = deleteEndLine < lineDocIndices.length
+        ? lineDocIndices[deleteEndLine]
+        : change.docEndIndex;
+
+      // Clamp to body end
+      const clampedEnd = deleteEndIdx >= bodyEndIndex ? bodyEndIndex - 1 : deleteEndIdx;
+
+      // Delete the old lines
+      if (oldLength > 0 && clampedEnd > deleteStartIdx) {
+        requests.push({
+          deleteContentRange: {
+            range: { startIndex: deleteStartIdx, endIndex: clampedEnd },
+          },
+        });
+      }
+
+      // Insert the new lines
+      if (newContent.length > 0) {
+        // Clamp insert position to before the body's trailing newline
+        const insertAt = Math.min(deleteStartIdx, bodyEndIndex - 1);
+
+        // When inserting without deleting (pure append), we need a \n
+        // before the new content to start a new paragraph. Without it,
+        // the text merges into the previous paragraph (e.g., heading).
+        // Insert the \n as a raw request since the markdown parser strips
+        // leading whitespace.
+        if (oldLength === 0 && insertAt > 1) {
+          requests.push({
+            insertText: {
+              location: { index: insertAt },
+              text: '\n',
+            },
+          });
+        }
+
+        const { text, requests: insertRequests } = markdownToDocsRequests(
+          newContent,
+          oldLength === 0 && insertAt > 1 ? insertAt + 1 : insertAt,
+          false,
+          bodyEndIndex,
         );
-        requests.push(...attrRequests);
+        requests.push(...insertRequests);
+        if (text.length > 0) {
+          requests.push(...createAttributionRequests(agentName, insertAt, insertAt + text.length));
+        }
       }
     }
   }
@@ -451,6 +527,47 @@ function computeMdOffset(section: MdSection, allSections: MdSection[]): number {
     offset += s.content.length + 2; // +2 for "\n\n" separator
   }
   return offset;
+}
+
+/**
+ * Build an array mapping each line index in a section to its approximate
+ * Google Doc index, using the indexMap entries.
+ *
+ * Each entry lineDocIndices[i] is the doc index where line i starts.
+ * We interpolate between known indexMap entries based on character offsets.
+ */
+function buildLineDocIndices(
+  lines: string[],
+  sectionMdStart: number,
+  indexMap: IndexMapEntry[],
+  sectionDocEnd: number,
+): number[] {
+  const result: number[] = [];
+  let mdOffset = sectionMdStart;
+
+  for (let i = 0; i < lines.length; i++) {
+    // Find the best matching indexMap entry for this md offset
+    let docIndex = sectionDocEnd; // fallback
+    let bestEntry: IndexMapEntry | null = null;
+
+    for (const entry of indexMap) {
+      if (entry.mdOffset <= mdOffset) {
+        bestEntry = entry;
+      } else {
+        break;
+      }
+    }
+
+    if (bestEntry) {
+      // Interpolate: doc index = entry's doc index + (md offset - entry's md offset)
+      docIndex = bestEntry.docIndex + (mdOffset - bestEntry.mdOffset);
+    }
+
+    result.push(docIndex);
+    mdOffset += lines[i].length + 1; // +1 for '\n'
+  }
+
+  return result;
 }
 
 function getBodyEndIndex(document: docs_v1.Schema$Document): number {

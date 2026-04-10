@@ -16,14 +16,31 @@ import {
   type CommentEvent,
   type CommentListenerHandle,
   type SubscriptionInfo,
+  type PermissionMode,
 } from '@codocs/core';
-import { openDatabase, SessionStore, AgentNameStore } from '@codocs/db';
+import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore } from '@codocs/db';
 import { readConfig, readTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+
+/**
+ * Check if Claude Code's auto permission mode is available.
+ * Auto mode requires a paid plan. We detect this by checking
+ * the cached account info in ~/.claude.json.
+ */
+function isAutoModeAvailable(): boolean {
+  try {
+    const raw = readFileSync(join(homedir(), '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+    const billing = config?.oauthAccount?.billingType;
+    return typeof billing === 'string' && billing.includes('subscription');
+  } catch {
+    return false;
+  }
+}
 import { App, Welcome, Generating, createInitialState, type TuiStateRef, type ActivityEvent, type WelcomeChoice } from '../tui/index.js';
 
 /** Registry of available agent runners. */
@@ -220,6 +237,43 @@ async function resolveWelcomeChoice(
         return {};
       }
     }
+
+    case 'from-prompt': {
+      const runnerFactory = AGENT_RUNNERS[agentType];
+      if (!runnerFactory) {
+        console.error(`Unknown agent type "${agentType}".`);
+        process.exit(1);
+      }
+      const runner = runnerFactory();
+
+      const { unmount } = render(
+        React.createElement(Generating, { message: 'Generating document from prompt...' }),
+      );
+
+      try {
+        const result = await runner.run(
+          `Write a document in markdown based on the following description. ` +
+          `Be concise but thorough. Output ONLY the markdown, no preamble.\n\n${choice.prompt}`,
+          null,
+          { timeout: 1_200_000 },
+        );
+        unmount();
+        if (result.exitCode !== 0) {
+          console.error(`Agent exited with code ${result.exitCode}.`);
+          if (result.stderr) console.error(result.stderr.slice(0, 500));
+          process.exit(1);
+        }
+        if (!result.stdout.trim()) {
+          console.error('Agent produced no output.');
+          process.exit(1);
+        }
+        return { content: result.stdout.trim() };
+      } catch (err: any) {
+        unmount();
+        console.error(`Agent failed: ${err.message}`);
+        process.exit(1);
+      }
+    }
   }
 }
 
@@ -315,12 +369,16 @@ export function registerServeCommand(program: Command) {
         const normalizedDocIds = docIds.map(extractDocId);
         const primaryDocId = normalizedDocIds[0];
 
+        // ── Database ──────────────────────────────────────────────
+        const db = await openDatabase(opts.dbPath);
+        const settingsStore = new SettingsStore(db);
+        const cwd = process.cwd();
+
         // ── TUI or plain mode ─────────────────────────────────────
         // Use a mutable container so callbacks can access the ref
         const tui: { ref: TuiStateRef | null } = { ref: null };
         let listener: CommentListenerHandle | null = null;
         let renewalTimer: ReturnType<typeof setInterval> | null = null;
-        let db: Awaited<ReturnType<typeof openDatabase>> | null = null;
         let orchestrator: AgentOrchestrator | null = null;
 
         const shutdown = async () => {
@@ -343,19 +401,28 @@ export function registerServeCommand(program: Command) {
           }
           if (renewalTimer) clearInterval(renewalTimer);
           if (listener) await listener.close();
-          if (db) db.close();
+          db.close();
           process.exit(0);
         };
 
         if (useTui) {
-          const initialState = createInitialState(primaryDocId);
+          const agentType = opts.agentType ?? 'claude';
+          const autoModeAvailable = agentType === 'claude' && isAutoModeAvailable();
+          const initialState = createInitialState(primaryDocId, { agentType, autoModeAvailable });
           if (debugMode) initialState.settings.debugMode = true;
+
+          // Restore persisted settings (merge with defaults)
+          initialState.settings = settingsStore.loadAll(cwd, initialState.settings);
 
           render(React.createElement(App, {
             initialState,
             onShutdown: shutdown,
             getActiveAgents: () => orchestrator?.getActiveAgents() ?? [],
             onStateRef: (ref: TuiStateRef) => { tui.ref = ref; },
+            onSettingsChange: (settings) => {
+              settingsStore.saveAll(cwd, settings);
+              saveDatabase(db);
+            },
           }), { exitOnCtrlC: false });
 
           // Wait for ref to be set
@@ -434,8 +501,8 @@ export function registerServeCommand(program: Command) {
         const agentRunner = runnerFactory();
         debug(`Agent runner: ${agentRunner.name}`);
 
-        db = await openDatabase(opts.dbPath);
         const sessionStore = new SessionStore(db);
+        const queueStore = new QueueStore(db);
         const agentNameStore = new AgentNameStore(db);
 
         // Resolve fallback agent name: use explicit flag, or generate a
@@ -460,19 +527,20 @@ export function registerServeCommand(program: Command) {
         // Key provisioned by `make infra` (Terraform) at ~/.local/share/codocs/service-account.json
         // Disable with --no-bot-replies to reply as yourself.
         let replyClient: CodocsClient | undefined;
+        let botEmail: string | null = null;
         if (opts.botReplies !== false) {
           const { loadServiceAccountKey, getBotEmail } = await import('../auth/service-account.js');
           const saKey = loadServiceAccountKey();
           if (saKey) {
-            const botEmail = getBotEmail()!;
-            debug(`Using Codocs bot for replies (${botEmail})`);
+            botEmail = getBotEmail();
+            debug(`Using Codocs bot for replies (${botEmail!})`);
             replyClient = new CodocsClient({ serviceAccountKey: saKey });
 
             // Auto-share each doc with the bot so it has commenter access.
             // Uses the user's OAuth2 client (which owns/has access to the doc).
             for (const docId of normalizedDocIds) {
               try {
-                await client.ensureShared(docId, botEmail, 'commenter');
+                await client.ensureShared(docId, botEmail!, 'commenter');
                 debug(`Shared ${docId} with ${botEmail}`);
               } catch (err: any) {
                 debug(`Failed to share ${docId} with bot: ${err.message}`);
@@ -488,8 +556,15 @@ export function registerServeCommand(program: Command) {
           client,
           replyClient,
           sessionStore,
+          queueStore,
           agentRunner,
           fallbackAgent,
+          permissionMode: () => {
+            if (tui.ref) {
+              return tui.ref.getSettings().permissionMode;
+            }
+            return { type: 'auto' };
+          },
           onAgentAssigned: (agentName, task) => {
             if (tui.ref) {
               tui.ref.updateAgent(agentName, {
@@ -499,8 +574,33 @@ export function registerServeCommand(program: Command) {
               });
             }
           },
+          onCommentProcessed: (result) => {
+            if (tui.ref) {
+              tui.ref.updateAgent(result.agentName, { status: 'idle', task: undefined });
+            }
+            const preview = result.replyPreview.length > 60
+              ? result.replyPreview.slice(0, 60) + '...'
+              : result.replyPreview;
+            emit({
+              time: new Date(),
+              type: 'agent-reply',
+              content: preview || 'Done',
+              agent: result.agentName,
+              editSummary: result.editSummary,
+              replyPreview: result.replyPreview,
+            });
+          },
+          onCommentFailed: (agentName, error) => {
+            if (tui.ref) {
+              tui.ref.updateAgent(agentName, { status: 'error', task: error.slice(0, 40) });
+            }
+            emit({ time: new Date(), type: 'error', content: `Agent error: ${error}` });
+          },
           debug,
         });
+
+        // ── Recover any queued items from a previous crash ──────
+        await orchestrator.recoverQueue();
 
         // ── Pub/Sub listener ──────────────────────────────────────
         if (tui.ref) tui.ref.setConnected(true);
@@ -521,29 +621,14 @@ export function registerServeCommand(program: Command) {
               content: event.comment.content ?? '(no content)',
             });
 
-            orchestrator.handleComment(event).then((result) => {
-              if (tui.ref) {
-                tui.ref.updateAgent(result.agentName, { status: 'idle', task: undefined });
-              }
-              const preview = result.replyPreview.length > 60
-                ? result.replyPreview.slice(0, 60) + '...'
-                : result.replyPreview;
-              emit({
-                time: new Date(),
-                type: 'agent-reply',
-                content: preview || 'Done',
-                agent: result.agentName,
-                editSummary: result.editSummary,
-                replyPreview: result.replyPreview,
-              });
-            }).catch((err) => {
-              emit({ time: new Date(), type: 'error', content: `Agent error: ${err.message}` });
+            orchestrator.handleComment(event).catch((err) => {
+              emit({ time: new Date(), type: 'error', content: `Enqueue error: ${err.message}` });
             });
           },
           (error: Error) => {
             emit({ time: new Date(), type: 'error', content: `Pub/Sub error: ${error.message}` });
           },
-          { debug },
+          { debug, botEmails: botEmail ? [botEmail] : [] },
         );
 
         // ── Subscription renewal ──────────────────────────────────

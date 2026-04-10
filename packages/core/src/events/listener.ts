@@ -9,6 +9,7 @@
 import { PubSub, type Subscription, type Message } from '@google-cloud/pubsub';
 import { DriveApi } from '../client/drive-api.js';
 import { createAuth } from '../auth/index.js';
+import { classifyComment } from './classify.js';
 import type { CommentEvent } from '../types.js';
 
 /** Extract @mentions from comment content (patterns like +user@example.com or @user@example.com). */
@@ -85,6 +86,9 @@ export interface PubSubAuth {
 export interface ListenOptions {
   /** Log debug messages. Defaults to no-op. */
   debug?: (msg: string) => void;
+  /** Email addresses of known bot identities. Used to skip events
+   *  triggered by the bot's own replies (e.g., the 🤔 thinking emoji). */
+  botEmails?: string[];
 }
 
 /**
@@ -164,19 +168,51 @@ export function listenForComments(
         const comment = await driveApi.getComment(stub.documentId, stub.commentId);
         debug(`  → Got comment: author=${comment.author?.displayName} content="${comment.content?.slice(0, 100)}"`);
 
-        const content = comment.content ?? '';
+        // Build the thread history from the comment + its replies
+        const thread: CommentEvent['thread'] = [
+          {
+            author: comment.author?.displayName ?? comment.author?.emailAddress ?? undefined,
+            content: comment.content ?? undefined,
+            createdTime: comment.createdTime ?? undefined,
+          },
+        ];
+        for (const reply of comment.replies ?? []) {
+          if (reply.action) continue; // skip resolve/reopen actions
+          thread.push({
+            author: reply.author?.displayName ?? reply.author?.emailAddress ?? undefined,
+            content: reply.content ?? undefined,
+            createdTime: reply.createdTime ?? undefined,
+          });
+        }
+
+        // The "active" message is the last one in the thread
+        const lastMessage = thread[thread.length - 1];
+        const content = lastMessage.content ?? '';
+
+        // Classify: only process events where the latest message is from a human
+        const botEmails = options?.botEmails ?? [];
+        if (botEmails.length > 0) {
+          const origin = classifyComment(comment, { botEmails });
+          if (origin.type === 'bot') {
+            debug(`  → Skipping: last message is from bot (${origin.author})`);
+            message.ack();
+            return;
+          }
+        }
+
         const event: CommentEvent = {
           eventType: stub.eventType,
           documentId: stub.documentId,
           comment: {
             id: stub.commentId,
             content,
-            author: comment.author?.displayName ?? comment.author?.emailAddress ?? undefined,
+            author: lastMessage.author,
             quotedText: comment.quotedFileContent?.value ?? undefined,
-            createdTime: comment.createdTime ?? undefined,
+            createdTime: lastMessage.createdTime,
             mentions: extractMentions(content),
           },
           eventTime: stub.eventTime,
+          thread: thread.length > 1 ? thread : undefined,
         };
 
         onComment(event);

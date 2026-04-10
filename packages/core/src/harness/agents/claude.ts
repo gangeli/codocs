@@ -9,7 +9,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent } from '../agent.js';
 
-const DEFAULT_TIMEOUT = 300_000; // 5 minutes
+const DEFAULT_TIMEOUT = 3_600_000; // 1 hour
 
 interface TrackedProcess {
   child: ChildProcess;
@@ -37,6 +37,28 @@ export class ClaudeRunner implements AgentRunner {
     const trackingId = randomUUID();
 
     const args = ['-p', prompt, '--session-id', effectiveSessionId];
+
+    const permMode = opts?.permissionMode ?? { type: 'auto' };
+    switch (permMode.type) {
+      case 'auto':
+        args.push('--permission-mode', 'auto');
+        // Also pass allowedTools as a fallback in case auto mode isn't
+        // available for this account — without it the agent can't edit files.
+        if (permMode.allowedTools?.length) {
+          args.push('--allowedTools', ...permMode.allowedTools);
+        }
+        break;
+      case 'bypass':
+        args.push('--dangerously-skip-permissions');
+        break;
+      case 'allowedTools':
+        args.push('--allowedTools', ...permMode.tools);
+        if (permMode.disallowedTools?.length) {
+          args.push('--disallowedTools', ...permMode.disallowedTools);
+        }
+        break;
+    }
+
     if (sessionId) {
       args.push('--resume');
     }

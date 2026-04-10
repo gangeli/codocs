@@ -1,5 +1,5 @@
-export type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent } from './agent.js';
-export type { SessionStore, SessionMapping } from './types.js';
+export type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent, PermissionMode } from './agent.js';
+export type { SessionStore, SessionMapping, QueueStore, QueueItem } from './types.js';
 export { ClaudeRunner } from './agents/claude.js';
 export { assignAgent, findQuotedTextIndices, buildFlatText } from './assign.js';
 export type { AssignmentConfig } from './assign.js';

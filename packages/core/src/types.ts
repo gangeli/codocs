@@ -105,6 +105,13 @@ export interface AgentTask {
   documentId: string;
 }
 
+/** A single message in a comment thread (either the root comment or a reply). */
+export interface ThreadMessage {
+  author?: string;
+  content?: string;
+  createdTime?: string;
+}
+
 /** A comment event received from the Workspace Events API */
 export interface CommentEvent {
   /** The event type (e.g., google.workspace.documents.comment.v1.created) */
@@ -123,4 +130,10 @@ export interface CommentEvent {
   };
   /** When the event occurred */
   eventTime: string;
+  /**
+   * Full thread history (root comment + all replies), ordered chronologically.
+   * Present when the listener fetches the full comment from Drive API.
+   * The last entry is the message that triggered this event.
+   */
+  thread?: ThreadMessage[];
 }
