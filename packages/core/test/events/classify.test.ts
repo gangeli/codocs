@@ -64,8 +64,14 @@ describe('classifyComment', () => {
     expect(result.type).toBe('bot');
   });
 
-  it('returns unknown when no email is available', () => {
+  it('returns human when email is missing but displayName is present', () => {
     const comment = makeComment({ author: { displayName: 'Anonymous' } });
+    const result = classifyComment(comment, { botEmails: BOT_EMAILS });
+    expect(result.type).toBe('human');
+  });
+
+  it('returns unknown when both email and displayName are missing', () => {
+    const comment = makeComment({ author: {} });
     const result = classifyComment(comment, { botEmails: BOT_EMAILS });
     expect(result.type).toBe('unknown');
   });
@@ -73,5 +79,28 @@ describe('classifyComment', () => {
   it('classifies as human when botEmails list is empty', () => {
     const result = classifyComment(makeComment(), { botEmails: [] });
     expect(result.type).toBe('human');
+  });
+
+  it('classifies as bot by display name when email is unavailable', () => {
+    // When fetching comments via a service account, other users' emailAddress
+    // may be undefined. The classifier should fall back to display name matching.
+    const comment = makeComment({
+      replies: [
+        // The bot's email shows as its displayName, but emailAddress is missing
+        { id: 'r1', content: '🤔', author: { displayName: BOT_EMAILS[0] } },
+      ],
+    });
+    const result = classifyComment(comment, { botEmails: BOT_EMAILS });
+    expect(result.type).toBe('bot');
+  });
+
+  it('classifies as bot by short name when only local part matches', () => {
+    const comment = makeComment({
+      replies: [
+        { id: 'r1', content: 'Done', author: { displayName: 'codocs-bot' } },
+      ],
+    });
+    const result = classifyComment(comment, { botEmails: BOT_EMAILS });
+    expect(result.type).toBe('bot');
   });
 });

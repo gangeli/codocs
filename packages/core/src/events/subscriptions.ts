@@ -8,6 +8,7 @@ import { google, type workspaceevents_v1 } from 'googleapis';
 
 const COMMENT_EVENT_TYPES = [
   'google.workspace.drive.comment.v3.created',
+  'google.workspace.drive.reply.v3.created',
 ];
 
 export interface SubscriptionInfo {
@@ -182,8 +183,10 @@ export async function listSubscriptions(
 
   const targetResource = `//drive.googleapis.com/files/${docId}`;
 
+  // Search broadly by target resource — don't filter by event type so we
+  // find subscriptions even if they have an older set of event types.
   const res = await client.subscriptions.list({
-    filter: `event_types:"google.workspace.drive.comment.v3.created" AND target_resource="${targetResource}"`,
+    filter: `target_resource="${targetResource}"`,
   });
 
   return (res.data.subscriptions ?? []).map((sub) => ({
@@ -192,4 +195,46 @@ export async function listSubscriptions(
     eventTypes: (sub.eventTypes ?? []) as string[],
     expireTime: sub.expireTime ?? '',
   }));
+}
+
+/**
+ * Ensure a subscription for a document has all required event types.
+ * If an existing subscription is missing event types (e.g., after an upgrade
+ * that added reply support), it is deleted and recreated.
+ *
+ * Returns the active subscription.
+ */
+export async function ensureSubscription(
+  auth: unknown,
+  docId: string,
+  pubsubTopic: string,
+  debug?: (msg: string) => void,
+): Promise<SubscriptionInfo> {
+  const log = debug ?? (() => {});
+
+  const existing = await listSubscriptions(auth, docId);
+
+  for (const sub of existing) {
+    // Check if expired
+    const expiry = sub.expireTime ? new Date(sub.expireTime) : null;
+    if (expiry && expiry < new Date()) {
+      log(`Subscription ${sub.name} expired, deleting`);
+      await deleteSubscription(auth, sub.name);
+      continue;
+    }
+
+    // Check if it has all required event types
+    const missing = COMMENT_EVENT_TYPES.filter((t) => !sub.eventTypes.includes(t));
+    if (missing.length === 0) {
+      log(`Reusing subscription (has all ${COMMENT_EVENT_TYPES.length} event types)`);
+      return sub;
+    }
+
+    // Missing event types — delete and recreate
+    log(`Subscription missing event types: ${missing.join(', ')}. Recreating.`);
+    await deleteSubscription(auth, sub.name);
+  }
+
+  // No valid subscription — create one
+  return createCommentSubscription(auth, docId, pubsubTopic, debug);
 }

@@ -5,8 +5,7 @@ import { render } from 'ink';
 import {
   CodocsClient,
   createAuth,
-  createCommentSubscription,
-  listSubscriptions,
+  ensureSubscription,
   renewSubscription,
   listenForComments,
   AgentOrchestrator,
@@ -459,35 +458,17 @@ export function registerServeCommand(program: Command) {
         const subscriptions: SubscriptionInfo[] = [];
 
         for (const docId of normalizedDocIds) {
-          setStatus(`Checking subscriptions for ${docId.slice(0, 12)}...`);
+          setStatus(`Setting up subscription for ${docId.slice(0, 12)}...`);
           try {
-            const existing = await listSubscriptions(auth, docId);
-            if (existing.length > 0) {
-              for (const sub of existing) {
-                const expiry = sub.expireTime ? new Date(sub.expireTime) : null;
-                if (expiry && expiry < new Date()) continue;
-                subscriptions.push(sub);
-              }
-              if (subscriptions.some((s) => existing.includes(s))) {
-                setStatus(`Reusing subscription for ${docId.slice(0, 12)}...`);
-                continue;
-              }
-            }
-          } catch { /* fall through */ }
-
-          try {
-            setStatus(`Creating subscription for ${docId.slice(0, 12)}...`);
-            const sub = await createCommentSubscription(auth, docId, fullTopic, debug);
+            // ensureSubscription checks for existing subscriptions, upgrades
+            // them if they're missing event types (e.g., reply support), and
+            // creates new ones if needed.
+            const sub = await ensureSubscription(auth, docId, fullTopic, debug);
             subscriptions.push(sub);
-            setStatus('Subscription created');
+            setStatus('Subscription ready');
           } catch (err: any) {
-            if (err.message?.includes('ALREADY_EXISTS')) {
-              try { subscriptions.push(...(await listSubscriptions(auth, docId))); } catch { /* ignore */ }
-              setStatus('Reusing existing subscription');
-            } else {
-              emit({ time: new Date(), type: 'error', content: `Subscription failed: ${err.message}` });
-              process.exit(1);
-            }
+            emit({ time: new Date(), type: 'error', content: `Subscription failed: ${err.message}` });
+            process.exit(1);
           }
         }
 

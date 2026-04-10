@@ -1,5 +1,6 @@
 export {
   createCommentSubscription,
+  ensureSubscription,
   renewSubscription,
   deleteSubscription,
   listSubscriptions,

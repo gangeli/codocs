@@ -50,7 +50,7 @@ function parseEventStub(message: Message): {
   const eventType = message.attributes?.['ce-type'] ?? message.attributes?.['event_type'] ?? '';
   const eventTime = message.attributes?.['ce-time'] ?? message.attributes?.['event_time'] ?? '';
 
-  if (!eventType.includes('comment')) {
+  if (!eventType.includes('comment') && !eventType.includes('reply')) {
     return null;
   }
 
@@ -63,7 +63,10 @@ function parseEventStub(message: Message): {
   }
 
   const documentId = extractDocumentId(message, payload);
-  const commentId = payload?.comment?.id ?? '';
+  // For comment events: payload.comment.id
+  // For reply events: the parent comment ID may be in payload.comment.id
+  // or payload.reply.commentId
+  const commentId = payload?.comment?.id ?? payload?.reply?.commentId ?? '';
 
   if (!documentId) {
     return null;

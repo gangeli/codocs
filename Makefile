@@ -1,11 +1,14 @@
-.PHONY: all build build-core build-cli dist clean test typecheck check infra gcloud-auth
+.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth
 
 all: codocs
 
 build-core:
 	npm run build -w @codocs/core
 
-build-cli: build-core
+build-db: build-core
+	npm run build -w @codocs/db
+
+build-cli: build-db
 	npm run build -w @codocs/cli
 
 build: build-cli
@@ -24,10 +27,12 @@ dist:
 
 test:
 	npm run test -w @codocs/core
+	npm run test -w @codocs/db
 	npm run test -w @codocs/cli
 
 typecheck:
 	npm run typecheck -w @codocs/core
+	npm run typecheck -w @codocs/db
 	npm run typecheck -w @codocs/cli
 
 check: test typecheck
@@ -42,4 +47,4 @@ infra: gcloud-auth
 	cd terraform && terraform init -upgrade && terraform apply
 
 clean:
-	rm -rf packages/core/dist packages/cli/dist dist codocs
+	rm -rf packages/core/dist packages/db/dist packages/cli/dist dist codocs
