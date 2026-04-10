@@ -100,6 +100,16 @@
   color: #333;
 }
 
+/* ── Comment Anchors (highlighted text in doc) ── */
+
+.gdoc-anchor--active {
+  background: #fef0b5;
+}
+
+.gdoc-anchor--resolved {
+  background: #e8f0e8;
+}
+
 /* ── Comment Sidebar ── */
 
 .gdoc-sidebar {

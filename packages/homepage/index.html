@@ -31,7 +31,7 @@
       </div>
       <div class="hero-install"><code><span class="install-prompt">$</span> <span class="install-cmd">npm install -g codocs</span></code></div>
       <div class="hero-ctas">
-        <a href="https://github.com/gangeli/codocs" class="btn btn-primary">View on GitHub</a>
+        <a href="https://github.com/codocs-dev/codocs" class="btn btn-primary">View on GitHub</a>
         <a href="#quickstart" class="btn btn-secondary">Get Started &darr;</a>
       </div>
     </div>
@@ -192,11 +192,11 @@
             <div class="gdoc-page">
               <h1 class="gdoc-heading">Authentication</h1>
 
-              <p class="gdoc-text">Authentication uses OAuth 2.0 with PKCE and refresh token rotation. Tokens are stored locally and auto-refreshed on expiry. The login flow opens a browser for consent, then captures the callback on localhost.</p>
+              <p class="gdoc-text"><span class="gdoc-anchor gdoc-anchor--resolved">Authentication uses OAuth 2.0 with PKCE and refresh token rotation.</span> Tokens are stored locally and auto-refreshed on expiry. The login flow opens a browser for consent, then captures the callback on localhost.</p>
 
               <h2 class="gdoc-heading-2">Token Expiry</h2>
 
-              <p class="gdoc-text">When a refresh token is revoked or expired, the system clears the local session and re-prompts the user. This handles the edge case where tokens are invalidated server-side between sessions.</p>
+              <p class="gdoc-text">When a refresh token is <span class="gdoc-anchor gdoc-anchor--active">revoked or expired, the system clears the local session and re-prompts the user.</span> This handles the edge case where tokens are invalidated server-side between sessions.</p>
 
               <h2 class="gdoc-heading-2">Rate Limiting</h2>
 
@@ -221,7 +221,7 @@
                       <div class="gdoc-comment-time">Mon 2:18 PM</div>
                     </div>
                   </div>
-                  <div class="gdoc-comment-text">Done &mdash; PKCE flow, token storage, auto-refresh. github.com/gangeli/codocs/pull/31</div>
+                  <div class="gdoc-comment-text">Done &mdash; PKCE flow, token storage, auto-refresh. github.com/acme/backend/pull/31</div>
                 </div>
               </div>
 
@@ -242,7 +242,7 @@
                       <div class="gdoc-comment-time">Wed 10:33 AM</div>
                     </div>
                   </div>
-                  <div class="gdoc-comment-text"><span class="gdoc-highlight">The refresh logic I wrote on Monday</span> didn't cover revoked tokens. Added a fallback that clears the session and re-prompts. github.com/gangeli/codocs/pull/38</div>
+                  <div class="gdoc-comment-text"><span class="gdoc-highlight">The refresh logic I wrote on Monday</span> didn't cover revoked tokens. Added a fallback that clears the session and re-prompts. github.com/acme/backend/pull/38</div>
                 </div>
               </div>
             </div>
@@ -401,8 +401,8 @@
   <!-- ════════════════════ FOOTER ════════════════════ -->
   <footer id="footer">
     <div class="container footer-container">
-      <p class="footer-tagline">Built for agents that read, think, and write.</p>
-      <a href="https://github.com/gangeli/codocs" class="footer-link">
+      <p class="footer-tagline">codocs is open source.</p>
+      <a href="https://github.com/codocs-dev/codocs" class="footer-link">
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
         GitHub
       </a>
