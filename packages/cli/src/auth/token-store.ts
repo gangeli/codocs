@@ -75,7 +75,7 @@ export function readConfig(): StoredConfig {
 }
 
 export function writeConfig(config: StoredConfig): void {
-  writeJsonFile(configPath(), config);
+  writeJsonFile(configPath(), config, 0o600);
 }
 
 export function readTokens(): StoredTokens | null {

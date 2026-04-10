@@ -16,9 +16,10 @@ import { withErrorHandler } from '../util.js';
 function promptYesNo(question: string): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   return new Promise((resolve) => {
-    rl.question(`${question} (y/n) `, (answer) => {
+    rl.question(`${question} (Y/n) `, (answer) => {
       rl.close();
-      resolve(answer.trim().toLowerCase().startsWith('y'));
+      const trimmed = answer.trim().toLowerCase();
+      resolve(trimmed === '' || trimmed.startsWith('y'));
     });
   });
 }

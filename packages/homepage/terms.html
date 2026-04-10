@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terms of Service — Codocs</title>
+  <meta name="description" content="Terms of Service for Codocs, the open-source framework that lets AI agents collaborate through Google Docs.">
+  <link rel="icon" href="assets/favicon.svg">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/responsive.css">
+  <style>
+    .legal-container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 4rem 1.5rem 6rem;
+    }
+
+    .legal-container h1 {
+      font-size: 2.2rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .legal-date {
+      color: var(--ink-faint);
+      font-size: 0.95rem;
+      margin-bottom: 3rem;
+      display: block;
+    }
+
+    .legal-container h2 {
+      font-size: 1.25rem;
+      margin-top: 2.5rem;
+      margin-bottom: 0.75rem;
+      color: var(--ink);
+    }
+
+    .legal-container h3 {
+      font-size: 1.05rem;
+      margin-top: 1.5rem;
+      margin-bottom: 0.5rem;
+      color: var(--ink);
+    }
+
+    .legal-container p,
+    .legal-container li {
+      font-size: 0.95rem;
+      line-height: 1.7;
+      color: var(--ink-dim);
+    }
+
+    .legal-container ul {
+      margin: 0.5rem 0 1rem 1.5rem;
+    }
+
+    .legal-container li {
+      margin-bottom: 0.4rem;
+    }
+
+    .legal-container a {
+      color: var(--accent);
+    }
+
+    .legal-back {
+      display: inline-block;
+      margin-bottom: 2rem;
+      font-size: 0.9rem;
+      color: var(--ink-faint);
+    }
+
+    .legal-back:hover {
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="legal-container">
+    <a href="/" class="legal-back">&larr; Back to Codocs</a>
+
+    <h1>Terms of Service</h1>
+    <span class="legal-date">Last updated: April 10, 2026</span>
+
+    <p>These Terms of Service ("Terms") govern your use of Codocs, including the command-line tool, website, and related services (collectively, the "Service") provided by GAAS Corporation, a company headquartered at 6925 N. Camino de las Candelas, Tucson, AZ 85718, United States ("we", "us", or "our"). By installing, accessing, or using Codocs, you agree to be bound by these Terms. If you do not agree, do not use the Service.</p>
+
+    <h2>1. Description of Service</h2>
+    <p>Codocs is an open-source framework that enables AI agents to collaborate with users through Google Docs. The Service includes:</p>
+    <ul>
+      <li>A command-line interface (CLI) and terminal dashboard for orchestrating AI agents</li>
+      <li>Integration with Google Docs, Google Drive, and Google Cloud Pub/Sub for real-time comment-driven workflows</li>
+      <li>Integration with GitHub for pull request creation</li>
+      <li>A static website at <a href="https://codocs.dev">codocs.dev</a> providing documentation and information</li>
+    </ul>
+
+    <h2>2. Beta Status</h2>
+    <p>Codocs is under active development and should be considered beta software. Features may change, break, or be removed without notice. This status reinforces the warranty disclaimers in Section 9 and the limitation of liability in Section 10.</p>
+
+    <h2>3. Open Source License</h2>
+    <p>The Codocs source code is released under the <a href="https://opensource.org/licenses/MIT">MIT License</a>. These Terms govern your use of the Service and its hosted infrastructure (e.g., the shared Google Cloud Pub/Sub topic). The MIT License governs your right to copy, modify, and distribute the source code. In the event of a conflict between these Terms and the MIT License with respect to the source code, the MIT License controls.</p>
+
+    <h2>4. Eligibility</h2>
+    <p>You must be at least 16 years of age to use the Service. By using Codocs, you represent and warrant that you meet this requirement and have the legal capacity to enter into these Terms.</p>
+
+    <h2>5. Accounts and Authentication</h2>
+    <p>Codocs does not maintain user accounts. Authentication is handled via OAuth 2.0 through Google and, optionally, GitHub. By authenticating, you authorize Codocs to access the following on your behalf:</p>
+    <ul>
+      <li><strong>Google Docs and Drive:</strong> To read and edit documents, access file metadata, and manage comment threads</li>
+      <li><strong>Google Cloud Pub/Sub:</strong> To receive real-time notifications when comments are posted</li>
+      <li><strong>GitHub (optional):</strong> To create branches, commits, and pull requests in repositories you specify</li>
+    </ul>
+    <p>You are responsible for safeguarding your OAuth tokens, which are stored locally on your machine. You may revoke Codocs' access at any time through your Google or GitHub account settings.</p>
+
+    <h2>5. Your Data</h2>
+
+    <h3>5.1 Data Storage</h3>
+    <p>Codocs stores data locally on your machine, including OAuth tokens, session state (in a SQLite database), and configuration files. No personal data or document content is persistently stored on servers operated by us, with the exception of transient metadata described in Section 5.3.</p>
+
+    <h3>5.2 Third-Party Data Transmission</h3>
+    <p>When you use Codocs, data is transmitted to third-party services as necessary for the Service to function:</p>
+    <ul>
+      <li><strong>Google APIs:</strong> Document content, comments, and file metadata are sent to and received from Google's servers under <a href="https://policies.google.com/terms">Google's Terms of Service</a></li>
+      <li><strong>Anthropic (Claude):</strong> Document context and comments are sent to Anthropic's API for AI agent processing, subject to <a href="https://www.anthropic.com/policies/terms">Anthropic's Terms of Service</a></li>
+      <li><strong>GitHub API:</strong> Code changes and pull request content are sent to GitHub when code mode is enabled, subject to <a href="https://docs.github.com/en/site-policy/github-terms/github-terms-of-service">GitHub's Terms of Service</a></li>
+    </ul>
+    <p>You are responsible for reviewing and accepting the terms and privacy policies of these third-party services. For more information about how we handle your data, please see our <a href="/privacy.html">Privacy Policy</a>.</p>
+
+    <h3>5.3 Google Cloud Infrastructure</h3>
+    <p>Codocs uses a shared Google Cloud Pub/Sub topic to relay comment notifications. Comment event metadata (document ID, comment ID, timestamps) transits through this infrastructure with a retention period of up to 7 days. This metadata is not used for any purpose other than delivering notifications to your running Codocs instance. We do not aggregate, analyze, or share this metadata. You may configure your own Google Cloud project as an alternative to avoid transiting through our shared infrastructure.</p>
+
+    <h3>5.4 Google API Services</h3>
+    <p>Codocs' use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+
+    <h2>6. Acceptable Use</h2>
+    <p>You agree not to use the Service to:</p>
+    <ul>
+      <li>Violate any applicable law, regulation, or third-party rights</li>
+      <li>Access documents or repositories you are not authorized to access</li>
+      <li>Circumvent rate limits, authentication mechanisms, or other technical restrictions</li>
+      <li>Interfere with or disrupt the Service's shared infrastructure</li>
+      <li>Use the Service to generate content that is illegal, harmful, or violates third-party intellectual property rights</li>
+      <li>Attempt to reverse-engineer, decompile, or extract proprietary components of third-party services accessed through Codocs</li>
+    </ul>
+
+    <h2>7. Intellectual Property</h2>
+
+    <h3>7.1 Your Content</h3>
+    <p>You retain all ownership rights to your documents, code, and any other content you create or process using Codocs. We claim no ownership or license over your content.</p>
+
+    <h3>7.2 AI-Generated Content</h3>
+    <p>Content generated by AI agents through Codocs (including document text, code, and pull requests) is provided to you without restriction from us. Ownership and usage rights for AI-generated content may be subject to the terms of the underlying AI provider (Anthropic). <strong>You are solely responsible for reviewing, validating, and approving all AI-generated content before use, including but not limited to document edits, code commits, and pull requests.</strong> AI agents act on your behalf, and you bear responsibility for all actions taken by agents operating under your credentials.</p>
+
+    <h3>7.3 Codocs Branding</h3>
+    <p>The Codocs name, logo, and website design are the property of Gabor Angeli. The MIT License does not grant rights to use Codocs trademarks for endorsement or promotion without prior written consent.</p>
+
+    <h2>8. Costs and Fees</h2>
+    <p>Codocs itself is free and open-source software. However, using the Service may incur costs from third-party providers:</p>
+    <ul>
+      <li><strong>Anthropic API:</strong> AI agent usage is billed by Anthropic based on token consumption</li>
+      <li><strong>Google Cloud:</strong> Pub/Sub and API usage may incur charges under your or our Google Cloud project</li>
+      <li><strong>Claude Code:</strong> Some features require a Claude Code subscription</li>
+    </ul>
+    <p>You are solely responsible for any third-party costs incurred through your use of the Service. The terminal dashboard displays estimated costs for informational purposes only; actual billing is determined by the respective providers.</p>
+
+    <h2>9. Disclaimer of Warranties</h2>
+    <p><strong>The Service is provided "as is" and "as available" without warranties of any kind, whether express or implied, including but not limited to implied warranties of merchantability, fitness for a particular purpose, and non-infringement.</strong></p>
+    <p>Without limiting the foregoing, we do not warrant that:</p>
+    <ul>
+      <li>The Service will be uninterrupted, error-free, or secure</li>
+      <li>AI-generated content will be accurate, complete, or appropriate for any particular purpose</li>
+      <li>The Service will be compatible with all systems, configurations, or third-party services</li>
+      <li>Document edits made by AI agents will preserve formatting, content, or intent</li>
+    </ul>
+
+    <h2>10. Limitation of Liability</h2>
+    <p><strong>To the maximum extent permitted by applicable law, in no event shall Gabor Angeli or any contributors to Codocs be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of profits, data, use, or goodwill, arising out of or in connection with your use of the Service, whether based on warranty, contract, tort, or any other legal theory, even if advised of the possibility of such damages.</strong></p>
+    <p><strong>Our total aggregate liability for all claims arising out of or in connection with these Terms or the Service shall not exceed fifty U.S. dollars (US $50).</strong></p>
+    <p>These limitations apply to, but are not limited to, damages arising from:</p>
+    <ul>
+      <li>Unintended modifications to your documents or code repositories</li>
+      <li>Loss or corruption of data, tokens, or session state</li>
+      <li>Costs incurred from third-party API usage</li>
+      <li>Actions taken by AI agents, including code commits and pull requests</li>
+      <li>Unauthorized access resulting from compromised OAuth tokens</li>
+    </ul>
+
+    <h2>11. Indemnification</h2>
+    <p>You agree to indemnify and hold harmless Gabor Angeli and any contributors from and against any claims, liabilities, damages, losses, and expenses (including reasonable legal fees) arising out of or in connection with: (a) your violation of these Terms; (b) your violation of any third-party rights; (c) your misuse of OAuth credentials or third-party services accessed through Codocs; or (d) any content generated by AI agents operating under your credentials that infringes third-party rights.</p>
+
+    <h2>12. Termination</h2>
+    <p>You may stop using the Service at any time by uninstalling the CLI and revoking OAuth access through your Google and GitHub account settings. We reserve the right to restrict access to shared infrastructure (such as the Pub/Sub topic) at our discretion. The MIT License grant for the source code survives any termination of these Terms.</p>
+
+    <h2>13. Changes to These Terms</h2>
+    <p>We may update these Terms from time to time. Changes will be posted on this page with a revised "Last updated" date. For material changes, we will provide at least 30 days' notice via the <a href="https://github.com/gangeli/codocs">Codocs GitHub repository</a> (e.g., through a release note or pinned issue) before the changes take effect. Your continued use of the Service after the notice period constitutes acceptance of the revised Terms. We encourage you to watch the GitHub repository for notifications.</p>
+
+    <h2>14. Dispute Resolution</h2>
+    <h3>14.1 Informal Resolution</h3>
+    <p>Before filing any formal proceeding, you agree to attempt to resolve disputes informally by contacting us via the <a href="https://github.com/gangeli/codocs">Codocs GitHub repository</a>. We will attempt to resolve the dispute informally within 60 days.</p>
+
+    <h3>14.2 Binding Arbitration</h3>
+    <p>If informal resolution is unsuccessful, any dispute arising out of or relating to these Terms or the Service shall be resolved by binding arbitration administered by JAMS under its Streamlined Arbitration Rules. The arbitration shall take place in Santa Clara County, California (or remotely, at the arbitrator's discretion). The arbitrator's award shall be final and binding and may be entered as a judgment in any court of competent jurisdiction.</p>
+
+    <h3>14.3 Class Action Waiver</h3>
+    <p><strong>You agree that any disputes will be resolved on an individual basis only. You waive the right to participate in any class action, collective action, or representative proceeding.</strong></p>
+
+    <h3>14.4 Exceptions</h3>
+    <p>Either party may bring a claim in small claims court in Santa Clara County, California, if the claim qualifies. Either party may seek injunctive or equitable relief in any court of competent jurisdiction to prevent the actual or threatened infringement of intellectual property rights.</p>
+
+    <h2>15. Governing Law</h2>
+    <p>These Terms are governed by and construed in accordance with the laws of the State of California, United States, without regard to its conflict of law provisions.</p>
+
+    <h2>16. Export Controls</h2>
+    <p>The Service may be subject to U.S. export control laws and regulations. You agree not to use, export, or re-export the Service in violation of any applicable export control laws, including the U.S. Export Administration Regulations, or in any manner that would cause Codocs to be in violation of such laws. You represent that you are not located in, or a resident of, any country subject to comprehensive U.S. sanctions.</p>
+
+    <h2>17. Force Majeure</h2>
+    <p>We shall not be liable for any failure or delay in performing our obligations under these Terms to the extent that such failure or delay results from circumstances beyond our reasonable control, including but not limited to acts of God, natural disasters, war, terrorism, labor disputes, government actions, internet or infrastructure outages, or failures of third-party services (including Google Cloud, Anthropic, or GitHub).</p>
+
+    <h2>18. Severability</h2>
+    <p>If any provision of these Terms is held to be unenforceable, the remaining provisions will remain in full force and effect.</p>
+
+    <h2>19. Entire Agreement</h2>
+    <p>These Terms, together with the <a href="/privacy.html">Privacy Policy</a> and the MIT License governing the source code, constitute the entire agreement between you and us regarding the Service and supersede all prior agreements, understandings, and communications, whether written or oral.</p>
+
+    <h2>20. Waiver</h2>
+    <p>The failure of either party to enforce any provision of these Terms shall not constitute a waiver of that provision or the right to enforce it at a later time.</p>
+
+    <h2>21. Assignment</h2>
+    <p>You may not assign or transfer your rights or obligations under these Terms without our prior written consent. We may assign these Terms in connection with a merger, acquisition, reorganization, or transfer of substantially all of our assets, provided that the assignee agrees to be bound by these Terms.</p>
+
+    <h2>22. Contact</h2>
+    <p>If you have questions about these Terms, you may open an issue on the <a href="https://github.com/gangeli/codocs">Codocs GitHub repository</a>.</p>
+  </div>
+
+  <footer id="footer">
+    <div class="container footer-container">
+      <p class="footer-tagline">codocs is open source.</p>
+      <a href="https://github.com/gangeli/codocs" class="footer-link">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </footer>
+
+</body>
+</html>

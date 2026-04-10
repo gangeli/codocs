@@ -16,7 +16,7 @@ import type { GitHubTokens } from './token-store.js';
  * Codocs GitHub OAuth App client ID.
  * Device flow does not require a client secret.
  */
-const GITHUB_CLIENT_ID = 'Ov23liXXXXXXXXXXXXXX'; // TODO: Register a GitHub OAuth App and fill in the real client ID
+const GITHUB_CLIENT_ID = 'Iv23liAby5Rst8o0whIB';
 
 const SCOPES = 'repo';
 

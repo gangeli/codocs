@@ -246,11 +246,10 @@ function renderPage(title: string, message: string, isError: boolean): string {
       ${checkOrX}
       <h1>${title}</h1>
       <p>${message}</p>
-      <p class="auto-close">This tab will close automatically&hellip;</p>
+      <p class="auto-close">You may close this tab.</p>
       <span class="app-name">codocs</span>
     </div>
   </div>
-  <script>setTimeout(() => window.close(), 4000);</script>
 </body>
 </html>`;
 }
