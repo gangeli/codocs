@@ -92,7 +92,7 @@ jobs:
             dist/codocs-darwin-x64
             dist/codocs-linux-x64
             dist/codocs-linux-arm64
-            dist/codocs-windows-x64
+            dist/codocs-windows-x64.exe
 
       - run: npm publish --workspace packages/core --provenance
         if: steps.version.outputs.bumped == 'true'
