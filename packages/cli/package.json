@@ -1,8 +1,9 @@
 {
   "name": "@codocs/cli",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "CLI for interacting with Google Docs",
   "type": "module",
+  "files": ["dist"],
   "bin": {
     "codocs": "./dist/index.js"
   },
