@@ -63,13 +63,21 @@ export function markdownToDocsRequests(
     }
   }
 
-  // 3. Apply text styles (reverse order to preserve indexes)
-  const sortedStyles = [...allStyles].sort((a, b) => {
-    const aStart = getStartIndex(a);
-    const bStart = getStartIndex(b);
-    return bStart - aStart;
-  });
-  requests.push(...sortedStyles);
+  // 3. Apply styles in correct order:
+  //    a) Paragraph styles first (set namedStyleType base — this resets text formatting)
+  //    b) Text styles second (override the base with bold, italic, etc.)
+  //    c) Table styles (cell background, column widths, etc.)
+  //    Within each group, apply in reverse index order to preserve positions.
+  const paraStyles = allStyles.filter((r) => r.updateParagraphStyle);
+  const textStyles = allStyles.filter((r) => r.updateTextStyle);
+  const otherStyles = allStyles.filter((r) => !r.updateParagraphStyle && !r.updateTextStyle);
+
+  const byStartDesc = (a: typeof allStyles[0], b: typeof allStyles[0]) =>
+    getStartIndex(b) - getStartIndex(a);
+
+  requests.push(...paraStyles.sort(byStartDesc));
+  requests.push(...otherStyles.sort(byStartDesc));
+  requests.push(...textStyles.sort(byStartDesc));
 
   // 4. Apply bullet formatting
   requests.push(...allBullets);
