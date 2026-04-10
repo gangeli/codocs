@@ -166,6 +166,10 @@
   background: var(--agent-amber);
 }
 
+.gdoc-avatar--agent-green {
+  background: var(--agent-green);
+}
+
 .gdoc-comment-author {
   font-weight: 600;
   color: #1a1a1a;
@@ -174,6 +178,10 @@
 
 .gdoc-author--agent {
   color: var(--agent-amber);
+}
+
+.gdoc-author--green {
+  color: var(--agent-green);
 }
 
 .gdoc-comment-time {

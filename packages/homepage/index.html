@@ -54,7 +54,7 @@
             </svg>
           </div>
           <div class="flow-label">User comments</div>
-          <div class="flow-detail">"Draft an API spec for the payments service"</div>
+          <div class="flow-detail">"Add retry logic with exponential backoff"</div>
         </div>
 
         <div class="flow-connector"><div class="flow-pulse"></div></div>
@@ -85,7 +85,7 @@
             </svg>
           </div>
           <div class="flow-label">Doc edited</div>
-          <div class="flow-detail">Full spec written — endpoints, auth, schemas, error codes</div>
+          <div class="flow-detail">Retry wrapper added, tests updated, types exported</div>
         </div>
 
         <div class="flow-connector"><div class="flow-pulse"></div></div>
@@ -98,7 +98,58 @@
             </svg>
           </div>
           <div class="flow-label">Reply posted</div>
-          <div class="flow-detail">"Done — 4 endpoints, request/response schemas, rate limits"</div>
+          <div class="flow-detail">"Done — retries up to 3x with jitter, tests passing"</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════════ FEATURES ════════════════════ -->
+  <section id="features">
+    <div class="container">
+      <h2 class="section-title animate-on-scroll">Built for agent teams</h2>
+      <div class="features-grid">
+        <div class="feature-card animate-on-scroll">
+          <div class="feature-icon">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="16" cy="16" r="6"/>
+              <circle cx="32" cy="16" r="6"/>
+              <circle cx="24" cy="32" r="6"/>
+              <line x1="20" y1="20" x2="22" y2="28"/>
+              <line x1="28" y1="20" x2="26" y2="28"/>
+              <line x1="22" y1="14" x2="26" y2="14"/>
+            </svg>
+          </div>
+          <h3>Multi-Agent Collaboration</h3>
+          <p>Agents self-assign from comments based on who authored the quoted text. Each gets a unique name and color. Full attribution tracking via named ranges — you always know who wrote what.</p>
+        </div>
+
+        <div class="feature-card animate-on-scroll">
+          <div class="feature-icon">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="6" y="6" width="36" height="36" rx="3"/>
+              <line x1="12" y1="14" x2="26" y2="14"/>
+              <line x1="12" y1="20" x2="36" y2="20"/>
+              <line x1="12" y1="26" x2="36" y2="26"/>
+              <line x1="12" y1="32" x2="30" y2="32"/>
+              <rect x="30" y="12" width="6" height="4" rx="1"/>
+            </svg>
+          </div>
+          <h3>Rich Google Docs Formatting</h3>
+          <p>Bidirectional Markdown &harr; Google Docs conversion. Headings, lists, tables, code blocks, links — all preserved. Agents write Markdown; your doc gets real formatting.</p>
+        </div>
+
+        <div class="feature-card animate-on-scroll">
+          <div class="feature-icon">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 8h24c2.2 0 4 1.8 4 4v24c0 2.2-1.8 4-4 4H12c-2.2 0-4-1.8-4-4V12c0-2.2 1.8-4 4-4z"/>
+              <path d="M16 20l4 4-4 4"/>
+              <line x1="24" y1="28" x2="32" y2="28"/>
+              <path d="M40 16h-6c-1.1 0-2-.9-2-2v-6" stroke-dasharray="3 2"/>
+            </svg>
+          </div>
+          <h3>Session Persistence</h3>
+          <p>Agents resume where they left off. SQLite-backed sessions, per-agent comment queues, and automatic crash recovery. Long-running conversations that never lose context.</p>
         </div>
       </div>
     </div>
@@ -107,8 +158,8 @@
   <!-- ════════════════════ MOCK GOOGLE DOC ════════════════════ -->
   <section id="mock-doc">
     <div class="container">
-      <h2 class="section-title animate-on-scroll">Every agent leaves its mark</h2>
-      <p class="section-desc animate-on-scroll">Each agent gets a name, a color, and full attribution. You always know who wrote what.</p>
+      <h2 class="section-title animate-on-scroll">Comments find the right agent</h2>
+      <p class="section-desc animate-on-scroll">When you comment on a section, the agent that wrote it picks up your request — same context, no re-explaining.</p>
 
       <div class="gdoc-wrapper animate-on-scroll">
         <div class="gdoc-chrome">
@@ -157,16 +208,16 @@
                     <div class="gdoc-comment-time">2:14 PM</div>
                   </div>
                 </div>
-                <div class="gdoc-comment-text">Can you add rate limiting to the API?</div>
+                <div class="gdoc-comment-text">What about token expiry edge cases?</div>
                 <div class="gdoc-comment-reply">
                   <div class="gdoc-comment-header">
-                    <span class="gdoc-comment-avatar gdoc-avatar--agent">K</span>
+                    <span class="gdoc-comment-avatar gdoc-avatar--agent-green">G</span>
                     <div>
-                      <div class="gdoc-comment-author gdoc-author--agent">keen-hawk</div>
+                      <div class="gdoc-comment-author gdoc-author--green">gentle-otter</div>
                       <div class="gdoc-comment-time">2:16 PM</div>
                     </div>
                   </div>
-                  <div class="gdoc-comment-text">Done! Added token bucket rate limiter with configurable burst allowance. See the new "Rate Limiting" section.</div>
+                  <div class="gdoc-comment-text">Good catch — I wrote this section, so I still have the full auth context. Added handling for expired and revoked tokens.</div>
                 </div>
               </div>
             </div>
@@ -312,56 +363,6 @@
     </div>
   </section>
 
-  <!-- ════════════════════ FEATURES ════════════════════ -->
-  <section id="features">
-    <div class="container">
-      <h2 class="section-title animate-on-scroll">Built for agent teams</h2>
-      <div class="features-grid">
-        <div class="feature-card animate-on-scroll">
-          <div class="feature-icon">
-            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="16" cy="16" r="6"/>
-              <circle cx="32" cy="16" r="6"/>
-              <circle cx="24" cy="32" r="6"/>
-              <line x1="20" y1="20" x2="22" y2="28"/>
-              <line x1="28" y1="20" x2="26" y2="28"/>
-              <line x1="22" y1="14" x2="26" y2="14"/>
-            </svg>
-          </div>
-          <h3>Multi-Agent Collaboration</h3>
-          <p>Agents self-assign from comments based on who authored the quoted text. Each gets a unique name and color. Full attribution tracking via named ranges — you always know who wrote what.</p>
-        </div>
-
-        <div class="feature-card animate-on-scroll">
-          <div class="feature-icon">
-            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="6" y="6" width="36" height="36" rx="3"/>
-              <line x1="12" y1="14" x2="26" y2="14"/>
-              <line x1="12" y1="20" x2="36" y2="20"/>
-              <line x1="12" y1="26" x2="36" y2="26"/>
-              <line x1="12" y1="32" x2="30" y2="32"/>
-              <rect x="30" y="12" width="6" height="4" rx="1"/>
-            </svg>
-          </div>
-          <h3>Rich Google Docs Formatting</h3>
-          <p>Bidirectional Markdown &harr; Google Docs conversion. Headings, lists, tables, code blocks, links — all preserved. Agents write Markdown; your doc gets real formatting.</p>
-        </div>
-
-        <div class="feature-card animate-on-scroll">
-          <div class="feature-icon">
-            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 8h24c2.2 0 4 1.8 4 4v24c0 2.2-1.8 4-4 4H12c-2.2 0-4-1.8-4-4V12c0-2.2 1.8-4 4-4z"/>
-              <path d="M16 20l4 4-4 4"/>
-              <line x1="24" y1="28" x2="32" y2="28"/>
-              <path d="M40 16h-6c-1.1 0-2-.9-2-2v-6" stroke-dasharray="3 2"/>
-            </svg>
-          </div>
-          <h3>Session Persistence</h3>
-          <p>Agents resume where they left off. SQLite-backed sessions, per-agent comment queues, and automatic crash recovery. Long-running conversations that never lose context.</p>
-        </div>
-      </div>
-    </div>
-  </section>
 
   <!-- ════════════════════ QUICKSTART ════════════════════ -->
   <section id="quickstart">
