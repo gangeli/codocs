@@ -1,6 +1,6 @@
 {
   "name": "@codocs/core",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Core library for Google Docs interaction",
   "type": "module",
   "exports": {
@@ -11,6 +11,11 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gangeli/codocs.git",
+    "directory": "packages/core"
+  },
   "publishConfig": {
     "access": "public"
   },
