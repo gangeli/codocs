@@ -1,35 +1,67 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Release version (e.g. v0.1.0)
-        required: true
+  push:
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check for version bump
+        id: version
+        run: |
+          NEW_VERSION=$(node -p "require('./packages/cli/package.json').version")
+          PUBLISHED_VERSION=$(npm view @codocs/cli version 2>/dev/null || echo "")
+          echo "published=$PUBLISHED_VERSION" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          if [ -z "$PUBLISHED_VERSION" ]; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "First release: $NEW_VERSION"
+          elif [ "$NEW_VERSION" != "$PUBLISHED_VERSION" ]; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "New version: $PUBLISHED_VERSION -> $NEW_VERSION"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "Version $NEW_VERSION already published, skipping"
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.version.outputs.bumped == 'true'
         with:
           node-version: 22
           cache: npm
+          registry-url: https://registry.npmjs.org
+
       - uses: oven-sh/setup-bun@v2
+        if: steps.version.outputs.bumped == 'true'
+
       - run: npm ci
+        if: steps.version.outputs.bumped == 'true'
+
       - run: make build
+        if: steps.version.outputs.bumped == 'true'
+
       - run: make typecheck
+        if: steps.version.outputs.bumped == 'true'
+
       - run: make test
+        if: steps.version.outputs.bumped == 'true'
+
       - run: make dist
+        if: steps.version.outputs.bumped == 'true'
+
       - name: Create GitHub Release
+        if: steps.version.outputs.bumped == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.version }}
-          name: ${{ inputs.version }}
+          tag_name: v${{ steps.version.outputs.new }}
+          name: v${{ steps.version.outputs.new }}
           generate_release_notes: true
           files: |
             dist/codocs-darwin-arm64
@@ -37,3 +69,19 @@ jobs:
             dist/codocs-linux-x64
             dist/codocs-linux-arm64
             dist/codocs-windows-x64
+
+      # Publish to npm (order matters: core, db, then cli)
+      - run: npm publish --workspace packages/core
+        if: steps.version.outputs.bumped == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - run: npm publish --workspace packages/db
+        if: steps.version.outputs.bumped == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - run: npm publish --workspace packages/cli
+        if: steps.version.outputs.bumped == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

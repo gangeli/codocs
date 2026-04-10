@@ -1,6 +1,6 @@
 {
   "name": "@codocs/core",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Core library for Google Docs interaction",
   "type": "module",
   "exports": {
@@ -11,6 +11,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
