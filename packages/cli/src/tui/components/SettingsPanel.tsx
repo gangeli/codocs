@@ -9,6 +9,7 @@ interface SettingsPanelProps {
   onClose: () => void;
   agentType: string;
   autoModeAvailable: boolean;
+  githubConnected: boolean;
 }
 
 interface SettingRow {
@@ -27,7 +28,7 @@ function buildPermissionOptions(autoModeAvailable: boolean): { label: string; va
   return options;
 }
 
-export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoModeAvailable }: SettingsPanelProps) {
+export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoModeAvailable, githubConnected }: SettingsPanelProps) {
   const rows = useMemo(() => {
     const r: SettingRow[] = [
       {
@@ -59,6 +60,18 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
       });
     }
 
+    const codeModeOptions: { label: string; value: string }[] = [];
+    if (githubConnected) {
+      codeModeOptions.push({ label: 'PR', value: 'pr' });
+    }
+    codeModeOptions.push({ label: 'direct', value: 'direct' });
+    codeModeOptions.push({ label: 'off', value: 'off' });
+    r.push({
+      label: 'Code changes',
+      key: 'codeMode',
+      options: codeModeOptions,
+    });
+
     r.push({
       label: 'Debug mode',
       key: 'debugMode',
@@ -69,7 +82,7 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
     });
 
     return r;
-  }, [agentType, autoModeAvailable]);
+  }, [agentType, autoModeAvailable, githubConnected]);
 
   const [activeRow, setActiveRow] = useState(0);
 

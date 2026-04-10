@@ -52,6 +52,25 @@ const SCHEMA = `
     updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (directory, key)
   );
+
+  CREATE TABLE IF NOT EXISTS code_tasks (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id    TEXT NOT NULL,
+    comment_id     TEXT NOT NULL,
+    agent_name     TEXT NOT NULL,
+    branch_name    TEXT NOT NULL,
+    worktree_path  TEXT NOT NULL,
+    pr_number      INTEGER,
+    pr_url         TEXT,
+    base_branch    TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'active',
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (document_id, comment_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_code_tasks_lookup
+    ON code_tasks (document_id, comment_id);
 `;
 
 function getDataDir(): string {

@@ -7,6 +7,18 @@ export { writeTempContext, cleanupTempFiles } from './context.js';
 export type { TempContext } from './context.js';
 export { buildPrompt, buildConflictPrompt } from './prompt.js';
 export type { PromptContext } from './prompt.js';
+export { buildCodePrompt } from './code-prompt.js';
+export type { CodePromptContext } from './code-prompt.js';
+export { buildClassificationPreamble, parseClassification } from './classifier.js';
+export type { Classification } from './classifier.js';
+export {
+  getDefaultBranch, createWorktree, removeWorktree,
+  commitAll, pushBranch, rebaseOnto, forcePushBranch,
+} from './worktree.js';
+export {
+  getRepoInfo, createDraftPR, addPRComment, buildPRBody,
+} from './pr.js';
+export type { PRInfo, RepoInfo } from './pr.js';
 export { parseSections, mergeDocuments, computeDocDiff } from './diff.js';
 export type { MdSection, MergeResult, DiffResult } from './diff.js';
 export { AgentOrchestrator } from './orchestrator.js';

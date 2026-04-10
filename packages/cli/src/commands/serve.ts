@@ -17,8 +17,8 @@ import {
   type SubscriptionInfo,
   type PermissionMode,
 } from '@codocs/core';
-import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore } from '@codocs/db';
-import { readConfig, readTokens } from '../auth/token-store.js';
+import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore, CodeTaskStore } from '@codocs/db';
+import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
@@ -169,7 +169,11 @@ async function resolveWelcomeChoice(
       }
       const runner = runnerFactory();
 
-      // Show animated generating screen while agent runs
+      // The agent writes to .codocs/design-doc.md instead of stdout.
+      // This is more reliable — Claude is better at writing files than
+      // producing clean stdout-only output.
+      const outputPath = join(process.cwd(), '.codocs', 'design-doc.md');
+
       const { unmount } = render(
         React.createElement(Generating, { message: 'Generating document from codebase...' }),
       );
@@ -187,11 +191,26 @@ async function resolveWelcomeChoice(
           if (result.stderr) console.error(result.stderr.slice(0, 500));
           process.exit(1);
         }
-        if (!result.stdout.trim()) {
-          console.error('Agent produced no output.');
+
+        // Read the file the agent wrote
+        try {
+          const content = readFileSync(outputPath, 'utf-8').trim();
+          if (!content) {
+            console.error('Agent did not write any content to .codocs/design-doc.md');
+            process.exit(1);
+          }
+          // Clean up the temp file
+          try { unlinkSync(outputPath); } catch {}
+          return { content };
+        } catch {
+          // Fallback: if the agent didn't write the file, try stdout
+          const stdout = result.stdout.trim();
+          if (stdout) {
+            return { content: stdout };
+          }
+          console.error('Agent did not write .codocs/design-doc.md and produced no stdout.');
           process.exit(1);
         }
-        return { content: result.stdout.trim() };
       } catch (err: any) {
         unmount();
         console.error(`Agent failed: ${err.message}`);
@@ -243,6 +262,7 @@ async function resolveWelcomeChoice(
         process.exit(1);
       }
       const runner = runnerFactory();
+      const outputPath = join(process.cwd(), '.codocs', 'design-doc.md');
 
       const { unmount } = render(
         React.createElement(Generating, { message: 'Generating document from prompt...' }),
@@ -251,7 +271,8 @@ async function resolveWelcomeChoice(
       try {
         const result = await runner.run(
           `Write a document in markdown based on the following description. ` +
-          `Be concise but thorough. Output ONLY the markdown, no preamble.\n\n${choice.prompt}`,
+          `Be concise but thorough. Write the document to .codocs/design-doc.md — ` +
+          `do not output it to stdout.\n\n${choice.prompt}`,
           null,
           { timeout: 1_200_000 },
         );
@@ -261,11 +282,21 @@ async function resolveWelcomeChoice(
           if (result.stderr) console.error(result.stderr.slice(0, 500));
           process.exit(1);
         }
-        if (!result.stdout.trim()) {
-          console.error('Agent produced no output.');
+
+        try {
+          const content = readFileSync(outputPath, 'utf-8').trim();
+          if (!content) {
+            console.error('Agent did not write any content to .codocs/design-doc.md');
+            process.exit(1);
+          }
+          try { unlinkSync(outputPath); } catch {}
+          return { content };
+        } catch {
+          const stdout = result.stdout.trim();
+          if (stdout) return { content: stdout };
+          console.error('Agent did not write .codocs/design-doc.md and produced no stdout.');
           process.exit(1);
         }
-        return { content: result.stdout.trim() };
       } catch (err: any) {
         unmount();
         console.error(`Agent failed: ${err.message}`);
@@ -403,10 +434,14 @@ export function registerServeCommand(program: Command) {
           process.exit(0);
         };
 
+        // ── GitHub auth (check only — debug logging deferred) ──
+        const ghTokens = readGitHubTokens();
+        const githubConnected = !!ghTokens;
+
         if (useTui) {
           const agentType = opts.agentType ?? 'claude';
           const autoModeAvailable = agentType === 'claude' && isAutoModeAvailable();
-          const initialState = createInitialState(primaryDocId, { agentType, autoModeAvailable });
+          const initialState = createInitialState(primaryDocId, { agentType, autoModeAvailable, githubConnected });
           if (debugMode) initialState.settings.debugMode = true;
 
           // Restore persisted settings (merge with defaults)
@@ -444,6 +479,9 @@ export function registerServeCommand(program: Command) {
           }
         };
 
+        debug(githubConnected
+          ? 'GitHub connected — code mode with PRs available'
+          : 'GitHub not connected — code changes will be direct (no PRs)');
         debug(`GCP Project: ${gcpProjectId}`);
         debug(`Pub/Sub Topic: ${fullTopic}`);
 
@@ -484,6 +522,7 @@ export function registerServeCommand(program: Command) {
         const sessionStore = new SessionStore(db);
         const queueStore = new QueueStore(db);
         const agentNameStore = new AgentNameStore(db);
+        const codeTaskStore = new CodeTaskStore(db);
 
         // Resolve fallback agent name: use explicit flag, or generate a
         // cute two-word name per document (persisted so resumes keep the name).
@@ -545,6 +584,18 @@ export function registerServeCommand(program: Command) {
             }
             return { type: 'auto' };
           },
+          codeTaskStore,
+          codeMode: () => {
+            if (tui.ref) {
+              return tui.ref.getSettings().codeMode;
+            }
+            return githubConnected ? 'pr' : 'direct';
+          },
+          githubToken: () => {
+            const gt = readGitHubTokens();
+            return gt?.access_token ?? null;
+          },
+          repoRoot: cwd,
           onAgentAssigned: (agentName, task) => {
             if (tui.ref) {
               tui.ref.updateAgent(agentName, {

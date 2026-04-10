@@ -21,6 +21,7 @@
   <!-- ════════════════════ HERO ════════════════════ -->
   <section id="hero">
     <div class="container hero-container">
+      <h1 class="hero-title">Design docs that staff themselves</h1>
       <div class="hero-tagline">
         <span class="hero-word hero-word--past">Codex</span>
         <span class="hero-arrow">&rarr;</span>
@@ -28,11 +29,7 @@
         <span class="hero-arrow">&rarr;</span>
         <span class="hero-word hero-word--current">Codocs</span>
       </div>
-      <p class="hero-subtitle">AI agents that collaborate with you through Google Docs.</p>
-      <p class="hero-description">
-        Comment on your doc. Agents read, think, edit, and reply —
-        with full attribution for every change.
-      </p>
+      <div class="hero-install"><code><span class="install-prompt">$</span> <span class="install-cmd">npm install -g codocs</span></code></div>
       <div class="hero-ctas">
         <a href="https://github.com/gangeli/codocs" class="btn btn-primary">View on GitHub</a>
         <a href="#quickstart" class="btn btn-secondary">Get Started &darr;</a>
@@ -43,7 +40,7 @@
   <!-- ════════════════════ FLOW VISUALIZATION ════════════════════ -->
   <section id="flow">
     <div class="container">
-      <h2 class="section-title animate-on-scroll">How it works</h2>
+      <h2 class="section-title">How it works</h2>
       <div class="flow-track" data-animate="flow">
         <div class="flow-step" data-step="1">
           <div class="flow-icon">
@@ -70,7 +67,7 @@
             </svg>
           </div>
           <div class="flow-label">Agent assigned</div>
-          <div class="flow-detail">swift-falcon picks up the task</div>
+          <div class="flow-detail">The coding agent picks up the task</div>
         </div>
 
         <div class="flow-connector"><div class="flow-pulse"></div></div>
@@ -84,7 +81,7 @@
               <line x1="6" y1="38" x2="10" y2="24"/>
             </svg>
           </div>
-          <div class="flow-label">Doc edited</div>
+          <div class="flow-label">Code written</div>
           <div class="flow-detail">Retry wrapper added, tests updated, types exported</div>
         </div>
 
@@ -93,12 +90,28 @@
         <div class="flow-step" data-step="4">
           <div class="flow-icon">
             <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="24" cy="24" r="18"/>
-              <polyline points="14,24 22,32 34,18"/>
+              <circle cx="24" cy="14" r="8"/>
+              <path d="M18 12l4 4 6-7"/>
+              <path d="M14 26h20c2.2 0 4 1.8 4 4v6H10v-6c0-2.2 1.8-4 4-4z"/>
+              <line x1="18" y1="32" x2="18" y2="36"/>
+              <line x1="30" y1="32" x2="30" y2="36"/>
+            </svg>
+          </div>
+          <div class="flow-label">PR created</div>
+          <div class="flow-detail">Pull request opened for review</div>
+        </div>
+
+        <div class="flow-connector"><div class="flow-pulse"></div></div>
+
+        <div class="flow-step" data-step="5">
+          <div class="flow-icon">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 34c0 2.2 1.8 4 4 4h16l8 6v-6h0c2.2 0 4-1.8 4-4V14c0-2.2-1.8-4-4-4H12c-2.2 0-4 1.8-4 4v20z"/>
+              <polyline points="16,22 22,28 32,18"/>
             </svg>
           </div>
           <div class="flow-label">Reply posted</div>
-          <div class="flow-detail">"Done — retries up to 3x with jitter, tests passing"</div>
+          <div class="flow-detail">"Done — PR #42 ready for review"</div>
         </div>
       </div>
     </div>
@@ -107,7 +120,7 @@
   <!-- ════════════════════ FEATURES ════════════════════ -->
   <section id="features">
     <div class="container">
-      <h2 class="section-title animate-on-scroll">Built for agent teams</h2>
+      <h2 class="section-title">Built for agent teams</h2>
       <div class="features-grid">
         <div class="feature-card animate-on-scroll">
           <div class="feature-icon">
@@ -158,85 +171,81 @@
   <!-- ════════════════════ MOCK GOOGLE DOC ════════════════════ -->
   <section id="mock-doc">
     <div class="container">
-      <h2 class="section-title animate-on-scroll">Comments find the right agent</h2>
-      <p class="section-desc animate-on-scroll">When you comment on a section, the agent that wrote it picks up your request — same context, no re-explaining.</p>
+      <h2 class="section-title">Agents pick up where they left off</h2>
+      <p class="section-desc">Each agent keeps a persistent session. Comment on their work and they respond with full memory of what they built and why.</p>
 
       <div class="gdoc-wrapper animate-on-scroll">
         <div class="gdoc-chrome">
-          <!-- Toolbar -->
           <div class="gdoc-toolbar">
             <div class="gdoc-toolbar-left">
               <div class="gdoc-doc-icon">
                 <svg viewBox="0 0 24 24" fill="#4285f4" width="20" height="20"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
               </div>
-              <span class="gdoc-title">Project Architecture Doc</span>
+              <span class="gdoc-title">Authentication Design</span>
             </div>
             <div class="gdoc-toolbar-right">
               <span class="gdoc-share-btn">Share</span>
             </div>
           </div>
 
-          <!-- Page -->
           <div class="gdoc-page-area">
             <div class="gdoc-page">
-              <h1 class="gdoc-heading">API Design</h1>
+              <h1 class="gdoc-heading">Authentication</h1>
 
-              <p class="gdoc-text">
-                <span class="gdoc-attr" data-agent="swift-falcon">The REST API exposes three main endpoints for document management. Each endpoint validates the OAuth token before processing, and returns structured JSON responses with proper error codes.</span>
-              </p>
+              <p class="gdoc-text">Authentication uses OAuth 2.0 with PKCE and refresh token rotation. Tokens are stored locally and auto-refreshed on expiry. The login flow opens a browser for consent, then captures the callback on localhost.</p>
 
-              <h2 class="gdoc-heading-2">Authentication</h2>
+              <h2 class="gdoc-heading-2">Token Expiry</h2>
 
-              <p class="gdoc-text">
-                <span class="gdoc-attr" data-agent="gentle-otter">Authentication uses OAuth 2.0 with refresh token rotation. Tokens are stored locally and auto-refreshed on expiry. The login flow opens a browser for consent, then captures the callback on localhost.</span>
-              </p>
+              <p class="gdoc-text">When a refresh token is revoked or expired, the system clears the local session and re-prompts the user. This handles the edge case where tokens are invalidated server-side between sessions.</p>
 
               <h2 class="gdoc-heading-2">Rate Limiting</h2>
 
-              <p class="gdoc-text">
-                <span class="gdoc-attr" data-agent="keen-hawk">Rate limiting uses a token bucket algorithm with a capacity of 100 requests per minute. Burst allowance is configurable per-client. When the bucket is exhausted, requests receive a 429 with a Retry-After header.</span>
-              </p>
+              <p class="gdoc-text">The token endpoint uses a token bucket limiter at 100 req/min with the same error handling pattern from the auth module. Burst allowance is configurable per-client.</p>
             </div>
 
-            <!-- Comment sidebar -->
             <div class="gdoc-sidebar">
+              <div class="gdoc-comment gdoc-comment--resolved">
+                <div class="gdoc-comment-header">
+                  <span class="gdoc-comment-avatar">G</span>
+                  <div>
+                    <div class="gdoc-comment-author">Gabor Angeli</div>
+                    <div class="gdoc-comment-time">Mon 2:14 PM</div>
+                  </div>
+                </div>
+                <div class="gdoc-comment-text">Write the auth module &mdash; OAuth 2.0 with refresh tokens.</div>
+                <div class="gdoc-comment-reply">
+                  <div class="gdoc-comment-header">
+                    <span class="gdoc-comment-avatar gdoc-avatar--accent">A</span>
+                    <div>
+                      <div class="gdoc-comment-author gdoc-author--accent">coding agent</div>
+                      <div class="gdoc-comment-time">Mon 2:18 PM</div>
+                    </div>
+                  </div>
+                  <div class="gdoc-comment-text">Done &mdash; PKCE flow, token storage, auto-refresh. github.com/gangeli/codocs/pull/31</div>
+                </div>
+              </div>
+
               <div class="gdoc-comment">
                 <div class="gdoc-comment-header">
                   <span class="gdoc-comment-avatar">G</span>
                   <div>
                     <div class="gdoc-comment-author">Gabor Angeli</div>
-                    <div class="gdoc-comment-time">2:14 PM</div>
+                    <div class="gdoc-comment-time">Wed 10:30 AM</div>
                   </div>
                 </div>
                 <div class="gdoc-comment-text">What about token expiry edge cases?</div>
                 <div class="gdoc-comment-reply">
                   <div class="gdoc-comment-header">
-                    <span class="gdoc-comment-avatar gdoc-avatar--agent-green">G</span>
+                    <span class="gdoc-comment-avatar gdoc-avatar--accent">A</span>
                     <div>
-                      <div class="gdoc-comment-author gdoc-author--green">gentle-otter</div>
-                      <div class="gdoc-comment-time">2:16 PM</div>
+                      <div class="gdoc-comment-author gdoc-author--accent">coding agent</div>
+                      <div class="gdoc-comment-time">Wed 10:33 AM</div>
                     </div>
                   </div>
-                  <div class="gdoc-comment-text">Good catch — I wrote this section, so I still have the full auth context. Added handling for expired and revoked tokens.</div>
+                  <div class="gdoc-comment-text"><span class="gdoc-highlight">The refresh logic I wrote on Monday</span> didn't cover revoked tokens. Added a fallback that clears the session and re-prompts. github.com/gangeli/codocs/pull/38</div>
                 </div>
               </div>
             </div>
-          </div>
-        </div>
-
-        <!-- Agent legend -->
-        <div class="gdoc-legend">
-          <div class="gdoc-legend-item">
-            <span class="gdoc-legend-dot" style="background: var(--agent-blue)"></span>
-            <span>swift-falcon</span>
-          </div>
-          <div class="gdoc-legend-item">
-            <span class="gdoc-legend-dot" style="background: var(--agent-green)"></span>
-            <span>gentle-otter</span>
-          </div>
-          <div class="gdoc-legend-item">
-            <span class="gdoc-legend-dot" style="background: var(--agent-amber)"></span>
-            <span>keen-hawk</span>
           </div>
         </div>
       </div>
@@ -246,8 +255,8 @@
   <!-- ════════════════════ TUI RECREATION ════════════════════ -->
   <section id="tui">
     <div class="container">
-      <h2 class="section-title animate-on-scroll">Watch it all happen live</h2>
-      <p class="section-desc animate-on-scroll">The interactive terminal dashboard shows agents working in real time.</p>
+      <h2 class="section-title">Watch it all happen live</h2>
+      <p class="section-desc">The interactive terminal dashboard shows agents working in real time.</p>
 
       <div class="tui-wrapper animate-on-scroll">
         <div class="tui-window">
@@ -367,7 +376,7 @@
   <!-- ════════════════════ QUICKSTART ════════════════════ -->
   <section id="quickstart">
     <div class="container">
-      <h2 class="section-title animate-on-scroll">Get started</h2>
+      <h2 class="section-title">Get started</h2>
       <div class="quickstart-card animate-on-scroll">
         <div class="code-block">
           <div class="code-header">
@@ -379,11 +388,11 @@
           <pre><code><span class="code-comment"># Install</span>
 <span class="code-prompt">$</span> npm install -g codocs
 
-<span class="code-comment"># Authenticate with Google</span>
+<span class="code-comment"># Authenticate with Google and GitHub</span>
 <span class="code-prompt">$</span> codocs auth login
 
-<span class="code-comment"># Start collaborating on a doc</span>
-<span class="code-prompt">$</span> codocs serve &lt;doc-id&gt;</code></pre>
+<span class="code-comment"># Start collaborating</span>
+<span class="code-prompt">$</span> codocs</code></pre>
         </div>
       </div>
     </div>

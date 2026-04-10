@@ -32,6 +32,11 @@ export interface StoredTokens {
   expiry_date?: number;
 }
 
+export interface GitHubTokens {
+  access_token: string;
+  scope: string;
+}
+
 function getConfigDir(): string {
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
   return join(base, 'codocs');
@@ -84,6 +89,28 @@ export function writeTokens(tokens: StoredTokens): void {
 export function clearTokens(): void {
   try {
     unlinkSync(tokensPath());
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+}
+
+// ── GitHub tokens ───────────────────────────────────────────────────
+
+function githubTokensPath(): string {
+  return join(getDataDir(), 'github-auth.json');
+}
+
+export function readGitHubTokens(): GitHubTokens | null {
+  return readJsonFile<GitHubTokens>(githubTokensPath());
+}
+
+export function writeGitHubTokens(tokens: GitHubTokens): void {
+  writeJsonFile(githubTokensPath(), tokens, 0o600);
+}
+
+export function clearGitHubTokens(): void {
+  try {
+    unlinkSync(githubTokensPath());
   } catch (err: any) {
     if (err.code !== 'ENOENT') throw err;
   }

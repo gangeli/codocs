@@ -194,6 +194,7 @@ export function App({ initialState, onShutdown, getActiveAgents, onStateRef, onS
             onClose={() => setView('main')}
             agentType={state.agentType}
             autoModeAvailable={state.autoModeAvailable}
+            githubConnected={state.githubConnected}
           />
         </Box>
       ) : view === 'confirm-quit' ? (

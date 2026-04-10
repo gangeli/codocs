@@ -5,12 +5,12 @@
     --section-gap: 4rem;
   }
 
-  h1 {
+  h1, .hero-title {
     font-size: 2.2rem;
   }
 
   .hero-word {
-    font-size: 2.4rem;
+    font-size: 2rem;
   }
 
   /* Flow: horizontal scroll or wrap */
@@ -83,8 +83,12 @@
     padding: 5rem 0 3rem;
   }
 
-  .hero-word {
+  .hero-title {
     font-size: 1.8rem;
+  }
+
+  .hero-word {
+    font-size: 1.5rem;
   }
 
   .hero-arrow {
@@ -137,12 +141,6 @@
 
   .gdoc-heading-2 {
     font-size: 0.95rem;
-  }
-
-  .gdoc-legend {
-    flex-direction: column;
-    align-items: center;
-    gap: 0.5rem;
   }
 
   /* TUI: smaller text */

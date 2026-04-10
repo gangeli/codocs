@@ -100,35 +100,15 @@
   color: #333;
 }
 
-/* ── Agent Attribution Colors ── */
-
-.gdoc-attr[data-agent="swift-falcon"] {
-  border-left: 3px solid var(--agent-blue);
-  padding-left: 8px;
-  display: block;
-  color: #333;
-}
-
-.gdoc-attr[data-agent="gentle-otter"] {
-  border-left: 3px solid var(--agent-green);
-  padding-left: 8px;
-  display: block;
-  color: #333;
-}
-
-.gdoc-attr[data-agent="keen-hawk"] {
-  border-left: 3px solid var(--agent-amber);
-  padding-left: 8px;
-  display: block;
-  color: #333;
-}
-
 /* ── Comment Sidebar ── */
 
 .gdoc-sidebar {
-  width: 260px;
+  width: 280px;
   padding: 20px 16px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .gdoc-comment {
@@ -139,6 +119,10 @@
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 0.8rem;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.gdoc-comment--resolved {
+  opacity: 0.55;
 }
 
 .gdoc-comment-header {
@@ -162,12 +146,8 @@
   flex-shrink: 0;
 }
 
-.gdoc-avatar--agent {
-  background: var(--agent-amber);
-}
-
-.gdoc-avatar--agent-green {
-  background: var(--agent-green);
+.gdoc-avatar--accent {
+  background: var(--accent);
 }
 
 .gdoc-comment-author {
@@ -176,12 +156,8 @@
   font-size: 0.78rem;
 }
 
-.gdoc-author--agent {
-  color: var(--agent-amber);
-}
-
-.gdoc-author--green {
-  color: var(--agent-green);
+.gdoc-author--accent {
+  color: var(--accent);
 }
 
 .gdoc-comment-time {
@@ -201,26 +177,10 @@
   border-top: 1px solid #eee;
 }
 
-/* ── Agent Legend ── */
+/* ── Context highlight (outside the GDoc, for the viewer) ── */
 
-.gdoc-legend {
-  display: flex;
-  justify-content: center;
-  gap: 2rem;
-  margin-top: 1.25rem;
-  font-size: 0.85rem;
-  color: var(--ink-dim);
-}
-
-.gdoc-legend-item {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.gdoc-legend-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
+.gdoc-highlight {
+  background: rgba(42, 110, 110, 0.12);
+  border-radius: 2px;
+  padding: 0 2px;
 }

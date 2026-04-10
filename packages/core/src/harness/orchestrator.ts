@@ -6,6 +6,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import type { CodocsClient } from '../client/index.js';
 import type { CommentEvent } from '../types.js';
 import type { SessionStore, QueueStore } from './types.js';
@@ -13,9 +14,24 @@ import type { AgentRunner, PermissionMode } from './agent.js';
 import { assignAgent } from './assign.js';
 import { writeTempContext, cleanupTempFiles } from './context.js';
 import { buildPrompt, buildConflictPrompt } from './prompt.js';
+import { buildCodePrompt } from './code-prompt.js';
+import { buildClassificationPreamble, parseClassification } from './classifier.js';
 import { docsToMarkdownWithMapping } from '../converter/docs-to-md.js';
 import { docsToMarkdown } from '../converter/docs-to-md.js';
 import { computeDocDiff } from './diff.js';
+import {
+  getDefaultBranch, createWorktree, commitAll,
+  pushBranch, rebaseOnto,
+} from './worktree.js';
+import { getRepoInfo, createDraftPR, addPRComment, buildPRBody } from './pr.js';
+
+export type CodeMode = 'pr' | 'direct' | 'off';
+
+export interface CodeTaskStore {
+  getByComment(documentId: string, commentId: string): { id: number; branchName: string; worktreePath: string; prNumber: number | null; prUrl: string | null; baseBranch: string } | null;
+  create(task: { documentId: string; commentId: string; agentName: string; branchName: string; worktreePath: string; baseBranch: string }): number;
+  updatePR(id: number, prNumber: number, prUrl: string): void;
+}
 
 export interface OrchestratorConfig {
   /** CodocsClient instance for Google Docs API operations. */
@@ -46,6 +62,14 @@ export interface OrchestratorConfig {
   onCommentFailed?: (agentName: string, error: string) => void;
   /** How tool permissions are handled for agent processes. Called per-invocation to support runtime changes. */
   permissionMode?: PermissionMode | (() => PermissionMode);
+  /** Code task store for tracking worktree/PR mappings. Required for code mode. */
+  codeTaskStore?: CodeTaskStore;
+  /** How code modification comments are handled. Called per-invocation. Defaults to 'off'. */
+  codeMode?: CodeMode | (() => CodeMode);
+  /** GitHub access token for creating PRs. Called per-invocation. */
+  githubToken?: () => string | null;
+  /** Git repo root directory (for worktree creation). Defaults to process.cwd(). */
+  repoRoot?: string;
   /** Optional logger. */
   debug?: (msg: string) => void;
 }
@@ -62,6 +86,10 @@ export class AgentOrchestrator {
   private onCommentFailed: (agentName: string, error: string) => void;
   private debug: (msg: string) => void;
   private getPermissionMode: () => PermissionMode;
+  private codeTaskStore?: CodeTaskStore;
+  private getCodeMode: () => CodeMode;
+  private getGithubToken: () => string | null;
+  private repoRoot: string;
 
   /** Agents currently being drained. Prevents double-drain. */
   private processingAgents = new Set<string>();
@@ -82,6 +110,12 @@ export class AgentOrchestrator {
 
     const pm = config.permissionMode;
     this.getPermissionMode = typeof pm === 'function' ? pm : () => pm ?? { type: 'auto' };
+
+    this.codeTaskStore = config.codeTaskStore;
+    const cm = config.codeMode;
+    this.getCodeMode = typeof cm === 'function' ? cm : () => cm ?? 'off';
+    this.getGithubToken = config.githubToken ?? (() => null);
+    this.repoRoot = config.repoRoot ?? process.cwd();
   }
 
   /** Resolve the fallback agent name for a given document. */
@@ -205,6 +239,10 @@ export class AgentOrchestrator {
   /**
    * Process a single comment event end-to-end.
    * The agent has already been assigned; this does the actual work.
+   *
+   * When code mode is enabled ('pr' or 'direct'), the agent is first asked
+   * to classify the comment. Code modification requests are routed to
+   * processCodeComment; doc/informational requests use the existing flow.
    */
   private async processComment(event: CommentEvent, agentName: string): Promise<{ replyPreview: string; editSummary: string }> {
     const { documentId, comment } = event;
@@ -213,6 +251,16 @@ export class AgentOrchestrator {
 
     this.debug(`[processComment] Starting for ${agentName}: "${commentText.slice(0, 40)}"`);
     this.onAgentAssigned(agentName, commentText.slice(0, 60));
+
+    // Check for an existing code task on this thread (follow-up detection)
+    const codeMode = this.getCodeMode();
+    if (codeMode !== 'off' && comment.id && this.codeTaskStore) {
+      const existingTask = this.codeTaskStore.getByComment(documentId, comment.id);
+      if (existingTask) {
+        this.debug(`[processComment] Follow-up on existing code task (PR #${existingTask.prNumber}), routing to code mode`);
+        return this.processCodeComment(event, agentName, existingTask);
+      }
+    }
 
     // Post a thinking reply so the user knows the agent picked it up
     let thinkingReplyId: string | null = null;
@@ -241,8 +289,12 @@ export class AgentOrchestrator {
     let editSummary = 'No changes';
 
     try {
-      // Build prompt (include thread history for replies)
-      const prompt = buildPrompt({
+      // Build prompt — prepend classification preamble if code mode is available
+      const classificationPreamble = (codeMode !== 'off' && this.codeTaskStore)
+        ? buildClassificationPreamble() + '\n'
+        : '';
+
+      const prompt = classificationPreamble + buildPrompt({
         mdFilePath: editPath,
         commentText,
         quotedText,
@@ -283,6 +335,22 @@ export class AgentOrchestrator {
 
       // Store session mapping
       this.sessionStore.upsertSession(agentName, sessionKey, result.sessionId);
+
+      // If classification was requested, check if this should be routed to code mode
+      if (codeMode !== 'off' && this.codeTaskStore) {
+        const classification = parseClassification(result.stdout);
+        if (classification.mode === 'code') {
+          this.debug(`[processComment] Classified as code change: ${classification.description}`);
+          // Clean up temp files — code mode doesn't use them
+          await cleanupTempFiles(editPath, basePath);
+          // Replace thinking reply before routing to code mode
+          await this.replaceThinkingReply(documentId, comment.id, thinkingReplyId, null);
+          thinkingReplyId = null; // prevent double-cleanup in finally
+          return this.processCodeComment(event, agentName, null, classification.description);
+        }
+        // Doc mode — use the stripped response (without the [MODE: doc] header)
+        result = { ...result, stdout: classification.response };
+      }
 
       // Read the agent's edited file
       const editedMarkdown = await readFile(editPath, 'utf-8');
@@ -351,43 +419,253 @@ export class AgentOrchestrator {
       replyContent = replyContent || `Error: ${err.message ?? 'unknown error'}`;
       throw err;
     } finally {
-      this.debug(`[processComment] Finally block — replacing thinking reply (thinkingReplyId: ${thinkingReplyId}, replyContent: ${replyContent.length} chars)`);
-      // Replace the thinking emoji with the actual response.
-      //
-      // We use delete + create instead of updateReply because Google Docs
-      // does not live-refresh the comment sidebar when a reply is updated
-      // via the API (drive.replies.update). The API call succeeds and
-      // subsequent reads return the updated content, but the Docs UI won't
-      // show the change until the user manually reloads the page. Creating
-      // a new reply triggers a UI notification and renders immediately.
-      //
-      // No public bug tracker link found for this as of April 2026.
-      // If Google fixes this, switch back to updateReply for cleaner
-      // thread history (no delete gap).
-      if (comment.id && thinkingReplyId) {
-        try {
-          await this.replyClient.deleteReply(documentId, comment.id, thinkingReplyId);
-          this.debug(`[processComment] Deleted thinking reply`);
-        } catch (delErr: any) {
-          this.debug(`[processComment] Failed to delete thinking reply (continuing): ${delErr.message ?? delErr}`);
-        }
-        try {
-          await this.replyClient.replyToComment(documentId, comment.id, replyContent);
-          this.debug(`[processComment] Posted final reply`);
-        } catch (replyErr: any) {
-          this.debug(`[processComment] Failed to post final reply: ${replyErr.message ?? replyErr}`);
-        }
-      } else if (comment.id && replyContent) {
-        try {
-          await this.replyClient.replyToComment(documentId, comment.id, replyContent);
-          this.debug(`[processComment] Reply created (no thinking reply to update)`);
-        } catch (err: any) {
-          this.debug(`[processComment] Reply failed: ${err.message ?? err}`);
-        }
-      }
-
+      await this.replaceThinkingReply(documentId, comment.id, thinkingReplyId, replyContent);
       await cleanupTempFiles(editPath, basePath);
       this.debug(`[processComment] Done`);
+    }
+
+    return { replyPreview: replyContent, editSummary };
+  }
+
+  /**
+   * Replace the thinking emoji reply with the actual response.
+   *
+   * We use delete + create instead of updateReply because Google Docs
+   * does not live-refresh the comment sidebar when a reply is updated
+   * via the API (drive.replies.update). The API call succeeds and
+   * subsequent reads return the updated content, but the Docs UI won't
+   * show the change until the user manually reloads the page. Creating
+   * a new reply triggers a UI notification and renders immediately.
+   */
+  private async replaceThinkingReply(
+    documentId: string,
+    commentId: string | undefined,
+    thinkingReplyId: string | null,
+    replyContent: string | null,
+  ): Promise<void> {
+    if (commentId && thinkingReplyId) {
+      try {
+        await this.replyClient.deleteReply(documentId, commentId, thinkingReplyId);
+        this.debug(`Deleted thinking reply`);
+      } catch (delErr: any) {
+        this.debug(`Failed to delete thinking reply (continuing): ${delErr.message ?? delErr}`);
+      }
+      if (replyContent) {
+        try {
+          await this.replyClient.replyToComment(documentId, commentId, replyContent);
+          this.debug(`Posted final reply`);
+        } catch (replyErr: any) {
+          this.debug(`Failed to post final reply: ${replyErr.message ?? replyErr}`);
+        }
+      }
+    } else if (commentId && replyContent) {
+      try {
+        await this.replyClient.replyToComment(documentId, commentId, replyContent);
+        this.debug(`Reply created (no thinking reply to update)`);
+      } catch (err: any) {
+        this.debug(`Reply failed: ${err.message ?? err}`);
+      }
+    }
+  }
+
+  /**
+   * Process a code modification comment: create/reuse a git worktree,
+   * run the agent, commit changes, and create/update a draft PR.
+   */
+  private async processCodeComment(
+    event: CommentEvent,
+    agentName: string,
+    existingTask?: { id: number; branchName: string; worktreePath: string; prNumber: number | null; prUrl: string | null; baseBranch: string } | null,
+    codeDescription?: string,
+  ): Promise<{ replyPreview: string; editSummary: string }> {
+    const { documentId, comment } = event;
+    const commentText = comment.content ?? '';
+    const quotedText = comment.quotedText ?? '';
+    const codeMode = this.getCodeMode();
+
+    // Post thinking reply
+    let thinkingReplyId: string | null = null;
+    if (comment.id) {
+      try {
+        thinkingReplyId = await this.replyClient.replyToComment(documentId, comment.id, '\u{1F914}');
+      } catch (err) {
+        this.debug(`Failed to post thinking reply: ${err}`);
+      }
+    }
+
+    let replyContent = '';
+    let editSummary = 'No changes';
+
+    try {
+      const isFollowUp = !!existingTask;
+      let worktreePath: string;
+      let branchName: string;
+      let baseBranch: string;
+      let taskId: number | undefined;
+      let prNumber: number | null = null;
+      let prUrl: string | null = null;
+
+      if (codeMode === 'pr') {
+        if (isFollowUp && existingTask) {
+          // Follow-up: reuse existing worktree and branch
+          worktreePath = existingTask.worktreePath;
+          branchName = existingTask.branchName;
+          baseBranch = existingTask.baseBranch;
+          taskId = existingTask.id;
+          prNumber = existingTask.prNumber;
+          prUrl = existingTask.prUrl;
+
+          this.debug(`[processCodeComment] Follow-up on branch ${branchName}`);
+
+          // Rebase onto latest base branch
+          const rebaseResult = await rebaseOnto(worktreePath, baseBranch);
+          if (!rebaseResult.success) {
+            this.debug(`[processCodeComment] Rebase had conflicts, agent will work from current state`);
+          }
+        } else {
+          // New code task: create worktree + branch
+          baseBranch = await getDefaultBranch(this.repoRoot);
+          const slug = (codeDescription ?? 'code-change')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 40);
+          const uuid = randomUUID().slice(0, 8);
+          branchName = `codocs/${agentName}/${slug}-${uuid}`;
+
+          this.debug(`[processCodeComment] Creating worktree: ${branchName}`);
+          const wt = await createWorktree(this.repoRoot, baseBranch, branchName);
+          worktreePath = wt.worktreePath;
+
+          // Store the task
+          if (this.codeTaskStore && comment.id) {
+            taskId = this.codeTaskStore.create({
+              documentId,
+              commentId: comment.id,
+              agentName,
+              branchName,
+              worktreePath,
+              baseBranch,
+            });
+          }
+        }
+      } else {
+        // Direct mode: run agent in the repo root, no worktree
+        worktreePath = this.repoRoot;
+        branchName = '';
+        baseBranch = '';
+      }
+
+      // Build code prompt and run the agent
+      const prompt = buildCodePrompt({
+        agentName,
+        commentText,
+        quotedText,
+        documentId,
+        thread: event.thread,
+        workingDirectory: worktreePath,
+        existingPR: prNumber && prUrl ? { number: prNumber, url: prUrl } : undefined,
+      });
+
+      const sessionKey = comment.id ? `${documentId}:${comment.id}:code` : `${documentId}:code`;
+      let session = this.sessionStore.getSession(agentName, sessionKey);
+      const existingSessionId = session?.sessionId ?? null;
+
+      const runOpts = {
+        workingDirectory: worktreePath,
+        agentName,
+        permissionMode: this.getPermissionMode(),
+      };
+
+      this.debug(`[processCodeComment] Running agent in ${worktreePath}`);
+      let result = await this.agentRunner.run(prompt, existingSessionId, runOpts);
+
+      if (result.exitCode !== 0 && existingSessionId) {
+        this.debug(`Session resume failed, retrying with fresh session`);
+        this.sessionStore.deleteSession(agentName, sessionKey);
+        result = await this.agentRunner.run(prompt, null, runOpts);
+      }
+
+      this.sessionStore.upsertSession(agentName, sessionKey, result.sessionId);
+
+      const agentResponse = result.stdout.trim();
+
+      if (codeMode === 'pr') {
+        // Commit changes in the worktree
+        const commitMessage = codeDescription ?? commentText.slice(0, 72);
+        const sha = await commitAll(worktreePath, commitMessage);
+
+        if (sha) {
+          this.debug(`[processCodeComment] Committed: ${sha}`);
+
+          // Push the branch
+          await pushBranch(worktreePath, branchName);
+          this.debug(`[processCodeComment] Pushed branch ${branchName}`);
+
+          // Create or update PR
+          const ghToken = this.getGithubToken();
+          if (ghToken && !prNumber) {
+            // New PR
+            try {
+              const repoInfo = await getRepoInfo(this.repoRoot);
+              const prInfo = await createDraftPR({
+                token: ghToken,
+                owner: repoInfo.owner,
+                repo: repoInfo.repo,
+                branch: branchName,
+                baseBranch,
+                title: codeDescription ?? commentText.slice(0, 72),
+                body: buildPRBody({ commentText, documentId, agentName }),
+              });
+              prNumber = prInfo.number;
+              prUrl = prInfo.url;
+              this.debug(`[processCodeComment] Created draft PR #${prNumber}: ${prUrl}`);
+
+              if (this.codeTaskStore && taskId != null) {
+                this.codeTaskStore.updatePR(taskId, prNumber, prUrl);
+              }
+            } catch (prErr: any) {
+              this.debug(`[processCodeComment] Failed to create PR: ${prErr.message}`);
+            }
+          } else if (ghToken && prNumber) {
+            // Follow-up: add comment to existing PR
+            try {
+              const repoInfo = await getRepoInfo(this.repoRoot);
+              await addPRComment({
+                token: ghToken,
+                owner: repoInfo.owner,
+                repo: repoInfo.repo,
+                prNumber,
+                body: `Follow-up from Google Doc comment:\n> ${commentText}\n\n${agentResponse}`,
+              });
+            } catch (prErr: any) {
+              this.debug(`[processCodeComment] Failed to add PR comment: ${prErr.message}`);
+            }
+          }
+
+          editSummary = prUrl ? `PR ${prUrl}` : `Committed ${sha.slice(0, 7)}`;
+        } else {
+          this.debug(`[processCodeComment] No changes to commit`);
+          editSummary = 'No code changes';
+        }
+
+        // Build reply with PR link
+        replyContent = agentResponse || 'Done — no code changes needed.';
+        if (prUrl) {
+          replyContent += `\n\nDraft PR: ${prUrl}`;
+        }
+      } else {
+        // Direct mode: no commit/PR management
+        replyContent = agentResponse || 'Done.';
+        editSummary = 'Direct code changes';
+      }
+    } catch (err: any) {
+      this.debug(`[processCodeComment] Error: ${err.message ?? err}`);
+      replyContent = replyContent || `Error: ${err.message ?? 'unknown error'}`;
+      throw err;
+    } finally {
+      await this.replaceThinkingReply(documentId, comment.id, thinkingReplyId, replyContent);
+      this.debug(`[processCodeComment] Done`);
     }
 
     return { replyPreview: replyContent, editSummary };

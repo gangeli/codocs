@@ -73,10 +73,13 @@ export interface Stats {
   startTime: Date;
 }
 
+export type CodeMode = 'pr' | 'direct' | 'off';
+
 export interface Settings {
   maxAgents: number;
   onBudgetExhausted: 'pause' | 'warn' | 'stop';
   permissionMode: PermissionMode;
+  codeMode: CodeMode;
   debugMode: boolean;
 }
 
@@ -96,14 +99,17 @@ export interface TuiState {
   agentType: string;
   /** Whether --permission-mode auto is available for this account. */
   autoModeAvailable: boolean;
+  /** Whether GitHub authentication is configured. */
+  githubConnected: boolean;
 }
 
 export function createInitialState(
   docId: string,
-  opts?: { docTitle?: string; agentType?: string; autoModeAvailable?: boolean },
+  opts?: { docTitle?: string; agentType?: string; autoModeAvailable?: boolean; githubConnected?: boolean },
 ): TuiState {
   const docUrl = `https://docs.google.com/document/d/${docId}/edit`;
   const autoModeAvailable = opts?.autoModeAvailable ?? false;
+  const githubConnected = opts?.githubConnected ?? false;
   return {
     docUrl,
     docTitle: opts?.docTitle ?? docId.slice(0, 12) + '...',
@@ -123,11 +129,13 @@ export function createInitialState(
       permissionMode: autoModeAvailable
         ? { type: 'auto', allowedTools: ALLOWED_TOOLS }
         : { type: 'allowedTools', tools: ALLOWED_TOOLS, disallowedTools: DISALLOWED_TOOLS },
+      codeMode: githubConnected ? 'pr' : 'direct',
       debugMode: false,
     },
     showSettings: false,
     paused: false,
     agentType: opts?.agentType ?? 'claude',
     autoModeAvailable,
+    githubConnected,
   };
 }
