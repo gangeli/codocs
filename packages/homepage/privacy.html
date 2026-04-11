@@ -80,7 +80,7 @@
 <body>
 
   <div class="policy">
-    <a href="/" class="policy-back">&larr; Back to Codocs</a>
+    <a href="./" class="policy-back">&larr; Back to Codocs</a>
 
     <div class="policy-header">
       <h1>Privacy Policy</h1>
@@ -128,7 +128,8 @@
       application servers that receive or store your data.
     </p>
     <ul>
-      <li>OAuth tokens are saved to <code>~/.local/share/codocs/</code> with restricted file permissions (<code>0600</code>, readable only by your user account)</li>
+      <li>Google OAuth tokens are saved to <code>~/.local/share/codocs/auth.json</code> with restricted file permissions (<code>0600</code>, readable only by your user account)</li>
+      <li>GitHub tokens, if configured, are saved to <code>~/.local/share/codocs/github-auth.json</code> with the same restricted permissions</li>
       <li>Session metadata (agent names, document IDs, processing queues) is stored in a local SQLite database at <code>~/.local/share/codocs/sessions.db</code>. This data never leaves your machine.</li>
       <li>Configuration is stored at <code>~/.config/codocs/config.json</code></li>
       <li>If you configure a service account for bot replies, the service account key file is stored at <code>~/.local/share/codocs/service-account.json</code></li>
@@ -154,9 +155,10 @@
     <ul>
       <li><strong>Google APIs</strong> &mdash; to read and edit documents, manage Drive files, and receive comment notifications</li>
       <li><strong>GitHub APIs</strong> &mdash; to create branches and draft pull requests</li>
-      <li><strong>Anthropic (Claude)</strong> &mdash; Codocs invokes Claude Code as a local subprocess to process comments. When a comment is processed, the following data is passed to Claude Code: the comment text, the document content (converted to Markdown), any quoted text, and the comment thread history (including author display names). Claude Code then communicates with Anthropic&rsquo;s API. Refer to <a href="https://www.anthropic.com/privacy">Anthropic&rsquo;s privacy policy</a> for details on how they handle data sent to their API.</li>
+      <li><strong>AI model providers</strong> &mdash; Codocs invokes a configurable coding agent (by default, Claude Code) as a local subprocess on your machine to process comments. When a comment is processed, the following data is passed to the agent process: the comment text, the document content (converted to Markdown), any quoted text, and the comment thread history (including author display names). The agent process running on your machine then communicates with its upstream AI provider (e.g., Anthropic&rsquo;s API for Claude Code). This communication happens directly between your machine and the provider&rsquo;s API &mdash; Codocs does not intermediate, proxy, or store this traffic. You are responsible for reviewing and accepting the terms of service and privacy policy of whatever AI provider your agent uses. For Claude Code, refer to <a href="https://www.anthropic.com/privacy">Anthropic&rsquo;s privacy policy</a>.</li>
     </ul>
     <p>
+      Beyond Google, GitHub, and the AI provider used by your configured agent,
       Codocs does not send your data to any other third parties. We do not sell,
       rent, or share your data with advertisers, data brokers, or analytics providers.
     </p>
@@ -233,9 +235,10 @@
 
     <h2>Age restriction</h2>
     <p>
-      Codocs is not intended for use by anyone under the age specified in our
-      <a href="/terms.html">Terms of Service</a>. We do not knowingly collect
-      data from children.
+      Codocs is not intended for use by anyone under the age of 16. We do not
+      knowingly collect data from children. If you believe that a child under 16
+      has used Codocs in a way that resulted in their personal data being
+      processed, please contact us so we can address it.
     </p>
 
     <h2>Changes to this policy</h2>
@@ -244,7 +247,16 @@
       For material changes, we will note them in the project&rsquo;s release notes.
     </p>
 
-    <h2>Contact</h2>
+    <h2>Data controller</h2>
+    <p>
+      The data controller for Codocs is:
+    </p>
+    <p>
+      GAAS Corporation<br>
+      6925 N. Camino de las Candelas<br>
+      Tucson, AZ 85718<br>
+      United States
+    </p>
     <p>
       Questions about this policy? Email
       <a href="mailto:me@gabor.dev">me@gabor.dev</a> or open an issue on
