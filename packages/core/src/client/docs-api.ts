@@ -14,18 +14,27 @@ export class DocsApi {
     });
     const docId = res.data.documentId!;
 
-    // Switch to pageless format by clearing the page size
-    await this.docs.documents.batchUpdate({
-      documentId: docId,
-      requestBody: {
-        requests: [{
-          updateDocumentStyle: {
-            documentStyle: { pageSize: undefined },
-            fields: 'pageSize',
-          },
-        }],
-      },
-    });
+    // Switch to pageless format by setting a very large page height
+    try {
+      await this.docs.documents.batchUpdate({
+        documentId: docId,
+        requestBody: {
+          requests: [{
+            updateDocumentStyle: {
+              documentStyle: {
+                pageSize: {
+                  width: { magnitude: 612, unit: 'PT' },
+                  height: { magnitude: 100000, unit: 'PT' },
+                },
+              },
+              fields: 'pageSize',
+            },
+          }],
+        },
+      });
+    } catch {
+      // Non-critical — doc still works with default page size
+    }
 
     return docId;
   }

@@ -7,6 +7,7 @@ import {
   parseDocumentToMarkdown,
   parseDocumentToMarkdownWithMapping,
   type MarkdownWithMapping,
+  type ParseOptions,
 } from './element-parser.js';
 
 export type { MarkdownWithMapping } from './element-parser.js';
@@ -15,14 +16,11 @@ export type { MarkdownWithMapping } from './element-parser.js';
  * Convert a Google Docs document JSON to markdown.
  *
  * @param document - The full document response from documents.get.
- * @param options - Optional filtering and attribution settings.
+ * @param options - Optional filtering, attribution, and mermaid settings.
  */
 export function docsToMarkdown(
   document: docs_v1.Schema$Document,
-  options: {
-    agentFilter?: string;
-    includeAttribution?: boolean;
-  } = {},
+  options: ParseOptions = {},
 ): string {
   return parseDocumentToMarkdown(document, options);
 }
@@ -35,10 +33,7 @@ export function docsToMarkdown(
  */
 export function docsToMarkdownWithMapping(
   document: docs_v1.Schema$Document,
-  options: {
-    agentFilter?: string;
-    includeAttribution?: boolean;
-  } = {},
+  options: ParseOptions = {},
 ): MarkdownWithMapping {
   return parseDocumentToMarkdownWithMapping(document, options);
 }

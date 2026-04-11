@@ -17,6 +17,8 @@ interface ParseContext {
   filterRanges: Array<{ startIndex: number; endIndex: number }> | null;
   /** Whether to emit attribution markers. */
   includeAttribution: boolean;
+  /** Mermaid source hash → original source, for restoring diagrams from images. */
+  mermaidHashes: Map<string, string>;
 }
 
 /** An entry mapping a markdown character offset to a Google Doc index. */
@@ -35,32 +37,30 @@ export interface MarkdownWithMapping {
   indexMap: IndexMapEntry[];
 }
 
+export interface ParseOptions {
+  agentFilter?: string;
+  includeAttribution?: boolean;
+  /** Mermaid hash→source map for restoring diagrams from images. */
+  mermaidHashes?: Map<string, string>;
+}
+
 export function parseDocumentToMarkdown(
   document: docs_v1.Schema$Document,
-  options: {
-    agentFilter?: string;
-    includeAttribution?: boolean;
-  } = {},
+  options: ParseOptions = {},
 ): string {
   return parseDocumentToMarkdownImpl(document, options).markdown;
 }
 
 export function parseDocumentToMarkdownWithMapping(
   document: docs_v1.Schema$Document,
-  options: {
-    agentFilter?: string;
-    includeAttribution?: boolean;
-  } = {},
+  options: ParseOptions = {},
 ): MarkdownWithMapping {
   return parseDocumentToMarkdownImpl(document, options);
 }
 
 function parseDocumentToMarkdownImpl(
   document: docs_v1.Schema$Document,
-  options: {
-    agentFilter?: string;
-    includeAttribution?: boolean;
-  } = {},
+  options: ParseOptions = {},
 ): MarkdownWithMapping {
   const namedRanges = extractNamedRanges(document);
 
@@ -75,6 +75,7 @@ function parseDocumentToMarkdownImpl(
     namedRanges,
     filterRanges,
     includeAttribution: options.includeAttribution ?? false,
+    mermaidHashes: options.mermaidHashes ?? new Map(),
   };
 
   const body = document.body;
@@ -244,6 +245,16 @@ function formatInlineObject(
   const embedded =
     inlineObject?.inlineObjectProperties?.embeddedObject;
   if (!embedded) return '';
+
+  // Check if this image is a rendered mermaid diagram (by description hash)
+  const description = embedded.description ?? '';
+  if (description.startsWith('mermaid:') && ctx.mermaidHashes.size > 0) {
+    const hash = description.slice('mermaid:'.length);
+    const source = ctx.mermaidHashes.get(hash);
+    if (source) {
+      return '```mermaid\n' + source + '\n```';
+    }
+  }
 
   const url = embedded.imageProperties?.contentUri ?? '';
   const title = embedded.title ?? embedded.description ?? 'image';

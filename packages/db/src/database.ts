@@ -71,6 +71,14 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_code_tasks_lookup
     ON code_tasks (document_id, comment_id);
+
+  CREATE TABLE IF NOT EXISTS mermaid_mappings (
+    document_id    TEXT NOT NULL,
+    source_hash    TEXT NOT NULL,
+    mermaid_source TEXT NOT NULL,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (document_id, source_hash)
+  );
 `;
 
 function getDataDir(): string {

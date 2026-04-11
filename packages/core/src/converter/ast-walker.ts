@@ -31,7 +31,13 @@ export interface TableSegment {
   numColumns: number;
 }
 
-export type WalkSegment = TextSegment | TableSegment;
+export interface ImageSegment {
+  type: 'image';
+  /** Original mermaid source code. */
+  mermaidSource: string;
+}
+
+export type WalkSegment = TextSegment | TableSegment | ImageSegment;
 
 export interface WalkResult {
   /** Ordered segments of content. */
@@ -316,6 +322,13 @@ function emitInlineCode(value: string, ctx: WalkContext) {
 }
 
 function emitCodeBlock(node: Code, ctx: WalkContext) {
+  // Mermaid code blocks become ImageSegments for later rendering
+  if (node.lang === 'mermaid') {
+    flushTextSegment(ctx);
+    ctx.segments.push({ type: 'image', mermaidSource: node.value });
+    return;
+  }
+
   const start = ctx.offset;
   ctx.buf += node.value;
   ctx.offset += node.value.length;

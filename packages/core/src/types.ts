@@ -36,6 +36,8 @@ export interface WriteOptions {
   agent?: AgentIdentity;
   /** Insert at a specific document index (advanced) */
   insertAt?: number;
+  /** Database handle for mermaid diagram mapping storage */
+  db?: unknown;
 }
 
 /** Options when reading a doc as markdown */
@@ -44,6 +46,8 @@ export interface ReadOptions {
   agentFilter?: string;
   /** Include <!-- agent:name --> markers in the output */
   includeAttribution?: boolean;
+  /** Database handle for mermaid diagram restoration */
+  db?: unknown;
 }
 
 /** A comment to place on a doc */

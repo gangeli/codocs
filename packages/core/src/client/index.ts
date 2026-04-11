@@ -15,7 +15,7 @@ import { AGENT_RANGE_PREFIX } from '../types.js';
 import { createAuth } from '../auth/index.js';
 import { DocsApi } from './docs-api.js';
 import { DriveApi } from './drive-api.js';
-import { markdownToDocsRequests } from '../converter/md-to-docs.js';
+import { markdownToDocsRequests, markdownToDocsRequestsAsync } from '../converter/md-to-docs.js';
 import { docsToMarkdown } from '../converter/docs-to-md.js';
 import {
   createAttributionRequests,
@@ -107,6 +107,93 @@ export class CodocsClient {
       clearFirst = bodyEndIndex > 2;
     }
 
+    // Use async path if markdown contains mermaid blocks
+    const hasMermaid = /```mermaid\b/.test(markdown);
+
+    if (hasMermaid) {
+      const result = await markdownToDocsRequestsAsync(
+        markdown,
+        insertionIndex,
+        clearFirst,
+        bodyEndIndex,
+        { driveApi: this.driveApi, documentId: docId },
+      );
+
+      if (result.requests.length === 0) return;
+
+      if (opts.agent && result.text.length > 0) {
+        const attrRequests = createAttributionRequests(
+          opts.agent.name,
+          insertionIndex,
+          insertionIndex + result.text.length,
+          opts.agent.color,
+        );
+        result.requests.push(...attrRequests);
+      }
+
+      let batchResponse: import('googleapis').docs_v1.Schema$BatchUpdateDocumentResponse;
+      try {
+        batchResponse = await this.docsApi.batchUpdate(docId, result.requests);
+      } finally {
+        // Always clean up temp Drive files
+        for (const fileId of result.tempDriveFileIds) {
+          try {
+            await this.driveApi.deleteFile(fileId);
+          } catch {
+            // Best-effort cleanup
+          }
+        }
+      }
+
+      // Set description on each inserted image (for round-trip restoration).
+      // The batchUpdate response contains objectIds for insertInlineImage replies.
+      if (result.mermaidHashes.length > 0 && batchResponse.replies) {
+        // updateEmbeddedObjectProperties is available in the API but may
+        // not be in the TypeScript types — cast through any.
+        const descRequests: any[] = [];
+        let hashIdx = 0;
+        for (const reply of batchResponse.replies) {
+          const objectId = (reply as any).insertInlineImage?.objectId;
+          if (objectId && hashIdx < result.mermaidHashes.length) {
+            descRequests.push({
+              updateEmbeddedObjectProperties: {
+                objectId,
+                embeddedObjectProperties: {
+                  description: `mermaid:${result.mermaidHashes[hashIdx].hash}`,
+                },
+                fields: 'description',
+              },
+            });
+            hashIdx++;
+          }
+        }
+        if (descRequests.length > 0) {
+          try {
+            await this.docsApi.batchUpdate(docId, descRequests);
+          } catch {
+            // Non-critical — diagram won't round-trip but it's still visible
+          }
+        }
+      }
+
+      // Store mermaid mappings in DB if provided
+      if (opts.db && result.mermaidHashes.length > 0) {
+        try {
+          const { MermaidStore, saveDatabase } = await import('@codocs/db');
+          const store = new MermaidStore(opts.db as any);
+          for (const { source } of result.mermaidHashes) {
+            store.save(docId, source);
+          }
+          saveDatabase(opts.db as any);
+        } catch {
+          // Non-critical — diagram will still render, just won't round-trip
+        }
+      }
+
+      return;
+    }
+
+    // Sync path (no mermaid blocks)
     const { text, requests } = markdownToDocsRequests(
       markdown,
       insertionIndex,
@@ -116,7 +203,6 @@ export class CodocsClient {
 
     if (requests.length === 0) return;
 
-    // Add attribution if agent is specified
     if (opts.agent && text.length > 0) {
       const attrRequests = createAttributionRequests(
         opts.agent.name,
@@ -137,9 +223,23 @@ export class CodocsClient {
    */
   async readMarkdown(docId: string, opts: ReadOptions = {}): Promise<string> {
     const doc = await this.docsApi.getDocument(docId);
+
+    // Load mermaid hash mappings from DB if available
+    let mermaidHashes: Map<string, string> | undefined;
+    if (opts.db) {
+      try {
+        const { MermaidStore } = await import('@codocs/db');
+        const store = new MermaidStore(opts.db as any);
+        mermaidHashes = store.getAllForDocument(docId);
+      } catch {
+        // Non-critical
+      }
+    }
+
     return docsToMarkdown(doc, {
       agentFilter: opts.agentFilter,
       includeAttribution: opts.includeAttribution,
+      mermaidHashes,
     });
   }
 

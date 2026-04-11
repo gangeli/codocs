@@ -7,14 +7,31 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import type { Root } from 'mdast';
-import { walkAst, type WalkSegment, type TextSegment, type TableSegment } from './ast-walker.js';
+import { walkAst, type WalkSegment, type TextSegment, type TableSegment, type ImageSegment } from './ast-walker.js';
 import { styleTable } from './table-style.js';
+import { renderMermaidToPng } from './mermaid-renderer.js';
+import { hashMermaidSource } from './mermaid-renderer.js';
+import type { DriveApi } from '../client/drive-api.js';
 
 export interface MdToDocsResult {
   /** The plain text that will be inserted (for text segments only). */
   text: string;
   /** All batchUpdate requests, in the order they should be sent. */
   requests: docs_v1.Schema$Request[];
+}
+
+export interface MdToDocsAsyncResult extends MdToDocsResult {
+  /** Drive file IDs of temp images that must be deleted after batchUpdate. */
+  tempDriveFileIds: string[];
+  /** Mermaid source hashes for each image inserted, in insertion order. */
+  mermaidHashes: Array<{ hash: string; source: string }>;
+  /** Number of insertInlineImage requests in this batch (for extracting objectIds from response). */
+  imageCount: number;
+}
+
+export interface ImageInsertionContext {
+  driveApi: DriveApi;
+  documentId: string;
 }
 
 /**
@@ -58,9 +75,11 @@ export function markdownToDocsRequests(
     if (segment.type === 'text') {
       docIndex = processTextSegment(segment, docIndex, requests, allStyles, allBullets);
       fullText += segment.text;
-    } else {
+    } else if (segment.type === 'table') {
       docIndex = processTableSegment(segment, docIndex, requests, allStyles);
     }
+    // ImageSegments are silently skipped in the sync path
+    // (they require async rendering + Drive upload)
   }
 
   // 3. Apply styles in correct order:
@@ -83,6 +102,130 @@ export function markdownToDocsRequests(
   requests.push(...allBullets);
 
   return { text: fullText, requests };
+}
+
+// ── Async variant (with image support) ────────────────────────
+
+/**
+ * Async variant of markdownToDocsRequests that handles mermaid diagrams.
+ *
+ * Mermaid code blocks are rendered to PNG, uploaded to Drive as temporary
+ * files, and inserted via insertInlineImage. The caller MUST delete the
+ * temp files (returned in tempDriveFileIds) after batchUpdate completes.
+ */
+export async function markdownToDocsRequestsAsync(
+  markdown: string,
+  insertionIndex: number,
+  clearFirst: boolean,
+  endIndex: number | undefined,
+  imageCtx: ImageInsertionContext,
+): Promise<MdToDocsAsyncResult> {
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown) as Root;
+  const { segments } = walkAst(tree);
+
+  const requests: docs_v1.Schema$Request[] = [];
+  let fullText = '';
+  const tempDriveFileIds: string[] = [];
+  const mermaidHashes: Array<{ hash: string; source: string }> = [];
+
+  if (clearFirst && endIndex && endIndex > 1) {
+    requests.push({
+      deleteContentRange: {
+        range: { startIndex: 1, endIndex: endIndex - 1 },
+      },
+    });
+  }
+
+  let docIndex = insertionIndex;
+  const allStyles: docs_v1.Schema$Request[] = [];
+  const allBullets: docs_v1.Schema$Request[] = [];
+
+  // Collect image segments to render and upload in parallel
+  const imageSegments: Array<{ segment: ImageSegment; order: number }> = [];
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].type === 'image') {
+      imageSegments.push({ segment: segments[i] as ImageSegment, order: i });
+    }
+  }
+
+  // Render all mermaid diagrams and upload to Drive
+  const imageResults = new Map<number, { downloadUrl: string; fileId: string; widthPt: number; heightPt: number; hash: string }>();
+
+  for (const { segment, order } of imageSegments) {
+    try {
+      const { png, width, height } = await renderMermaidToPng(segment.mermaidSource);
+      const hash = hashMermaidSource(segment.mermaidSource);
+
+      const { fileId, downloadUrl } = await imageCtx.driveApi.uploadTempImage(
+        png,
+        `mermaid-${hash}.png`,
+      );
+      tempDriveFileIds.push(fileId);
+
+      // Scale to fit page width (468pt = US Letter with 1" margins)
+      const maxWidthPt = 468;
+      const aspectRatio = height / width;
+      const widthPt = maxWidthPt;
+      const heightPt = maxWidthPt * aspectRatio;
+
+      imageResults.set(order, { downloadUrl, fileId, widthPt, heightPt, hash });
+      mermaidHashes.push({ hash, source: segment.mermaidSource });
+    } catch {
+      // Rendering failed — skip this image (it will be omitted from the doc)
+    }
+  }
+
+  // Process all segments in order
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (segment.type === 'text') {
+      docIndex = processTextSegment(segment, docIndex, requests, allStyles, allBullets);
+      fullText += segment.text;
+    } else if (segment.type === 'table') {
+      docIndex = processTableSegment(segment, docIndex, requests, allStyles);
+    } else if (segment.type === 'image') {
+      const result = imageResults.get(i);
+      if (result) {
+        // insertInlineImage inserts an InlineObjectElement consuming 1 index
+        requests.push({
+          insertInlineImage: {
+            uri: result.downloadUrl,
+            location: { index: docIndex },
+            objectSize: {
+              width: { magnitude: result.widthPt, unit: 'PT' },
+              height: { magnitude: result.heightPt, unit: 'PT' },
+            },
+          },
+        });
+        // InlineObjectElement + trailing newline
+        docIndex += 1;
+
+        // Insert a newline after the image to separate from following content
+        requests.push({
+          insertText: {
+            location: { index: docIndex },
+            text: '\n',
+          },
+        });
+        docIndex += 1;
+      }
+    }
+  }
+
+  // Apply styles (same order as sync version)
+  const paraStyles = allStyles.filter((r) => r.updateParagraphStyle);
+  const textStyles = allStyles.filter((r) => r.updateTextStyle);
+  const otherStyles = allStyles.filter((r) => !r.updateParagraphStyle && !r.updateTextStyle);
+
+  const byStartDesc = (a: typeof allStyles[0], b: typeof allStyles[0]) =>
+    getStartIndex(b) - getStartIndex(a);
+
+  requests.push(...paraStyles.sort(byStartDesc));
+  requests.push(...otherStyles.sort(byStartDesc));
+  requests.push(...textStyles.sort(byStartDesc));
+  requests.push(...allBullets);
+
+  return { text: fullText, requests, tempDriveFileIds, mermaidHashes, imageCount: imageResults.size };
 }
 
 // ── Text segment processing ────────────────────────────────────

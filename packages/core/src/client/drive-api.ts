@@ -1,4 +1,5 @@
 import { google, type drive_v3 } from 'googleapis';
+import { Readable } from 'node:stream';
 
 export class DriveApi {
   private drive: drive_v3.Drive;
@@ -141,6 +142,83 @@ export class DriveApi {
         content: 'Resolved',
       },
     });
+  }
+
+  // ── Temp image upload/cleanup for Mermaid diagrams ──────────
+
+  /**
+   * Upload an image buffer to Drive as a temporary file for insertInlineImage.
+   * Sets "anyone with link" read access so the Docs API can fetch it.
+   * The caller MUST delete the file after the batchUpdate completes.
+   */
+  async uploadTempImage(
+    buffer: Buffer,
+    filename: string,
+  ): Promise<{ fileId: string; downloadUrl: string }> {
+    const folderId = await this.findOrCreateFolder('codocs-tmp');
+
+    const res = await this.drive.files.create({
+      fields: 'id',
+      requestBody: {
+        name: filename,
+        mimeType: 'image/png',
+        parents: [folderId],
+      },
+      media: {
+        mimeType: 'image/png',
+        body: Readable.from(buffer),
+      },
+    });
+
+    const fileId = res.data.id!;
+
+    // Make publicly readable so Docs API backend can fetch it
+    await this.drive.permissions.create({
+      fileId,
+      requestBody: { type: 'anyone', role: 'reader' },
+    });
+
+    return {
+      fileId,
+      downloadUrl: `https://drive.google.com/uc?id=${fileId}`,
+    };
+  }
+
+  /** Delete a Drive file by ID. Swallows 404 (already deleted). */
+  async deleteFile(fileId: string): Promise<void> {
+    try {
+      await this.drive.files.delete({ fileId });
+    } catch (err: any) {
+      if (err.code !== 404) throw err;
+    }
+  }
+
+  /**
+   * Delete orphaned temp files older than maxAgeMs from the codocs-tmp folder.
+   * Returns the number of files deleted.
+   */
+  async cleanupOrphanedTempFiles(maxAgeMs: number = 5 * 60 * 1000): Promise<number> {
+    const folderId = await this.findFolder('codocs-tmp');
+    if (!folderId) return 0;
+
+    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+    const res = await this.drive.files.list({
+      q: `'${folderId}' in parents and createdTime < '${cutoff}' and trashed=false`,
+      fields: 'files(id)',
+      spaces: 'drive',
+    });
+
+    const files = res.data.files ?? [];
+    let deleted = 0;
+    for (const file of files) {
+      try {
+        await this.drive.files.delete({ fileId: file.id! });
+        deleted++;
+      } catch {
+        // Best-effort cleanup
+      }
+    }
+    return deleted;
   }
 
   /**
