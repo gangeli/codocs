@@ -9,6 +9,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { request as httpsRequest } from 'node:https';
@@ -21,6 +22,8 @@ export type BillingTier = 'subscription' | 'paygo' | 'free' | 'unavailable';
 export interface HarnessSubscription {
   agentType: AgentType;
   tier: BillingTier;
+  /** The underlying provider, when the agent type is a wrapper (e.g., "cerebras" for opencode). */
+  provider?: string;
   /** Whether monthly quota is exhausted (only set when checkQuota is true). */
   quotaExhausted?: boolean;
   /** Utilization percentage (0–100) if available. */
@@ -90,15 +93,50 @@ function detectClaudeTier(): BillingTier {
 }
 
 /**
+ * Read the Claude Code OAuth access token.
+ *
+ * On macOS, Claude Code stores credentials in the system keychain under
+ * "Claude Code-credentials". On other platforms, falls back to reading
+ * ~/.claude/.credentials.json.
+ */
+function readClaudeOAuthToken(): string | null {
+  // macOS: read from keychain
+  if (platform() === 'darwin') {
+    try {
+      const raw = execFileSync('security', [
+        'find-generic-password',
+        '-s', 'Claude Code-credentials',
+        '-w',
+      ], { timeout: 5000, encoding: 'utf-8' }).trim();
+      const creds = JSON.parse(raw);
+      return creds?.claudeAiOauth?.accessToken ?? null;
+    } catch { /* fall through */ }
+  }
+
+  // Linux/Windows: try credentials file
+  const credPaths = [
+    join(homedir(), '.claude', '.credentials.json'),
+    join(homedir(), '.claude', 'credentials.json'),
+  ];
+  for (const p of credPaths) {
+    try {
+      const raw = readFileSync(p, 'utf-8');
+      const creds = JSON.parse(raw);
+      const token = creds?.claudeAiOauth?.accessToken;
+      if (token) return token;
+    } catch { /* try next */ }
+  }
+
+  return null;
+}
+
+/**
  * Check Claude quota via the OAuth usage endpoint.
  * Returns utilization (0–100) or null if unavailable.
  */
 async function checkClaudeQuota(): Promise<{ exhausted: boolean; utilization?: number } | null> {
   try {
-    const credPath = join(homedir(), '.claude', '.credentials.json');
-    const raw = readFileSync(credPath, 'utf-8');
-    const creds = JSON.parse(raw);
-    const token = creds?.claudeAiOauth?.accessToken;
+    const token = readClaudeOAuthToken();
     if (!token) return null;
 
     const data = await httpGet('https://api.anthropic.com/api/oauth/usage', {
@@ -107,9 +145,9 @@ async function checkClaudeQuota(): Promise<{ exhausted: boolean; utilization?: n
     });
 
     const parsed = JSON.parse(data);
-    // The endpoint returns 5-hour and 7-day utilization as percentages
-    const fiveHourPct = parsed?.fiveHourUtilization ?? 0;
-    const sevenDayPct = parsed?.sevenDayUtilization ?? 0;
+    // The endpoint returns nested objects with snake_case keys
+    const fiveHourPct = parsed?.five_hour?.utilization ?? 0;
+    const sevenDayPct = parsed?.seven_day?.utilization ?? 0;
     const maxUtil = Math.max(fiveHourPct, sevenDayPct);
 
     return {
@@ -201,7 +239,7 @@ function detectCerebrasKey(): string | null {
       const raw = readFileSync(p, 'utf-8');
       const auth = JSON.parse(raw);
       // OpenCode stores provider keys — look for cerebras
-      const key = auth?.cerebras?.apiKey ?? auth?.cerebras?.api_key;
+      const key = auth?.cerebras?.key ?? auth?.cerebras?.apiKey ?? auth?.cerebras?.api_key;
       if (key) return key;
     }
   } catch { /* ignore */ }
@@ -226,7 +264,7 @@ async function probeCerebrasTier(apiKey: string): Promise<{
         'Content-Type': 'application/json',
       },
       JSON.stringify({
-        model: 'llama-4-scout-17b-16e-instruct',
+        model: 'llama3.1-8b',
         messages: [{ role: 'user', content: 'hi' }],
         max_completion_tokens: 1,
       }),
@@ -236,8 +274,9 @@ async function probeCerebrasTier(apiKey: string): Promise<{
     const remainingDaily = parseInt(headers['x-ratelimit-remaining-requests-day'] as string, 10);
     const limitDaily = parseInt(headers['x-ratelimit-limit-requests-day'] as string, 10);
 
-    // Free tier: ~60K TPM. Paid: ~2M+ TPM.
-    const tier: BillingTier = (tpmLimit && tpmLimit > 100_000) ? 'subscription' : 'free';
+    // Free tier: ~60K TPM. Paid (PAYG): ~2M+ TPM.
+    // Cerebras only offers free and pay-as-you-go — no monthly subscription.
+    const tier: BillingTier = (tpmLimit && tpmLimit > 100_000) ? 'paygo' : 'free';
 
     let exhausted = false;
     let utilization: number | undefined;
@@ -283,7 +322,6 @@ function detectCursorTier(): BillingTier {
   // The DB exists — Cursor is installed. Try to read subscription tier
   // by spawning sqlite3 (available on macOS/Linux by default).
   try {
-    const { execFileSync } = require('node:child_process');
     const result = execFileSync('sqlite3', [
       dbPath,
       "SELECT value FROM ItemTable WHERE key = 'cursorAuth/stripeMembershipType'",
@@ -371,7 +409,7 @@ async function detectCodexSubscription(checkQuota: boolean): Promise<HarnessSubs
 
 async function detectCerebrasSubscription(checkQuota: boolean): Promise<HarnessSubscription> {
   const apiKey = detectCerebrasKey();
-  if (!apiKey) return { agentType: 'opencode', tier: 'unavailable' };
+  if (!apiKey) return { agentType: 'opencode', tier: 'unavailable', provider: 'cerebras' };
 
   if (checkQuota) {
     // The probe both determines tier AND checks quota
@@ -379,6 +417,7 @@ async function detectCerebrasSubscription(checkQuota: boolean): Promise<HarnessS
     return {
       agentType: 'opencode',
       tier: result.tier,
+      provider: 'cerebras',
       quotaExhausted: result.exhausted,
       utilization: result.utilization,
     };
@@ -387,7 +426,7 @@ async function detectCerebrasSubscription(checkQuota: boolean): Promise<HarnessS
   // Without quota check, we can't distinguish free from paid without a probe.
   // Do the probe anyway since it's needed for tier detection.
   const result = await probeCerebrasTier(apiKey);
-  return { agentType: 'opencode', tier: result.tier };
+  return { agentType: 'opencode', tier: result.tier, provider: 'cerebras' };
 }
 
 async function detectCursorSubscription(): Promise<HarnessSubscription> {
@@ -423,9 +462,9 @@ function rankSubscriptions(subs: HarnessSubscription[]): HarnessSubscription[] {
       if (rankA !== rankB) return rankA - rankB;
 
       // Within the same effective tier, prefer Cerebras (opencode) if it
-      // has a paid account (original tier is subscription)
-      const cerebrasBoostA = a.agentType === 'opencode' && a.tier === 'subscription' ? -1 : 0;
-      const cerebrasBoostB = b.agentType === 'opencode' && b.tier === 'subscription' ? -1 : 0;
+      // has a paid account
+      const cerebrasBoostA = a.agentType === 'opencode' && (a.tier === 'paygo' || a.tier === 'subscription') ? -1 : 0;
+      const cerebrasBoostB = b.agentType === 'opencode' && (b.tier === 'paygo' || b.tier === 'subscription') ? -1 : 0;
       return cerebrasBoostA - cerebrasBoostB;
     })
     .map(({ effectiveTier: _, ...rest }) => rest);

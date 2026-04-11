@@ -1,4 +1,4 @@
-.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e
+.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/rendering e2e/roundtrip e2e/agents
 
 all: codocs
 
@@ -46,8 +46,16 @@ gcloud-auth:
 infra: gcloud-auth
 	cd terraform && terraform init -upgrade && terraform apply
 
-e2e: build
+e2e: e2e/rendering e2e/roundtrip e2e/agents
+
+e2e/rendering: build
 	npx tsx scripts/e2e-visual-test.ts
+
+e2e/roundtrip: build
+	npx tsx scripts/e2e-roundtrip.ts
+
+e2e/agents: build
+	npx tsx scripts/e2e-agents.ts $(if $(filter 0,$(QUOTA)),,--quota)
 
 clean:
 	rm -rf packages/core/dist packages/db/dist packages/cli/dist dist codocs
