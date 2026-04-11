@@ -93,14 +93,14 @@
     </ul>
 
     <h2>2. Beta Status</h2>
-    <p>Codocs is under active development and should be considered beta software. Features may change, break, or be removed without notice. This status reinforces the warranty disclaimers in Section 11 and the limitation of liability in Section 12.</p>
+    <p>Codocs is under active development and should be considered beta software. Features may change, break, or be removed without notice. This status reinforces the warranty disclaimers in Section 12 and the limitation of liability in Section 13.</p>
 
     <h2>3. Open Source License</h2>
-    <p>The Codocs source code is released under the <a href="https://opensource.org/licenses/MIT">MIT License</a>. These Terms govern your use of the Service and its hosted infrastructure (e.g., the shared Google Cloud Pub/Sub topic). The MIT License governs your right to copy, modify, and distribute the source code. In the event of a conflict between these Terms and the MIT License with respect to the source code, the MIT License controls.</p>
+    <p>The Codocs source code is released under the <a href="https://opensource.org/licenses/MIT">MIT License</a>. These Terms govern your use of the Service and its hosted infrastructure (e.g., the shared Google Cloud Pub/Sub topic). The MIT License governs your right to copy, modify, and distribute the source code. In the event of a conflict between these Terms and the MIT License with respect to the source code, the MIT License controls. For the avoidance of doubt, the MIT License does not grant any rights to use Codocs trademarks, logos, or branding (see Section 9.3).</p>
 
     <h2>4. Eligibility</h2>
     <p>You must be at least 16 years of age to use the Service. By using Codocs, you represent and warrant that you meet this requirement and have the legal capacity to enter into these Terms.</p>
-    <p>Codocs is not directed at children under the age of 13. We do not knowingly collect personal information from children under 13. If we become aware that a child under 13 has provided personal information through the Service, we will take steps to delete such information. If you believe a child under 13 has used the Service, please contact us at <a href="mailto:me@gabor.dev">me@gabor.dev</a>.</p>
+    <p>Codocs is not directed at children under the age of 16. We do not knowingly collect personal information from children under 16. If we become aware that a child under 16 has provided personal information through the Service, we will take steps to delete such information. If you believe a child under 16 has used the Service, please contact us at <a href="mailto:me@gabor.dev">me@gabor.dev</a>.</p>
 
     <h2>5. Accounts and Authentication</h2>
     <p>Codocs does not maintain user accounts. Authentication is handled via OAuth 2.0 through Google and, optionally, GitHub. By authenticating, you authorize Codocs to access the following on your behalf:</p>
@@ -109,7 +109,7 @@
       <li><strong>Google Cloud Pub/Sub:</strong> To receive real-time notifications when comments are posted</li>
       <li><strong>GitHub (optional):</strong> To create branches, commits, and pull requests in repositories you specify</li>
     </ul>
-    <p>You are responsible for safeguarding your OAuth tokens, which are stored locally on your machine. You may revoke Codocs' access at any time through your Google or GitHub account settings.</p>
+    <p>You are responsible for safeguarding your OAuth tokens and any API keys (e.g., Anthropic API keys) used with the Service, all of which are stored locally on your machine. We are not responsible for unauthorized usage or charges resulting from compromised tokens or API keys. You may revoke Codocs' access at any time through your Google or GitHub account settings.</p>
 
     <h2>6. Your Data</h2>
 
@@ -151,7 +151,7 @@
     <h2>8. International Users and GDPR</h2>
 
     <h3>8.1 Legal Basis for Processing</h3>
-    <p>If you are located in the European Economic Area (EEA), United Kingdom, or Switzerland, we process personal data that transits through our shared infrastructure on the basis of legitimate interest (delivering comment notifications necessary for the Service to function). For data processed locally on your machine, no data leaves your control and no legal basis from us is required.</p>
+    <p>If you are located in the European Economic Area (EEA), United Kingdom, or Switzerland, we process personal data that transits through our shared infrastructure on the basis of performance of a contract (these Terms), as the transit of comment notifications is necessary for us to deliver the Service you have agreed to use. For data processed locally on your machine, no data leaves your control and no legal basis from us is required.</p>
 
     <h3>8.2 Your Rights</h3>
     <p>Under the EU General Data Protection Regulation (GDPR), UK GDPR, or Swiss data protection law, you may have the right to:</p>
@@ -164,8 +164,11 @@
     </ul>
     <p>Because Codocs stores nearly all data locally on your machine, you can exercise most of these rights directly by inspecting, modifying, or deleting local files (see our <a href="/privacy.html">Privacy Policy</a> for file locations). For requests relating to metadata that has transited through our shared infrastructure, or to exercise any other data protection right, please contact us at <a href="mailto:me@gabor.dev">me@gabor.dev</a>. We will respond to verified requests within 30 days.</p>
 
-    <h3>8.3 Dispute Resolution</h3>
-    <p>If you are located in a jurisdiction where the choice of forum in Section 16.2 is unenforceable under applicable law (including EU consumer protection law), disputes will be resolved in the competent courts of your jurisdiction, as described in Section 16.3.</p>
+    <h3>8.3 Data Processing Agreements</h3>
+    <p>If you are using Codocs in a commercial or organizational capacity and process personal data through the Service that requires a Data Processing Agreement (DPA) under GDPR Article 28 or similar data protection laws, please contact us at <a href="mailto:me@gabor.dev">me@gabor.dev</a> to request one.</p>
+
+    <h3>8.4 Dispute Resolution</h3>
+    <p>If you are located in a jurisdiction where the choice of forum in Section 17.2 is unenforceable under applicable law (including EU consumer protection law), disputes will be resolved in the competent courts of your jurisdiction, as described in Section 17.3.</p>
 
     <h2>9. Intellectual Property</h2>
 
@@ -175,11 +178,14 @@
     <h3>9.2 AI-Generated Content</h3>
     <p>Content generated by AI agents through Codocs (including document text, code, and pull requests) is provided to you without restriction from us. Ownership and usage rights for AI-generated content may be subject to the terms of the underlying AI provider (Anthropic). <strong>You are solely responsible for reviewing, validating, and approving all AI-generated content before use, including but not limited to document edits, code commits, and pull requests.</strong> AI agents act on your behalf, and you bear responsibility for all actions taken by agents operating under your credentials.</p>
 
-    <h3>9.3 Codocs Branding</h3>
+    <h3>9.3 Autonomous Agent Risks</h3>
+    <p><strong>AI agents operating through Codocs may autonomously modify, overwrite, or delete documents, files, code, branches, and other data in systems accessible through your credentials. These actions may be difficult or impossible to reverse.</strong> You acknowledge these risks and agree to maintain adequate backups of any data accessible to AI agents. You are solely responsible for configuring appropriate access controls and permissions to limit the scope of agent actions.</p>
+
+    <h3>9.4 Codocs Branding</h3>
     <p>The Codocs name, logo, and website design are the property of GAAS Corporation. The MIT License does not grant rights to use Codocs trademarks for endorsement or promotion without prior written consent.</p>
 
-    <h3>9.4 Feedback and Suggestions</h3>
-    <p>If you submit feedback, suggestions, bug reports, or feature requests through <a href="https://github.com/gangeli/codocs">GitHub Issues</a> or pull requests, that feedback is contributed under the project's MIT License. We may use, modify, and incorporate such feedback into the Service. Feedback submitted through other channels (e.g., email) is not subject to any license grant unless you explicitly agree otherwise. Do not submit feedback that you consider confidential or proprietary.</p>
+    <h3>9.5 Feedback and Suggestions</h3>
+    <p>If you submit feedback, suggestions, bug reports, or feature requests through <a href="https://github.com/gangeli/codocs">GitHub Issues</a>, pull requests, or other channels, you grant us a perpetual, worldwide, royalty-free, non-exclusive license to use, modify, and incorporate such feedback into the Service without obligation to you. For contributions of source code via pull requests, the MIT License governs. Do not submit feedback that you consider confidential or proprietary.</p>
 
     <h2>10. Costs and Fees</h2>
     <p>Codocs itself is free and open-source software. However, using the Service may incur costs from third-party providers:</p>
@@ -190,7 +196,10 @@
     </ul>
     <p>You are solely responsible for any third-party costs incurred through your use of the Service. The terminal dashboard displays estimated costs for informational purposes only; actual billing is determined by the respective providers.</p>
 
-    <h2>11. Disclaimer of Warranties</h2>
+    <h2>11. Third-Party Open Source Software</h2>
+    <p>The Service incorporates third-party open-source software components, each provided under its own license terms. These components are provided "as is" without warranty of any kind. We are not responsible for the functionality, security, or availability of third-party open-source software incorporated into or used by the Service. A list of dependencies and their licenses is available in the project's source repository.</p>
+
+    <h2>12. Disclaimer of Warranties</h2>
     <p><strong>The Service is provided "as is" and "as available" without warranties of any kind, whether express or implied, including but not limited to implied warranties of merchantability, fitness for a particular purpose, and non-infringement.</strong></p>
     <p>Without limiting the foregoing, we do not warrant that:</p>
     <ul>
@@ -200,8 +209,8 @@
       <li>Document edits made by AI agents will preserve formatting, content, or intent</li>
     </ul>
 
-    <h2>12. Limitation of Liability</h2>
-    <p><strong>To the maximum extent permitted by applicable law, in no event shall GAAS Corporation or any contributors to Codocs be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of profits, data, use, or goodwill, arising out of or in connection with your use of the Service, whether based on warranty, contract, tort, or any other legal theory, even if advised of the possibility of such damages.</strong></p>
+    <h2>13. Limitation of Liability</h2>
+    <p><strong>To the maximum extent permitted by applicable law, in no event shall GAAS Corporation be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of profits, data, use, or goodwill, arising out of or in connection with your use of the Service, whether based on warranty, contract, tort, or any other legal theory, even if advised of the possibility of such damages.</strong></p>
     <p><strong>Our total aggregate liability for all claims arising out of or in connection with these Terms or the Service shall not exceed fifty U.S. dollars (US $50).</strong></p>
     <p>These limitations apply to, but are not limited to, damages arising from:</p>
     <ul>
@@ -213,10 +222,10 @@
     </ul>
     <p>Nothing in these Terms excludes or limits liability for fraud, gross negligence, willful misconduct, or any liability that cannot be excluded or limited under applicable law.</p>
 
-    <h2>13. Indemnification</h2>
-    <p>If you use Codocs in a commercial or organizational capacity, you agree to indemnify and hold harmless GAAS Corporation and any contributors from and against any claims, liabilities, damages, losses, and expenses (including reasonable legal fees) arising out of or in connection with: (a) your violation of these Terms; (b) your violation of any third-party rights; (c) your misuse of OAuth credentials or third-party services accessed through Codocs; or (d) your knowing use or distribution of AI-generated content after you have become aware, or reasonably should have become aware, that such content infringes third-party intellectual property rights. This indemnification obligation does not apply to individual consumers using Codocs for personal, non-commercial purposes, or where indemnification is prohibited by applicable law.</p>
+    <h2>14. Indemnification</h2>
+    <p>To the maximum extent permitted by applicable law, you agree to indemnify and hold harmless GAAS Corporation and any contributors from and against any claims, liabilities, damages, losses, and expenses (including reasonable legal fees) arising out of or in connection with: (a) your violation of these Terms; (b) your violation of any third-party rights; (c) your misuse of OAuth credentials, API keys, or third-party services accessed through Codocs; or (d) your knowing use or distribution of AI-generated content after you have become aware, or reasonably should have become aware, that such content infringes third-party intellectual property rights. This indemnification obligation does not apply where prohibited by applicable law (including in jurisdictions where consumer indemnification clauses are unenforceable).</p>
 
-    <h2>14. Copyright Infringement and DMCA</h2>
+    <h2>15. Copyright Infringement and DMCA</h2>
     <p>We respect the intellectual property rights of others. If you believe that content generated or transmitted through the Service infringes your copyright, you may submit a notice under the Digital Millennium Copyright Act (DMCA) to our designated agent:</p>
     <p>
       DMCA Agent<br>
@@ -227,47 +236,53 @@
     </p>
     <p>Your notice must include: (i) identification of the copyrighted work; (ii) identification of the infringing material and its location; (iii) your contact information; (iv) a statement of good faith belief that the use is unauthorized; (v) a statement under penalty of perjury that the information is accurate and you are the rights holder or authorized to act on behalf of one; and (vi) your physical or electronic signature.</p>
 
-    <h2>15. Termination</h2>
+    <h2>16. Termination</h2>
     <p>You may stop using the Service at any time by uninstalling the CLI and revoking OAuth access through your Google and GitHub account settings. We reserve the right to restrict access to shared infrastructure (such as the Pub/Sub topic) for cause (e.g., abuse or violation of these Terms) immediately, or for any other reason with at least 30 days' prior notice via the <a href="https://github.com/gangeli/codocs">Codocs GitHub repository</a>. The MIT License grant for the source code survives any termination of these Terms.</p>
 
-    <h2>16. Dispute Resolution</h2>
-    <h3>16.1 Informal Resolution</h3>
+    <h2>17. Dispute Resolution</h2>
+    <h3>17.1 Informal Resolution</h3>
     <p>Before filing any formal proceeding, you agree to attempt to resolve disputes informally by contacting us at <a href="mailto:me@gabor.dev">me@gabor.dev</a> or via the <a href="https://github.com/gangeli/codocs">Codocs GitHub repository</a>. We will attempt to resolve the dispute informally within 60 days.</p>
 
-    <h3>16.2 Jurisdiction</h3>
+    <h3>17.2 Jurisdiction</h3>
     <p>If informal resolution is unsuccessful, any dispute arising out of or relating to these Terms or the Service shall be brought in the state or federal courts located in Pima County, Arizona, and you consent to the personal jurisdiction of such courts. Either party may also bring a claim in small claims court if the claim qualifies.</p>
 
-    <h3>16.3 International Users</h3>
-    <p>If you are located in a jurisdiction where the choice of forum in Section 16.2 is unenforceable under applicable law (including under EU consumer protection law), disputes will be resolved in the competent courts of your jurisdiction.</p>
+    <h3>17.3 International Users</h3>
+    <p>If you are located in a jurisdiction where the choice of forum in Section 17.2 is unenforceable under applicable law (including under EU consumer protection law), disputes will be resolved in the competent courts of your jurisdiction.</p>
 
-    <h2>17. Changes to These Terms</h2>
+    <h2>18. Changes to These Terms</h2>
     <p>We may update these Terms from time to time. Changes will be posted on this page with a revised "Last updated" date. For material changes, we will provide at least 30 days' notice via the <a href="https://github.com/gangeli/codocs">Codocs GitHub repository</a> (e.g., through a release note or pinned issue) before the changes take effect. Your continued use of the Service after the notice period constitutes acceptance of the revised Terms. We encourage you to watch the GitHub repository for notifications.</p>
 
-    <h2>18. Governing Law</h2>
+    <h2>19. Governing Law</h2>
     <p>These Terms are governed by and construed in accordance with the laws of the State of Arizona, United States, without regard to its conflict of law provisions.</p>
 
-    <h2>19. Export Controls</h2>
+    <h2>20. Export Controls</h2>
     <p>The Service may be subject to U.S. export control laws and regulations. You agree not to use, export, or re-export the Service in violation of any applicable export control laws, including the U.S. Export Administration Regulations, or in any manner that would cause Codocs to be in violation of such laws. You represent that you are not located in, or a resident of, any country subject to comprehensive U.S. sanctions.</p>
 
-    <h2>20. Force Majeure</h2>
+    <h2>21. California Privacy Rights (CCPA/CPRA)</h2>
+    <p>If you are a California resident, the California Consumer Privacy Act (CCPA) and California Privacy Rights Act (CPRA) may provide you with additional rights regarding your personal information. We do not sell or share (as defined under the CCPA/CPRA) your personal information, and we have not done so in the preceding 12 months. For details about the categories of personal information we collect and how it is used, please see our <a href="/privacy.html">Privacy Policy</a>. To exercise your rights under California law, please contact us at <a href="mailto:me@gabor.dev">me@gabor.dev</a>.</p>
+
+    <h2>22. Government and Regulated Use</h2>
+    <p>The Service is not designed, intended, or authorized for use in environments requiring government compliance certifications (including but not limited to FedRAMP, ITAR, HIPAA, or equivalent standards). Document content and code processed through Codocs may be transmitted to third-party AI providers located in the United States. If your use case requires compliance with such regulations, you are solely responsible for determining whether the Service meets your requirements.</p>
+
+    <h2>23. Force Majeure</h2>
     <p>We shall not be liable for any failure or delay in performing our obligations under these Terms to the extent that such failure or delay results from circumstances beyond our reasonable control, including but not limited to acts of God, natural disasters, war, terrorism, labor disputes, government actions, internet or infrastructure outages, or failures of third-party services (including Google Cloud, Anthropic, or GitHub).</p>
 
-    <h2>21. Severability</h2>
+    <h2>24. Severability</h2>
     <p>If any provision of these Terms is held to be unenforceable, the remaining provisions will remain in full force and effect.</p>
 
-    <h2>22. Entire Agreement</h2>
+    <h2>25. Entire Agreement</h2>
     <p>These Terms, together with the <a href="/privacy.html">Privacy Policy</a> and the MIT License governing the source code, constitute the entire agreement between you and us regarding the Service and supersede all prior agreements, understandings, and communications, whether written or oral.</p>
 
-    <h2>23. Waiver</h2>
+    <h2>26. Waiver</h2>
     <p>The failure of either party to enforce any provision of these Terms shall not constitute a waiver of that provision or the right to enforce it at a later time.</p>
 
-    <h2>24. Assignment</h2>
+    <h2>27. Assignment</h2>
     <p>You may not assign or transfer your rights or obligations under these Terms without our prior written consent. We may assign these Terms in connection with a merger, acquisition, reorganization, or transfer of substantially all of our assets, provided that the assignee agrees to be bound by these Terms.</p>
 
-    <h2>25. Third-Party Beneficiaries</h2>
-    <p>These Terms do not create any third-party beneficiary rights. Contributors to the Codocs open-source project are referenced in the limitation of liability and indemnification sections for clarity, but are not intended third-party beneficiaries of these Terms and may not enforce any provision herein.</p>
+    <h2>28. Third-Party Beneficiaries</h2>
+    <p>Except as set forth in this section, these Terms do not create any third-party beneficiary rights. Contributors to the Codocs open-source project are intended third-party beneficiaries solely of the indemnification provision in Section 14, and may enforce that provision to the extent it applies to claims arising from their contributions. Contributors may not enforce any other provision of these Terms.</p>
 
-    <h2>26. Contact</h2>
+    <h2>29. Contact</h2>
     <p>If you have questions about these Terms, please contact us:</p>
     <p>
       GAAS Corporation<br>
