@@ -18,6 +18,8 @@ export interface AgentRunOptions {
   agentName?: string;
   /** How tool permissions are handled for the agent process. */
   permissionMode?: PermissionMode;
+  /** Model to use for this run (e.g., "haiku", "sonnet", "opus", or a full model ID). */
+  model?: string;
 }
 
 export interface AgentRunResult {

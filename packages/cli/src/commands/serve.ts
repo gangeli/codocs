@@ -585,6 +585,13 @@ export function registerServeCommand(program: Command) {
             return { type: 'auto' };
           },
           codeTaskStore,
+          model: () => {
+            if (tui.ref) {
+              const settings = tui.ref.getSettings();
+              return settings.defaultModel[agentType] || undefined;
+            }
+            return undefined;
+          },
           codeMode: () => {
             if (tui.ref) {
               return tui.ref.getSettings().codeMode;

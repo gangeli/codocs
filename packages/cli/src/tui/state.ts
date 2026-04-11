@@ -75,12 +75,21 @@ export interface Stats {
 
 export type CodeMode = 'pr' | 'direct' | 'off';
 
+/**
+ * Default model per agent type (e.g., `{ claude: 'sonnet' }`).
+ * Keys are agent runner names; values are model aliases ("haiku", "sonnet",
+ * "opus") or full model IDs (e.g., "claude-sonnet-4-6").
+ */
+export type DefaultModelMap = Record<string, string>;
+
 export interface Settings {
   maxAgents: number;
   onBudgetExhausted: 'pause' | 'warn' | 'stop';
   permissionMode: PermissionMode;
   codeMode: CodeMode;
   debugMode: boolean;
+  /** Default model to use per agent type. Empty map means use the agent's built-in default. */
+  defaultModel: DefaultModelMap;
 }
 
 export interface TuiState {
@@ -131,6 +140,7 @@ export function createInitialState(
         : { type: 'allowedTools', tools: ALLOWED_TOOLS, disallowedTools: DISALLOWED_TOOLS },
       codeMode: githubConnected ? 'pr' : 'direct',
       debugMode: false,
+      defaultModel: {},
     },
     showSettings: false,
     paused: false,

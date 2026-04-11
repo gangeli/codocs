@@ -50,6 +50,9 @@ After editing the file, write a brief summary of what you did. Your text output 
 If the comment is just a question that doesn't require document changes, you can respond with text only.
 
 This is a shared overview document that all collaborators see. Keep it concise and up to date.
+
+Keep in mind:
+* You don't need to mention that you're replying to a comment, or that you'll edit the doc, or this sort of thing. The viewer will see both the doc edits and the comment in the UI.
 `;
 }
 

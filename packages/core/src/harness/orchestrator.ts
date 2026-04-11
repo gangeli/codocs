@@ -70,6 +70,8 @@ export interface OrchestratorConfig {
   githubToken?: () => string | null;
   /** Git repo root directory (for worktree creation). Defaults to process.cwd(). */
   repoRoot?: string;
+  /** Model to use for agent runs (e.g., "haiku", "sonnet", "opus"). Called per-invocation to support runtime changes. */
+  model?: string | (() => string | undefined);
   /** Optional logger. */
   debug?: (msg: string) => void;
 }
@@ -90,6 +92,7 @@ export class AgentOrchestrator {
   private getCodeMode: () => CodeMode;
   private getGithubToken: () => string | null;
   private repoRoot: string;
+  private getModel: () => string | undefined;
 
   /** Agents currently being drained. Prevents double-drain. */
   private processingAgents = new Set<string>();
@@ -116,6 +119,8 @@ export class AgentOrchestrator {
     this.getCodeMode = typeof cm === 'function' ? cm : () => cm ?? 'off';
     this.getGithubToken = config.githubToken ?? (() => null);
     this.repoRoot = config.repoRoot ?? process.cwd();
+    const m = config.model;
+    this.getModel = typeof m === 'function' ? m : () => m;
   }
 
   /** Resolve the fallback agent name for a given document. */
@@ -319,6 +324,7 @@ export class AgentOrchestrator {
         workingDirectory: undefined,
         agentName,
         permissionMode: this.getPermissionMode(),
+        model: this.getModel(),
       };
       this.debug(`[processComment] Running agent (session: ${existingSessionId ?? 'new'})`);
       let result = await this.agentRunner.run(prompt, existingSessionId, runOpts);
@@ -575,6 +581,7 @@ export class AgentOrchestrator {
         workingDirectory: worktreePath,
         agentName,
         permissionMode: this.getPermissionMode(),
+        model: this.getModel(),
       };
 
       this.debug(`[processCodeComment] Running agent in ${worktreePath}`);

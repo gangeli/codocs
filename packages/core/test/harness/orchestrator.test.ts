@@ -70,8 +70,8 @@ function createMockReplyClient(callLog: CallLog[]): CodocsClient {
 function createMockRunner(callLog: CallLog[], stdout = 'Agent response text'): AgentRunner {
   return {
     name: 'mock',
-    run: vi.fn(async (prompt: string, sessionId: string | null) => {
-      callLog.push({ method: 'agentRun', args: [sessionId ? 'resume' : 'new'] });
+    run: vi.fn(async (prompt: string, sessionId: string | null, opts?: any) => {
+      callLog.push({ method: 'agentRun', args: [sessionId ? 'resume' : 'new', opts] });
       return {
         sessionId: sessionId ?? 'new-session-id',
         exitCode: 0,
@@ -374,5 +374,72 @@ describe('AgentOrchestrator E2E', () => {
     await orchestrator.waitForIdle();
     const secondRunCall = callLog.find((c) => c.method === 'agentRun');
     expect(secondRunCall!.args[0]).toBe('resume'); // resumed session
+  });
+
+  it('passes model to agent runner when configured', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const runner = createMockRunner(callLog);
+
+    const orchestrator = new AgentOrchestrator({
+      client,
+      replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'test-agent',
+      model: 'sonnet',
+    });
+
+    await orchestrator.handleComment(makeCommentEvent());
+    await orchestrator.waitForIdle();
+
+    const agentCall = callLog.find((c) => c.method === 'agentRun');
+    expect(agentCall).toBeDefined();
+    expect(agentCall!.args[1]).toHaveProperty('model', 'sonnet');
+  });
+
+  it('passes model from a callback to agent runner', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const runner = createMockRunner(callLog);
+
+    let currentModel: string | undefined = 'haiku';
+    const orchestrator = new AgentOrchestrator({
+      client,
+      replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'test-agent',
+      model: () => currentModel,
+    });
+
+    await orchestrator.handleComment(makeCommentEvent());
+    await orchestrator.waitForIdle();
+
+    const agentCall = callLog.find((c) => c.method === 'agentRun');
+    expect(agentCall!.args[1]).toHaveProperty('model', 'haiku');
+  });
+
+  it('does not pass model when not configured', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const runner = createMockRunner(callLog);
+
+    const orchestrator = new AgentOrchestrator({
+      client,
+      replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    await orchestrator.handleComment(makeCommentEvent());
+    await orchestrator.waitForIdle();
+
+    const agentCall = callLog.find((c) => c.method === 'agentRun');
+    expect(agentCall!.args[1]).toHaveProperty('model', undefined);
   });
 });

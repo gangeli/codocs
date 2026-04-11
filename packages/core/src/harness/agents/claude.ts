@@ -59,6 +59,10 @@ export class ClaudeRunner implements AgentRunner {
         break;
     }
 
+    if (opts?.model) {
+      args.push('--model', opts.model);
+    }
+
     if (sessionId) {
       args.push('--resume');
     }

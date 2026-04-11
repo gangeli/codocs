@@ -3,6 +3,16 @@ import { Box, Text, useInput } from 'ink';
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, type Settings } from '../state.js';
 import type { PermissionMode } from '@codocs/core';
 
+/** Known model options per agent type. Extensible — new agent types add entries here. */
+const MODEL_OPTIONS: Record<string, { label: string; value: string }[]> = {
+  claude: [
+    { label: 'default', value: '' },
+    { label: 'haiku', value: 'haiku' },
+    { label: 'sonnet', value: 'sonnet' },
+    { label: 'opus', value: 'opus' },
+  ],
+};
+
 interface SettingsPanelProps {
   settings: Settings;
   onUpdate: (settings: Settings) => void;
@@ -81,6 +91,15 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
       ],
     });
 
+    const modelOpts = MODEL_OPTIONS[agentType];
+    if (modelOpts) {
+      r.push({
+        label: 'Model',
+        key: 'defaultModel',
+        options: modelOpts,
+      });
+    }
+
     return r;
   }, [agentType, autoModeAvailable, githubConnected]);
 
@@ -98,16 +117,29 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
       setActiveRow((r) => Math.min(rows.length - 1, r + 1));
     } else if (key.leftArrow || key.rightArrow || input === 'h' || input === 'l') {
       const row = rows[activeRow];
-      const currentValue = settings[row.key];
+      const effectiveValue = row.key === 'defaultModel'
+        ? (settings.defaultModel[agentType] || '')
+        : settings[row.key];
       const currentIdx = row.options.findIndex((o) =>
         row.key === 'permissionMode'
-          ? (o.value as PermissionMode).type === (currentValue as PermissionMode).type
-          : o.value === currentValue,
+          ? (o.value as PermissionMode).type === (effectiveValue as PermissionMode).type
+          : o.value === effectiveValue,
       );
       const dir = (key.rightArrow || input === 'l') ? 1 : -1;
       const nextIdx = Math.max(0, Math.min(row.options.length - 1, currentIdx + dir));
       if (nextIdx !== currentIdx) {
-        onUpdate({ ...settings, [row.key]: row.options[nextIdx].value });
+        if (row.key === 'defaultModel') {
+          const newMap = { ...settings.defaultModel };
+          const val = row.options[nextIdx].value as string;
+          if (val) {
+            newMap[agentType] = val;
+          } else {
+            delete newMap[agentType];
+          }
+          onUpdate({ ...settings, defaultModel: newMap });
+        } else {
+          onUpdate({ ...settings, [row.key]: row.options[nextIdx].value });
+        }
       }
     }
   });
@@ -128,7 +160,9 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
 
       {rows.map((row, i) => {
         const isActive = i === activeRow;
-        const currentValue = settings[row.key];
+        const currentValue = row.key === 'defaultModel'
+          ? (settings.defaultModel[agentType] || '')
+          : settings[row.key];
 
         return (
           <Box key={row.key} marginBottom={i < rows.length - 1 ? 1 : 0}>
