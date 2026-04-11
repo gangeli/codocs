@@ -7,12 +7,27 @@ export class DocsApi {
     this.docs = google.docs({ version: 'v1', auth: auth as any });
   }
 
-  /** Create a new blank document. Returns the document ID. */
+  /** Create a new blank document in pageless format. Returns the document ID. */
   async createDocument(title: string): Promise<string> {
     const res = await this.docs.documents.create({
       requestBody: { title },
     });
-    return res.data.documentId!;
+    const docId = res.data.documentId!;
+
+    // Switch to pageless format by clearing the page size
+    await this.docs.documents.batchUpdate({
+      documentId: docId,
+      requestBody: {
+        requests: [{
+          updateDocumentStyle: {
+            documentStyle: { pageSize: undefined },
+            fields: 'pageSize',
+          },
+        }],
+      },
+    });
+
+    return docId;
   }
 
   /** Fetch a full document. */

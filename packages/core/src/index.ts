@@ -63,6 +63,10 @@ export {
   writeTempContext,
   cleanupTempFiles,
   generateAgentName,
+  detectSubscriptions,
+  getPreferredAgentTypes,
+  recordQuotaFailure,
+  clearQuotaFailure,
 } from './harness/index.js';
 export type {
   AgentType,
@@ -91,4 +95,7 @@ export type {
   MdSection,
   MergeResult,
   DiffResult,
+  BillingTier,
+  HarnessSubscription,
+  SubscriptionCheckOptions,
 } from './harness/index.js';

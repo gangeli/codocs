@@ -29,3 +29,10 @@ export type { MdSection, MergeResult, DiffResult } from './diff.js';
 export { AgentOrchestrator } from './orchestrator.js';
 export type { OrchestratorConfig } from './orchestrator.js';
 export { generateAgentName } from './name-generator.js';
+export {
+  detectSubscriptions,
+  getPreferredAgentTypes,
+  recordQuotaFailure,
+  clearQuotaFailure,
+} from './subscription.js';
+export type { BillingTier, HarnessSubscription, SubscriptionCheckOptions } from './subscription.js';
