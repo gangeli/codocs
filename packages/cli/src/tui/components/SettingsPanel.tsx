@@ -1,13 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, type Settings } from '../state.js';
-import type { PermissionMode, RunnerCapabilities } from '@codocs/core';
+import type { AgentType, PermissionMode, RunnerCapabilities } from '@codocs/core';
 
 interface SettingsPanelProps {
   settings: Settings;
   onUpdate: (settings: Settings) => void;
   onClose: () => void;
-  agentType: string;
+  agentType: AgentType;
   autoModeAvailable: boolean;
   githubConnected: boolean;
   capabilities?: RunnerCapabilities;
@@ -31,7 +31,7 @@ function buildPermissionOptions(autoModeAvailable: boolean): { label: string; va
 }
 
 /** Read the current value for a setting row. */
-function getRowValue(row: SettingRow, settings: Settings, agentType: string): any {
+function getRowValue(row: SettingRow, settings: Settings, agentType: AgentType): any {
   if (row.key === 'defaultModel') {
     return settings.defaultModel[agentType] || '';
   }
@@ -43,7 +43,7 @@ function getRowValue(row: SettingRow, settings: Settings, agentType: string): an
 }
 
 /** Write a new value for a setting row, returning updated settings. */
-function setRowValue(row: SettingRow, value: any, settings: Settings, agentType: string): Settings {
+function setRowValue(row: SettingRow, value: any, settings: Settings, agentType: AgentType): Settings {
   if (row.key === 'defaultModel') {
     const newMap = { ...settings.defaultModel };
     if (value) {

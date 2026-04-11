@@ -1,8 +1,9 @@
 /**
  * Cursor agent runner.
  *
- * Spawns the `cursor` CLI in non-interactive mode.
- * Cursor does not support session resume.
+ * Spawns the `cursor-agent` CLI in print mode (`-p`).
+ * Uses `--force` to enable file writes and `--yolo` for full auto-approval.
+ * Supports session resume via `--resume <id>`.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -19,7 +20,7 @@ export class CursorRunner implements AgentRunner {
   readonly name = 'cursor';
   private active = new Map<string, TrackedProcess>();
 
-  constructor(private binaryPath: string = 'cursor') {}
+  constructor(private binaryPath: string = 'cursor-agent') {}
 
   async run(
     prompt: string,
@@ -28,20 +29,29 @@ export class CursorRunner implements AgentRunner {
   ): Promise<AgentRunResult> {
     const effectiveSessionId = sessionId ?? randomUUID();
 
-    const args = ['agent', '--prompt', prompt];
+    // Print mode (-p) for non-interactive use; --force to allow file writes
+    const args = ['-p', '--force'];
 
     if (opts?.model) {
       args.push('--model', opts.model);
     }
 
-    // Map permission mode to Cursor's tool-calling policy
+    // Map permission mode to Cursor flags
     const permMode = opts?.permissionMode ?? { type: 'auto' };
     switch (permMode.type) {
       case 'bypass':
         args.push('--yolo');
         break;
-      // 'auto' and 'allowedTools' both use default (interactive approval)
+      // 'auto' and 'allowedTools' use default approval behavior
     }
+
+    // Session resume
+    if (sessionId) {
+      args.push('--resume', sessionId);
+    }
+
+    // Prompt is the trailing positional argument
+    args.push(prompt);
 
     return spawnAgent(this.binaryPath, args, {
       cwd: opts?.workingDirectory,
@@ -61,12 +71,12 @@ export class CursorRunner implements AgentRunner {
 
   getCapabilities(): RunnerCapabilities {
     return {
-      supportsSessionResume: false,
+      supportsSessionResume: true,
       models: [
-        { label: 'default', value: '' },
-        { label: 'gpt-4.1', value: 'gpt-4.1' },
+        { label: 'auto', value: '' },
+        { label: 'gpt-4o', value: 'gpt-4o' },
         { label: 'claude-sonnet', value: 'claude-sonnet-4-6' },
-        { label: 'cursor-small', value: 'cursor-small' },
+        { label: 'gemini-2.5-flash', value: 'gemini-2.5-flash' },
       ],
       harnessSettings: [],
       supportsPermissionMode: true,

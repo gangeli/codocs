@@ -1,4 +1,4 @@
-export type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent, PermissionMode, HarnessSettingOption, HarnessSetting, RunnerCapabilities } from './agent.js';
+export type { AgentType, AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent, PermissionMode, HarnessSettingOption, HarnessSetting, RunnerCapabilities } from './agent.js';
 export type { SessionStore, SessionMapping, QueueStore, QueueItem } from './types.js';
 export { ClaudeRunner } from './agents/claude.js';
 export { CodexRunner } from './agents/codex.js';

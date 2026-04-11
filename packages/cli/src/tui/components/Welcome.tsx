@@ -88,6 +88,17 @@ function repoName(cwd: string): string {
   return cwd.split('/').pop() ?? cwd;
 }
 
+/** Check if a string looks like a Google Docs URL or a bare document ID. */
+function isValidDocInput(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  // Google Docs URL
+  if (/^(https?:\/\/)?docs\.google\.com\/document\/d\/[a-zA-Z0-9_-]+/.test(trimmed)) return true;
+  // Bare document ID (alphanumeric, hyphens, underscores — typically 20-60 chars)
+  if (/^[a-zA-Z0-9_-]{10,}$/.test(trimmed)) return true;
+  return false;
+}
+
 export function Welcome({ onChoice, cwd }: WelcomeProps) {
   const [step, setStep] = useState<Step>('menu');
   const [selected, setSelected] = useState(0);
@@ -97,14 +108,15 @@ export function Welcome({ onChoice, cwd }: WelcomeProps) {
     // ── Text input steps ──────────────────────────────────
     if (step === 'enter-url' || step === 'enter-path' || step === 'enter-prompt') {
       if (key.return) {
-        if (input.trim()) {
-          if (step === 'enter-url') {
-            onChoice({ type: 'open', docId: input.trim() });
-          } else if (step === 'enter-path') {
-            onChoice({ type: 'import-file', path: input.trim() });
-          } else {
-            onChoice({ type: 'from-prompt', prompt: input.trim() });
-          }
+        const trimmed = input.trim();
+        if (!trimmed) return;
+        if (step === 'enter-url') {
+          if (!isValidDocInput(trimmed)) return; // block invalid input
+          onChoice({ type: 'open', docId: trimmed });
+        } else if (step === 'enter-path') {
+          onChoice({ type: 'import-file', path: trimmed });
+        } else {
+          onChoice({ type: 'from-prompt', prompt: trimmed });
         }
         return;
       }
@@ -216,42 +228,30 @@ export function Welcome({ onChoice, cwd }: WelcomeProps) {
         </>
       )}
 
-      {step === 'enter-url' && (
-        <Box flexDirection="column" alignItems="center">
-          <Text>Paste a Google Docs URL or document ID:</Text>
-          <Box marginTop={1}>
-            <Text dimColor>{'> '}</Text>
-            <Text>{input}</Text>
-            <Text color="cyan">{'\u2588'}</Text>
-          </Box>
-          <Box marginTop={1}>
-            <Text dimColor>esc go back  {'\u00B7'}  enter confirm</Text>
-          </Box>
-        </Box>
-      )}
+      {(step === 'enter-url' || step === 'enter-path' || step === 'enter-prompt') && (
+        <Box flexDirection="column" paddingX={2} width={62}>
+          <Text bold>
+            {step === 'enter-url' && 'Paste a Google Docs URL or document ID'}
+            {step === 'enter-path' && 'Path to a markdown file'}
+            {step === 'enter-prompt' && 'Describe the document you want to create'}
+          </Text>
+          {step === 'enter-url' && (
+            <Text dimColor>e.g. https://docs.google.com/document/d/.../edit</Text>
+          )}
 
-      {step === 'enter-path' && (
-        <Box flexDirection="column" alignItems="center">
-          <Text>Path to a markdown file:</Text>
-          <Box marginTop={1}>
-            <Text dimColor>{'> '}</Text>
+          <Box marginTop={1} borderStyle="round" borderColor={
+            step === 'enter-url' && input.trim() && !isValidDocInput(input)
+              ? 'red'
+              : 'cyan'
+          } paddingX={1}>
             <Text>{input}</Text>
             <Text color="cyan">{'\u2588'}</Text>
           </Box>
-          <Box marginTop={1}>
-            <Text dimColor>esc go back  {'\u00B7'}  enter confirm</Text>
-          </Box>
-        </Box>
-      )}
 
-      {step === 'enter-prompt' && (
-        <Box flexDirection="column" alignItems="center">
-          <Text>Describe the document you want to create:</Text>
-          <Box marginTop={1}>
-            <Text dimColor>{'> '}</Text>
-            <Text>{input}</Text>
-            <Text color="cyan">{'\u2588'}</Text>
-          </Box>
+          {step === 'enter-url' && input.trim() && !isValidDocInput(input) && (
+            <Text color="red">Not a valid Google Docs URL or document ID</Text>
+          )}
+
           <Box marginTop={1}>
             <Text dimColor>esc go back  {'\u00B7'}  enter confirm</Text>
           </Box>

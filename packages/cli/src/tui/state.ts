@@ -2,8 +2,8 @@
  * Shared state types for the TUI.
  */
 
-export type { PermissionMode, RunnerCapabilities } from '@codocs/core';
-import type { PermissionMode, RunnerCapabilities } from '@codocs/core';
+export type { AgentType, PermissionMode, RunnerCapabilities } from '@codocs/core';
+import type { AgentType, PermissionMode, RunnerCapabilities } from '@codocs/core';
 
 /**
  * Tools allowed in "tools" permission mode.
@@ -106,8 +106,8 @@ export interface TuiState {
   settings: Settings;
   showSettings: boolean;
   paused: boolean;
-  /** Which agent runner is in use (e.g. "claude"). */
-  agentType: string;
+  /** Which agent runner is in use. */
+  agentType: AgentType;
   /** Whether --permission-mode auto is available for this account. */
   autoModeAvailable: boolean;
   /** Whether GitHub authentication is configured. */
@@ -136,7 +136,7 @@ export function getStandalonePermissions(opts?: {
 
 export function createInitialState(
   docId: string,
-  opts?: { docTitle?: string; agentType?: string; autoModeAvailable?: boolean; githubConnected?: boolean; runnerCapabilities?: RunnerCapabilities },
+  opts?: { docTitle?: string; agentType?: AgentType; autoModeAvailable?: boolean; githubConnected?: boolean; runnerCapabilities?: RunnerCapabilities },
 ): TuiState {
   const docUrl = `https://docs.google.com/document/d/${docId}/edit`;
   const autoModeAvailable = opts?.autoModeAvailable ?? false;

@@ -65,6 +65,7 @@ export {
   generateAgentName,
 } from './harness/index.js';
 export type {
+  AgentType,
   AgentRunner,
   AgentRunOptions,
   AgentRunResult,

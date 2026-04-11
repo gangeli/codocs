@@ -1,8 +1,11 @@
 /**
  * Pluggable agent runner interface.
  *
- * Implement this to integrate different coding agents (Claude, Codex, OpenCode, etc.).
+ * Implement this to integrate different coding agents (Claude, Codex, Cursor, OpenCode, etc.).
  */
+
+/** Known agent runner types. */
+export type AgentType = 'claude' | 'codex' | 'cursor' | 'opencode';
 
 export type PermissionMode =
   | { type: 'auto'; allowedTools?: string[] }

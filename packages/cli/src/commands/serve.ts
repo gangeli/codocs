@@ -14,6 +14,7 @@ import {
   CursorRunner,
   OpenCodeRunner,
   generateAgentName,
+  type AgentType,
   type AgentRunner,
   type CommentEvent,
   type CommentListenerHandle,
@@ -45,8 +46,12 @@ function isAutoModeAvailable(): boolean {
 }
 import { App, Welcome, Generating, createInitialState, getStandalonePermissions, type TuiStateRef, type ActivityEvent, type WelcomeChoice } from '../tui/index.js';
 
+function isAgentType(value: string): value is AgentType {
+  return value in AGENT_RUNNERS;
+}
+
 /** Registry of available agent runners. */
-const AGENT_RUNNERS: Record<string, () => AgentRunner> = {
+const AGENT_RUNNERS: Record<AgentType, () => AgentRunner> = {
   claude: () => new ClaudeRunner(),
   codex: () => new CodexRunner(),
   cursor: () => new CursorRunner(),
@@ -61,7 +66,7 @@ function fallbackDocName(): string {
 
 async function generateDocName(
   description: string,
-  agentType: string,
+  agentType: AgentType,
 ): Promise<string> {
   if (!description.trim()) return fallbackDocName();
 
@@ -161,7 +166,7 @@ async function showWelcome(useTui: boolean): Promise<WelcomeChoice> {
  */
 async function resolveWelcomeChoice(
   choice: WelcomeChoice,
-  agentType: string,
+  agentType: AgentType,
   standalonePermissions?: import('@codocs/core').PermissionMode,
 ): Promise<{ docId?: string; content?: string }> {
   switch (choice.type) {
@@ -342,7 +347,12 @@ export function registerServeCommand(program: Command) {
 
         if (docIds.length === 0) {
           const choice = await showWelcome(useTui);
-          const agentTypeForWelcome = opts.agentType ?? 'claude';
+          const agentTypeRaw = opts.agentType ?? 'claude';
+          if (!isAgentType(agentTypeRaw)) {
+            console.error(`Unknown agent type "${agentTypeRaw}". Available: ${Object.keys(AGENT_RUNNERS).join(', ')}`);
+            process.exit(1);
+          }
+          const agentTypeForWelcome: AgentType = agentTypeRaw;
           const standalonePerms = getStandalonePermissions({
             autoModeAvailable: agentTypeForWelcome === 'claude' && isAutoModeAvailable(),
           });
@@ -359,7 +369,7 @@ export function registerServeCommand(program: Command) {
             const client = new CodocsClient({
               oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
             });
-            const agentType = opts.agentType ?? 'claude';
+            const agentType = agentTypeForWelcome;
 
             // Step state for the Generating component
             let stepMessage = 'Generating document name';
@@ -445,12 +455,20 @@ export function registerServeCommand(program: Command) {
           process.exit(0);
         };
 
+        // ── Agent runner (needed early for TUI capabilities) ──
+        const agentTypeRaw = opts.agentType ?? 'claude';
+        if (!isAgentType(agentTypeRaw)) {
+          console.error(`Unknown agent type "${agentTypeRaw}". Available: ${Object.keys(AGENT_RUNNERS).join(', ')}`);
+          process.exit(1);
+        }
+        const agentType: AgentType = agentTypeRaw;
+        const agentRunner = AGENT_RUNNERS[agentType]();
+
         // ── GitHub auth (check only — debug logging deferred) ──
         const ghTokens = readGitHubTokens();
         const githubConnected = !!ghTokens;
 
         if (useTui) {
-          const agentType = opts.agentType ?? 'claude';
           const autoModeAvailable = agentType === 'claude' && isAutoModeAvailable();
           const runnerCapabilities = agentRunner.getCapabilities();
           const initialState = createInitialState(primaryDocId, { agentType, autoModeAvailable, githubConnected, runnerCapabilities });
@@ -522,13 +540,6 @@ export function registerServeCommand(program: Command) {
         }
 
         // ── Agent orchestrator ────────────────────────────────────
-        const agentType = opts.agentType ?? 'claude';
-        const runnerFactory = AGENT_RUNNERS[agentType];
-        if (!runnerFactory) {
-          emit({ time: new Date(), type: 'error', content: `Unknown agent type "${agentType}". Available: ${Object.keys(AGENT_RUNNERS).join(', ')}` });
-          process.exit(1);
-        }
-        const agentRunner = runnerFactory();
         debug(`Agent runner: ${agentRunner.name}`);
 
         const sessionStore = new SessionStore(db);
