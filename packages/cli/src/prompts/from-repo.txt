@@ -1,7 +1,5 @@
-Thoroughly explore the code and architecture in this repository and write a thorough design document in Markdown.
+Thoroughly explore the code and architecture in this repository and write a design document in Markdown. The design doc should focus primarily on features, capabilities, and user journeys; the techncial details as much as possible should be tied to a user-facing feature. That said, make sure the doc includes all the details you'd expect in a conventional design doc, and core components that cross feature boundaries or are not tied to any particular feature should be described in their own coherent sections.
 
-Write the document to `.codocs/design-doc.md` in the current directory.
+Write the document to `.codocs/design-doc.md` in the current directory. Do not output the document to stdout. Do not describe what you would write — actually write it to the file.
 
 This document will be uploaded to Google Docs and used as the "source of truth" about this project. People will comment on and critique both the overall architecture and the details of the design. Make sure your design is thorough, but also make sure that it's easy to understand at a glance what's happening, both overall and for each subsection of the document. Do not write unnecessary content.
-
-IMPORTANT: Write the full document to `.codocs/design-doc.md`. Do not output the document to stdout. Do not describe what you would write — actually write it to the file.
