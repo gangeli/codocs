@@ -2,13 +2,13 @@
 
 all: codocs
 
-build-core:
-	npm run build -w @codocs/core
-
-build-db: build-core
+build-db:
 	npm run build -w @codocs/db
 
-build-cli: build-db
+build-core: build-db
+	npm run build -w @codocs/core
+
+build-cli: build-core
 	npm run build -w @codocs/cli
 
 build: build-cli
