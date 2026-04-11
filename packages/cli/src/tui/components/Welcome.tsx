@@ -60,7 +60,7 @@ const MENU_SECTIONS: MenuSection[] = [
         description: 'An AI agent explores your repository and drafts an initial design document. Great for starting a new project.',
       },
       {
-        icon: '\u270E', // ✎
+        icon: '\u270F\uFE0F', // ✏️
         label: 'Write in editor',
         description: 'Opens your $EDITOR to write a document from scratch. The file is uploaded to Google Docs when you save and quit.',
       },
