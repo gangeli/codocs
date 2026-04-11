@@ -34,6 +34,7 @@ export {
   AgentOrchestrator,
   ClaudeRunner,
   CodexRunner,
+  CursorRunner,
   OpenCodeRunner,
   spawnAgent,
   getTrackedProcesses,

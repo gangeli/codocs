@@ -2,6 +2,7 @@ export type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent, Permiss
 export type { SessionStore, SessionMapping, QueueStore, QueueItem } from './types.js';
 export { ClaudeRunner } from './agents/claude.js';
 export { CodexRunner } from './agents/codex.js';
+export { CursorRunner } from './agents/cursor.js';
 export { OpenCodeRunner } from './agents/opencode.js';
 export { spawnAgent, getTrackedProcesses, killTrackedProcesses, DEFAULT_TIMEOUT } from './agents/runner-utils.js';
 export type { TrackedProcess, SpawnAgentOptions } from './agents/runner-utils.js';

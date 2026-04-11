@@ -11,6 +11,7 @@ import {
   AgentOrchestrator,
   ClaudeRunner,
   CodexRunner,
+  CursorRunner,
   OpenCodeRunner,
   generateAgentName,
   type AgentRunner,
@@ -48,6 +49,7 @@ import { App, Welcome, Generating, createInitialState, getStandalonePermissions,
 const AGENT_RUNNERS: Record<string, () => AgentRunner> = {
   claude: () => new ClaudeRunner(),
   codex: () => new CodexRunner(),
+  cursor: () => new CursorRunner(),
   opencode: () => new OpenCodeRunner(),
 };
 
