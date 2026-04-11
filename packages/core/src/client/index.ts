@@ -131,9 +131,8 @@ export class CodocsClient {
         result.requests.push(...attrRequests);
       }
 
-      let batchResponse: import('googleapis').docs_v1.Schema$BatchUpdateDocumentResponse;
       try {
-        batchResponse = await this.docsApi.batchUpdate(docId, result.requests);
+        await this.docsApi.batchUpdate(docId, result.requests);
       } finally {
         // Always clean up temp Drive files
         for (const fileId of result.tempDriveFileIds) {
@@ -145,38 +144,10 @@ export class CodocsClient {
         }
       }
 
-      // Set description on each inserted image (for round-trip restoration).
-      // The batchUpdate response contains objectIds for insertInlineImage replies.
-      if (result.mermaidHashes.length > 0 && batchResponse.replies) {
-        // updateEmbeddedObjectProperties is available in the API but may
-        // not be in the TypeScript types — cast through any.
-        const descRequests: any[] = [];
-        let hashIdx = 0;
-        for (const reply of batchResponse.replies) {
-          const objectId = (reply as any).insertInlineImage?.objectId;
-          if (objectId && hashIdx < result.mermaidHashes.length) {
-            descRequests.push({
-              updateEmbeddedObjectProperties: {
-                objectId,
-                embeddedObjectProperties: {
-                  description: `mermaid:${result.mermaidHashes[hashIdx].hash}`,
-                },
-                fields: 'description',
-              },
-            });
-            hashIdx++;
-          }
-        }
-        if (descRequests.length > 0) {
-          try {
-            await this.docsApi.batchUpdate(docId, descRequests);
-          } catch {
-            // Non-critical — diagram won't round-trip but it's still visible
-          }
-        }
-      }
-
-      // Store mermaid mappings in DB if provided
+      // Store mermaid mappings in DB for round-trip restoration.
+      // The Docs API has no way to set image description/title, so we
+      // rely on positional matching: mermaid sources stored in the DB
+      // are matched to inline images in document order when reading back.
       if (opts.db && result.mermaidHashes.length > 0) {
         try {
           const { MermaidStore, saveDatabase } = await import('@codocs/db');
@@ -224,13 +195,16 @@ export class CodocsClient {
   async readMarkdown(docId: string, opts: ReadOptions = {}): Promise<string> {
     const doc = await this.docsApi.getDocument(docId);
 
-    // Load mermaid hash mappings from DB if available
-    let mermaidHashes: Map<string, string> | undefined;
+    // Load mermaid sources from DB for restoring diagrams from images
+    let mermaidSources: string[] | undefined;
     if (opts.db) {
       try {
         const { MermaidStore } = await import('@codocs/db');
         const store = new MermaidStore(opts.db as any);
-        mermaidHashes = store.getAllForDocument(docId);
+        const mappings = store.getAllForDocument(docId);
+        if (mappings.size > 0) {
+          mermaidSources = [...mappings.values()];
+        }
       } catch {
         // Non-critical
       }
@@ -239,7 +213,7 @@ export class CodocsClient {
     return docsToMarkdown(doc, {
       agentFilter: opts.agentFilter,
       includeAttribution: opts.includeAttribution,
-      mermaidHashes,
+      mermaidSources,
     });
   }
 

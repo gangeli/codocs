@@ -11,6 +11,7 @@
  */
 
 import { CodocsClient } from '../packages/core/src/index.js';
+import { openDatabase } from '../packages/db/src/index.js';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -96,6 +97,8 @@ interface TestCase {
    * round-trip is intentionally lossy (e.g., mermaid → image → mermaid).
    */
   customCompare?: (original: string, roundtripped: string) => CompareResult;
+  /** If true, an in-memory DB is passed to writeMarkdown/readMarkdown for mermaid mapping. */
+  needsDb?: boolean;
 }
 
 const testCases: TestCase[] = [
@@ -318,7 +321,8 @@ Third paragraph concluding the section.`,
   // ── Mermaid diagrams (future) ───────────────────────────
 
   {
-    title: 'Mermaid diagram renders as image',
+    title: 'Mermaid diagram round-trip',
+    needsDb: true,
     markdown: `\`\`\`mermaid
 graph TD
     A[Start] --> B{Decision}
@@ -328,14 +332,26 @@ graph TD
     D --> E
 \`\`\``,
     customCompare(_original, roundtripped) {
-      // Without a DB, the mermaid source can't be restored from the image.
-      // Verify that the mermaid was rendered and inserted as an image
-      // (the roundtripped output should contain a ![...](...) image tag).
+      // With a DB, the mermaid source should be restored from the image
+      // description hash. Verify the roundtripped output contains the
+      // original mermaid source inside a fenced code block.
       const normalized = normalize(roundtripped);
+      const hasMermaidBlock = normalized.includes('```mermaid');
+      const hasSource = normalized.includes('graph TD') && normalized.includes('A[Start]');
+      if (hasMermaidBlock && hasSource) {
+        return { pass: true, diffs: [] };
+      }
+      // Fall back: at minimum the image should be there
       const hasImage = /!\[.*\]\(https:\/\//.test(normalized);
+      if (hasImage) {
+        return {
+          pass: false,
+          diffs: [`Image was inserted but mermaid source was not restored. Got:\n${normalized}`],
+        };
+      }
       return {
-        pass: hasImage,
-        diffs: hasImage ? [] : [`Expected an image tag in roundtripped output. Got:\n${normalized}`],
+        pass: false,
+        diffs: [`Neither mermaid source nor image found. Got:\n${normalized}`],
       };
     },
   },
@@ -364,6 +380,7 @@ graph TD
 
 async function run() {
   const client = createClient();
+  const db = await openDatabase(':memory:');
 
   const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
   console.log(`Round-trip E2E Tests — ${timestamp}\n`);
@@ -387,11 +404,14 @@ async function run() {
         folderName,
       );
 
+      // Pass DB handle for tests that need mermaid round-trip mapping
+      const dbOpt = tc.needsDb ? { db } : {};
+
       // Write the test case markdown
-      await client.writeMarkdown(docId, tc.markdown);
+      await client.writeMarkdown(docId, tc.markdown, dbOpt);
 
       // Read it back
-      const roundtripped = await client.readMarkdown(docId);
+      const roundtripped = await client.readMarkdown(docId, dbOpt);
 
       // Compare
       const result = tc.customCompare

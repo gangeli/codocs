@@ -17,8 +17,10 @@ interface ParseContext {
   filterRanges: Array<{ startIndex: number; endIndex: number }> | null;
   /** Whether to emit attribution markers. */
   includeAttribution: boolean;
-  /** Mermaid source hash → original source, for restoring diagrams from images. */
-  mermaidHashes: Map<string, string>;
+  /** Mermaid sources in document order, for restoring diagrams from images. */
+  mermaidSources: string[];
+  /** Index into mermaidSources for the next image to restore. */
+  mermaidSourceIdx: number;
 }
 
 /** An entry mapping a markdown character offset to a Google Doc index. */
@@ -40,8 +42,8 @@ export interface MarkdownWithMapping {
 export interface ParseOptions {
   agentFilter?: string;
   includeAttribution?: boolean;
-  /** Mermaid hash→source map for restoring diagrams from images. */
-  mermaidHashes?: Map<string, string>;
+  /** Mermaid sources in document order, for restoring diagrams from images. */
+  mermaidSources?: string[];
 }
 
 export function parseDocumentToMarkdown(
@@ -75,7 +77,8 @@ function parseDocumentToMarkdownImpl(
     namedRanges,
     filterRanges,
     includeAttribution: options.includeAttribution ?? false,
-    mermaidHashes: options.mermaidHashes ?? new Map(),
+    mermaidSources: options.mermaidSources ?? [],
+    mermaidSourceIdx: 0,
   };
 
   const body = document.body;
@@ -246,14 +249,10 @@ function formatInlineObject(
     inlineObject?.inlineObjectProperties?.embeddedObject;
   if (!embedded) return '';
 
-  // Check if this image is a rendered mermaid diagram (by description hash)
-  const description = embedded.description ?? '';
-  if (description.startsWith('mermaid:') && ctx.mermaidHashes.size > 0) {
-    const hash = description.slice('mermaid:'.length);
-    const source = ctx.mermaidHashes.get(hash);
-    if (source) {
-      return '```mermaid\n' + source + '\n```';
-    }
+  // Restore mermaid source if we have mappings (positional matching)
+  if (ctx.mermaidSourceIdx < ctx.mermaidSources.length) {
+    const source = ctx.mermaidSources[ctx.mermaidSourceIdx++];
+    return '```mermaid\n' + source + '\n```';
   }
 
   const url = embedded.imageProperties?.contentUri ?? '';
