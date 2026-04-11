@@ -10,6 +10,8 @@ import {
   listenForComments,
   AgentOrchestrator,
   ClaudeRunner,
+  CodexRunner,
+  OpenCodeRunner,
   generateAgentName,
   type AgentRunner,
   type CommentEvent,
@@ -40,11 +42,13 @@ function isAutoModeAvailable(): boolean {
     return false;
   }
 }
-import { App, Welcome, Generating, createInitialState, type TuiStateRef, type ActivityEvent, type WelcomeChoice } from '../tui/index.js';
+import { App, Welcome, Generating, createInitialState, getStandalonePermissions, type TuiStateRef, type ActivityEvent, type WelcomeChoice } from '../tui/index.js';
 
 /** Registry of available agent runners. */
 const AGENT_RUNNERS: Record<string, () => AgentRunner> = {
   claude: () => new ClaudeRunner(),
+  codex: () => new CodexRunner(),
+  opencode: () => new OpenCodeRunner(),
 };
 
 function fallbackDocName(): string {
@@ -156,6 +160,7 @@ async function showWelcome(useTui: boolean): Promise<WelcomeChoice> {
 async function resolveWelcomeChoice(
   choice: WelcomeChoice,
   agentType: string,
+  standalonePermissions?: import('@codocs/core').PermissionMode,
 ): Promise<{ docId?: string; content?: string }> {
   switch (choice.type) {
     case 'open':
@@ -183,7 +188,7 @@ async function resolveWelcomeChoice(
         const result = await runner.run(
           fromRepoPrompt,
           null,
-          { timeout: 1_200_000 },
+          { timeout: 1_200_000, permissionMode: standalonePermissions },
         );
         unmount();
         if (result.exitCode !== 0) {
@@ -274,7 +279,7 @@ async function resolveWelcomeChoice(
           `Be concise but thorough. Write the document to .codocs/design-doc.md — ` +
           `do not output it to stdout.\n\n${choice.prompt}`,
           null,
-          { timeout: 1_200_000 },
+          { timeout: 1_200_000, permissionMode: standalonePermissions },
         );
         unmount();
         if (result.exitCode !== 0) {
@@ -335,7 +340,11 @@ export function registerServeCommand(program: Command) {
 
         if (docIds.length === 0) {
           const choice = await showWelcome(useTui);
-          const initialMarkdown = await resolveWelcomeChoice(choice, opts.agentType ?? 'claude');
+          const agentTypeForWelcome = opts.agentType ?? 'claude';
+          const standalonePerms = getStandalonePermissions({
+            autoModeAvailable: agentTypeForWelcome === 'claude' && isAutoModeAvailable(),
+          });
+          const initialMarkdown = await resolveWelcomeChoice(choice, agentTypeForWelcome, standalonePerms);
 
           if (initialMarkdown.docId) {
             // Existing doc
@@ -441,7 +450,8 @@ export function registerServeCommand(program: Command) {
         if (useTui) {
           const agentType = opts.agentType ?? 'claude';
           const autoModeAvailable = agentType === 'claude' && isAutoModeAvailable();
-          const initialState = createInitialState(primaryDocId, { agentType, autoModeAvailable, githubConnected });
+          const runnerCapabilities = agentRunner.getCapabilities();
+          const initialState = createInitialState(primaryDocId, { agentType, autoModeAvailable, githubConnected, runnerCapabilities });
           if (debugMode) initialState.settings.debugMode = true;
 
           // Restore persisted settings (merge with defaults)
@@ -591,6 +601,21 @@ export function registerServeCommand(program: Command) {
               return settings.defaultModel[agentType] || undefined;
             }
             return undefined;
+          },
+          harnessSettings: () => {
+            if (tui.ref) {
+              // Extract settings for the current agent type from the flat map
+              const all = tui.ref.getSettings().harnessSettings;
+              const prefix = `${agentType}.`;
+              const result: Record<string, string> = {};
+              for (const [k, v] of Object.entries(all)) {
+                if (k.startsWith(prefix)) {
+                  result[k.slice(prefix.length)] = v;
+                }
+              }
+              return result;
+            }
+            return {};
           },
           codeMode: () => {
             if (tui.ref) {

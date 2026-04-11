@@ -81,6 +81,12 @@ function createMockRunner(callLog: CallLog[], stdout = 'Agent response text'): A
     }),
     getActiveProcesses: () => [],
     killAll: () => [],
+    getCapabilities: () => ({
+      supportsSessionResume: false,
+      models: [],
+      harnessSettings: [],
+      supportsPermissionMode: false,
+    }),
   };
 }
 
@@ -198,6 +204,7 @@ describe('AgentOrchestrator E2E', () => {
       run: vi.fn(async () => { throw new Error('agent crashed'); }),
       getActiveProcesses: () => [],
       killAll: () => [],
+      getCapabilities: () => ({ supportsSessionResume: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
     };
 
     const orchestrator = new AgentOrchestrator({
@@ -316,6 +323,7 @@ describe('AgentOrchestrator E2E', () => {
       }),
       getActiveProcesses: () => [],
       killAll: () => [],
+      getCapabilities: () => ({ supportsSessionResume: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
     };
 
     const orchestrator = new AgentOrchestrator({

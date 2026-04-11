@@ -1,7 +1,7 @@
 /**
  * Pluggable agent runner interface.
  *
- * Implement this to integrate different coding agents (Claude, Cursor, etc.).
+ * Implement this to integrate different coding agents (Claude, Codex, OpenCode, etc.).
  */
 
 export type PermissionMode =
@@ -20,6 +20,8 @@ export interface AgentRunOptions {
   permissionMode?: PermissionMode;
   /** Model to use for this run (e.g., "haiku", "sonnet", "opus", or a full model ID). */
   model?: string;
+  /** Harness-specific settings (e.g., codex approval mode, opencode provider). */
+  harnessSettings?: Record<string, string>;
 }
 
 export interface AgentRunResult {
@@ -38,6 +40,36 @@ export interface ActiveAgent {
   agentName: string;
   /** When this agent started processing. */
   startedAt: Date;
+}
+
+/** A selectable option for a harness setting or model list. */
+export interface HarnessSettingOption {
+  label: string;
+  value: string;
+}
+
+/** Describes a harness-specific setting surfaced in the settings panel. */
+export interface HarnessSetting {
+  /** Setting key (e.g., 'approvalMode', 'provider'). */
+  key: string;
+  /** Display label for the settings UI. */
+  label: string;
+  /** Available options. */
+  options: HarnessSettingOption[];
+  /** Default value (must match one of the option values). */
+  defaultValue: string;
+}
+
+/** Describes what a runner supports, used to drive the settings UI. */
+export interface RunnerCapabilities {
+  /** Whether this runner supports resuming sessions. */
+  supportsSessionResume: boolean;
+  /** Model choices for the settings panel. */
+  models: HarnessSettingOption[];
+  /** Harness-specific settings beyond model selection. */
+  harnessSettings: HarnessSetting[];
+  /** Whether this runner has a concept equivalent to permission mode. */
+  supportsPermissionMode: boolean;
 }
 
 export interface AgentRunner {
@@ -63,4 +95,7 @@ export interface AgentRunner {
 
   /** Kill all active agent processes. Returns the names of killed agents. */
   killAll(): string[];
+
+  /** Describe this runner's capabilities and available settings. */
+  getCapabilities(): RunnerCapabilities;
 }

@@ -1,6 +1,10 @@
-export type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent, PermissionMode } from './agent.js';
+export type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent, PermissionMode, HarnessSettingOption, HarnessSetting, RunnerCapabilities } from './agent.js';
 export type { SessionStore, SessionMapping, QueueStore, QueueItem } from './types.js';
 export { ClaudeRunner } from './agents/claude.js';
+export { CodexRunner } from './agents/codex.js';
+export { OpenCodeRunner } from './agents/opencode.js';
+export { spawnAgent, getTrackedProcesses, killTrackedProcesses, DEFAULT_TIMEOUT } from './agents/runner-utils.js';
+export type { TrackedProcess, SpawnAgentOptions } from './agents/runner-utils.js';
 export { assignAgent, findQuotedTextIndices, buildFlatText } from './assign.js';
 export type { AssignmentConfig } from './assign.js';
 export { writeTempContext, cleanupTempFiles } from './context.js';

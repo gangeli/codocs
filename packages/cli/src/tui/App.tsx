@@ -195,6 +195,7 @@ export function App({ initialState, onShutdown, getActiveAgents, onStateRef, onS
             agentType={state.agentType}
             autoModeAvailable={state.autoModeAvailable}
             githubConnected={state.githubConnected}
+            capabilities={state.runnerCapabilities}
           />
         </Box>
       ) : view === 'confirm-quit' ? (

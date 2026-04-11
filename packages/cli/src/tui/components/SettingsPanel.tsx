@@ -1,17 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, type Settings } from '../state.js';
-import type { PermissionMode } from '@codocs/core';
-
-/** Known model options per agent type. Extensible — new agent types add entries here. */
-const MODEL_OPTIONS: Record<string, { label: string; value: string }[]> = {
-  claude: [
-    { label: 'default', value: '' },
-    { label: 'haiku', value: 'haiku' },
-    { label: 'sonnet', value: 'sonnet' },
-    { label: 'opus', value: 'opus' },
-  ],
-};
+import type { PermissionMode, RunnerCapabilities } from '@codocs/core';
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -20,11 +10,13 @@ interface SettingsPanelProps {
   agentType: string;
   autoModeAvailable: boolean;
   githubConnected: boolean;
+  capabilities?: RunnerCapabilities;
 }
 
 interface SettingRow {
   label: string;
-  key: keyof Settings;
+  /** Which settings key this row controls, or 'harness.<key>' for harness-specific settings. */
+  key: string;
   options: { label: string; value: any }[];
 }
 
@@ -38,7 +30,51 @@ function buildPermissionOptions(autoModeAvailable: boolean): { label: string; va
   return options;
 }
 
-export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoModeAvailable, githubConnected }: SettingsPanelProps) {
+/** Read the current value for a setting row. */
+function getRowValue(row: SettingRow, settings: Settings, agentType: string): any {
+  if (row.key === 'defaultModel') {
+    return settings.defaultModel[agentType] || '';
+  }
+  if (row.key.startsWith('harness.')) {
+    const harnessKey = `${agentType}.${row.key.slice('harness.'.length)}`;
+    return settings.harnessSettings[harnessKey] ?? row.options[0]?.value ?? '';
+  }
+  return (settings as any)[row.key];
+}
+
+/** Write a new value for a setting row, returning updated settings. */
+function setRowValue(row: SettingRow, value: any, settings: Settings, agentType: string): Settings {
+  if (row.key === 'defaultModel') {
+    const newMap = { ...settings.defaultModel };
+    if (value) {
+      newMap[agentType] = value;
+    } else {
+      delete newMap[agentType];
+    }
+    return { ...settings, defaultModel: newMap };
+  }
+  if (row.key.startsWith('harness.')) {
+    const harnessKey = `${agentType}.${row.key.slice('harness.'.length)}`;
+    const newHarness = { ...settings.harnessSettings };
+    if (value) {
+      newHarness[harnessKey] = value;
+    } else {
+      delete newHarness[harnessKey];
+    }
+    return { ...settings, harnessSettings: newHarness };
+  }
+  return { ...settings, [row.key]: value };
+}
+
+/** Check if a row option matches the current value. */
+function isOptionSelected(row: SettingRow, optValue: any, currentValue: any): boolean {
+  if (row.key === 'permissionMode') {
+    return (optValue as PermissionMode).type === (currentValue as PermissionMode).type;
+  }
+  return optValue === currentValue;
+}
+
+export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoModeAvailable, githubConnected, capabilities }: SettingsPanelProps) {
   const rows = useMemo(() => {
     const r: SettingRow[] = [
       {
@@ -62,7 +98,9 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
       },
     ];
 
-    if (agentType === 'claude') {
+    // Permission mode — only if the runner supports it
+    const supportsPermissions = capabilities?.supportsPermissionMode ?? (agentType === 'claude');
+    if (supportsPermissions) {
       r.push({
         label: 'Agent permissions',
         key: 'permissionMode',
@@ -70,6 +108,7 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
       });
     }
 
+    // Code mode
     const codeModeOptions: { label: string; value: string }[] = [];
     if (githubConnected) {
       codeModeOptions.push({ label: 'PR', value: 'pr' });
@@ -91,8 +130,16 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
       ],
     });
 
-    const modelOpts = MODEL_OPTIONS[agentType];
-    if (modelOpts) {
+    // Model — from capabilities or fallback for claude
+    const modelOpts = capabilities?.models ?? (agentType === 'claude'
+      ? [
+          { label: 'default', value: '' },
+          { label: 'haiku', value: 'haiku' },
+          { label: 'sonnet', value: 'sonnet' },
+          { label: 'opus', value: 'opus' },
+        ]
+      : []);
+    if (modelOpts.length > 0) {
       r.push({
         label: 'Model',
         key: 'defaultModel',
@@ -100,8 +147,19 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
       });
     }
 
+    // Harness-specific settings (dynamic from capabilities)
+    if (capabilities?.harnessSettings) {
+      for (const hs of capabilities.harnessSettings) {
+        r.push({
+          label: hs.label,
+          key: `harness.${hs.key}`,
+          options: hs.options,
+        });
+      }
+    }
+
     return r;
-  }, [agentType, autoModeAvailable, githubConnected]);
+  }, [agentType, autoModeAvailable, githubConnected, capabilities]);
 
   const [activeRow, setActiveRow] = useState(0);
 
@@ -117,29 +175,12 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
       setActiveRow((r) => Math.min(rows.length - 1, r + 1));
     } else if (key.leftArrow || key.rightArrow || input === 'h' || input === 'l') {
       const row = rows[activeRow];
-      const effectiveValue = row.key === 'defaultModel'
-        ? (settings.defaultModel[agentType] || '')
-        : settings[row.key];
-      const currentIdx = row.options.findIndex((o) =>
-        row.key === 'permissionMode'
-          ? (o.value as PermissionMode).type === (effectiveValue as PermissionMode).type
-          : o.value === effectiveValue,
-      );
+      const currentValue = getRowValue(row, settings, agentType);
+      const currentIdx = row.options.findIndex((o) => isOptionSelected(row, o.value, currentValue));
       const dir = (key.rightArrow || input === 'l') ? 1 : -1;
       const nextIdx = Math.max(0, Math.min(row.options.length - 1, currentIdx + dir));
       if (nextIdx !== currentIdx) {
-        if (row.key === 'defaultModel') {
-          const newMap = { ...settings.defaultModel };
-          const val = row.options[nextIdx].value as string;
-          if (val) {
-            newMap[agentType] = val;
-          } else {
-            delete newMap[agentType];
-          }
-          onUpdate({ ...settings, defaultModel: newMap });
-        } else {
-          onUpdate({ ...settings, [row.key]: row.options[nextIdx].value });
-        }
+        onUpdate(setRowValue(row, row.options[nextIdx].value, settings, agentType));
       }
     }
   });
@@ -160,9 +201,7 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
 
       {rows.map((row, i) => {
         const isActive = i === activeRow;
-        const currentValue = row.key === 'defaultModel'
-          ? (settings.defaultModel[agentType] || '')
-          : settings[row.key];
+        const currentValue = getRowValue(row, settings, agentType);
 
         return (
           <Box key={row.key} marginBottom={i < rows.length - 1 ? 1 : 0}>
@@ -174,9 +213,7 @@ export function SettingsPanel({ settings, onUpdate, onClose, agentType, autoMode
             </Box>
             <Box flexShrink={0}>
               {row.options.map((opt, j) => {
-                const isSelected = row.key === 'permissionMode'
-                  ? (opt.value as PermissionMode).type === (currentValue as PermissionMode).type
-                  : opt.value === currentValue;
+                const isSelected = isOptionSelected(row, opt.value, currentValue);
                 return (
                   <React.Fragment key={j}>
                     {j > 0 && <Text> </Text>}

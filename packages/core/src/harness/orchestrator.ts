@@ -72,6 +72,8 @@ export interface OrchestratorConfig {
   repoRoot?: string;
   /** Model to use for agent runs (e.g., "haiku", "sonnet", "opus"). Called per-invocation to support runtime changes. */
   model?: string | (() => string | undefined);
+  /** Harness-specific settings (e.g., codex approval mode, opencode provider). Called per-invocation. */
+  harnessSettings?: Record<string, string> | (() => Record<string, string>);
   /** Optional logger. */
   debug?: (msg: string) => void;
 }
@@ -93,6 +95,7 @@ export class AgentOrchestrator {
   private getGithubToken: () => string | null;
   private repoRoot: string;
   private getModel: () => string | undefined;
+  private getHarnessSettings: () => Record<string, string>;
 
   /** Agents currently being drained. Prevents double-drain. */
   private processingAgents = new Set<string>();
@@ -121,6 +124,8 @@ export class AgentOrchestrator {
     this.repoRoot = config.repoRoot ?? process.cwd();
     const m = config.model;
     this.getModel = typeof m === 'function' ? m : () => m;
+    const hs = config.harnessSettings;
+    this.getHarnessSettings = typeof hs === 'function' ? hs : () => hs ?? {};
   }
 
   /** Resolve the fallback agent name for a given document. */
@@ -325,6 +330,7 @@ export class AgentOrchestrator {
         agentName,
         permissionMode: this.getPermissionMode(),
         model: this.getModel(),
+        harnessSettings: this.getHarnessSettings(),
       };
       this.debug(`[processComment] Running agent (session: ${existingSessionId ?? 'new'})`);
       let result = await this.agentRunner.run(prompt, existingSessionId, runOpts);
@@ -582,6 +588,7 @@ export class AgentOrchestrator {
         agentName,
         permissionMode: this.getPermissionMode(),
         model: this.getModel(),
+        harnessSettings: this.getHarnessSettings(),
       };
 
       this.debug(`[processCodeComment] Running agent in ${worktreePath}`);

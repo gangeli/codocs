@@ -5,17 +5,15 @@
  * Sessions are managed via `--session-id` and `--resume`.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent } from '../agent.js';
-
-const DEFAULT_TIMEOUT = 3_600_000; // 1 hour
-
-interface TrackedProcess {
-  child: ChildProcess;
-  agentName: string;
-  startedAt: Date;
-}
+import type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent, RunnerCapabilities } from '../agent.js';
+import {
+  type TrackedProcess,
+  DEFAULT_TIMEOUT,
+  spawnAgent,
+  getTrackedProcesses,
+  killTrackedProcesses,
+} from './runner-utils.js';
 
 export class ClaudeRunner implements AgentRunner {
   readonly name = 'claude';
@@ -23,18 +21,12 @@ export class ClaudeRunner implements AgentRunner {
 
   constructor(private binaryPath: string = 'claude') {}
 
-  /**
-   * Run a prompt, optionally resuming an existing session.
-   * The agentName option is used to label the process for tracking.
-   */
   async run(
     prompt: string,
     sessionId: string | null,
     opts?: AgentRunOptions,
   ): Promise<AgentRunResult> {
     const effectiveSessionId = sessionId ?? randomUUID();
-    const timeout = opts?.timeout ?? DEFAULT_TIMEOUT;
-    const trackingId = randomUUID();
 
     const args = ['-p', prompt, '--session-id', effectiveSessionId];
 
@@ -67,69 +59,33 @@ export class ClaudeRunner implements AgentRunner {
       args.push('--resume');
     }
 
-    return new Promise<AgentRunResult>((resolve, reject) => {
-      const child = spawn(this.binaryPath, args, {
-        cwd: opts?.workingDirectory,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
-      });
-
-      this.active.set(trackingId, {
-        child,
-        agentName: opts?.agentName ?? effectiveSessionId,
-        startedAt: new Date(),
-      });
-
-      const cleanup = () => { this.active.delete(trackingId); };
-
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
-
-      child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-      child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-
-      const timer = setTimeout(() => {
-        child.kill('SIGTERM');
-        cleanup();
-        reject(new Error(`Claude session ${effectiveSessionId} timed out after ${timeout}ms`));
-      }, timeout);
-
-      child.on('error', (err) => {
-        clearTimeout(timer);
-        cleanup();
-        reject(err);
-      });
-
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        cleanup();
-        resolve({
-          sessionId: effectiveSessionId,
-          exitCode: code ?? 1,
-          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
-          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
-        });
-      });
-
-      // Close stdin immediately — we pass the prompt via -p flag
-      child.stdin.end();
-    });
+    return spawnAgent(this.binaryPath, args, {
+      cwd: opts?.workingDirectory,
+      timeout: opts?.timeout ?? DEFAULT_TIMEOUT,
+      agentName: opts?.agentName,
+      sessionId: effectiveSessionId,
+    }, this.active);
   }
 
   getActiveProcesses(): ActiveAgent[] {
-    return [...this.active.values()].map(({ agentName, startedAt }) => ({
-      agentName,
-      startedAt,
-    }));
+    return getTrackedProcesses(this.active);
   }
 
   killAll(): string[] {
-    const killed: string[] = [];
-    for (const [id, { child, agentName }] of this.active) {
-      child.kill('SIGTERM');
-      killed.push(agentName);
-      this.active.delete(id);
-    }
-    return killed;
+    return killTrackedProcesses(this.active);
+  }
+
+  getCapabilities(): RunnerCapabilities {
+    return {
+      supportsSessionResume: true,
+      models: [
+        { label: 'default', value: '' },
+        { label: 'haiku', value: 'haiku' },
+        { label: 'sonnet', value: 'sonnet' },
+        { label: 'opus', value: 'opus' },
+      ],
+      harnessSettings: [],
+      supportsPermissionMode: true,
+    };
   }
 }

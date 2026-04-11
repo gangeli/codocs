@@ -76,6 +76,7 @@ function createControllableRunner() {
     }),
     getActiveProcesses: () => [],
     killAll: () => [],
+    getCapabilities: () => ({ supportsSessionResume: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
   };
 
   return { runner, calls };

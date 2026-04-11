@@ -2,8 +2,8 @@
  * Shared state types for the TUI.
  */
 
-export type { PermissionMode } from '@codocs/core';
-import type { PermissionMode } from '@codocs/core';
+export type { PermissionMode, RunnerCapabilities } from '@codocs/core';
+import type { PermissionMode, RunnerCapabilities } from '@codocs/core';
 
 /**
  * Tools allowed in "tools" permission mode.
@@ -90,6 +90,8 @@ export interface Settings {
   debugMode: boolean;
   /** Default model to use per agent type. Empty map means use the agent's built-in default. */
   defaultModel: DefaultModelMap;
+  /** Harness-specific settings keyed as `{agentType}.{settingKey}` (e.g., `codex.approvalMode`). */
+  harnessSettings: Record<string, string>;
 }
 
 export interface TuiState {
@@ -110,11 +112,31 @@ export interface TuiState {
   autoModeAvailable: boolean;
   /** Whether GitHub authentication is configured. */
   githubConnected: boolean;
+  /** Capabilities reported by the active agent runner. */
+  runnerCapabilities?: RunnerCapabilities;
+}
+
+/**
+ * Build a PermissionMode suitable for standalone agent runs (e.g., design-doc
+ * generation, doc-from-prompt).  These need exploration + write permissions
+ * but run outside the TUI settings flow.
+ *
+ * Factored out so every agent spawn site uses a consistent permission set,
+ * and new agent types can extend this easily.
+ */
+export function getStandalonePermissions(opts?: {
+  autoModeAvailable?: boolean;
+}): PermissionMode {
+  const auto = opts?.autoModeAvailable ?? false;
+  if (auto) {
+    return { type: 'auto', allowedTools: ALLOWED_TOOLS };
+  }
+  return { type: 'allowedTools', tools: ALLOWED_TOOLS, disallowedTools: DISALLOWED_TOOLS };
 }
 
 export function createInitialState(
   docId: string,
-  opts?: { docTitle?: string; agentType?: string; autoModeAvailable?: boolean; githubConnected?: boolean },
+  opts?: { docTitle?: string; agentType?: string; autoModeAvailable?: boolean; githubConnected?: boolean; runnerCapabilities?: RunnerCapabilities },
 ): TuiState {
   const docUrl = `https://docs.google.com/document/d/${docId}/edit`;
   const autoModeAvailable = opts?.autoModeAvailable ?? false;
@@ -141,11 +163,13 @@ export function createInitialState(
       codeMode: githubConnected ? 'pr' : 'direct',
       debugMode: false,
       defaultModel: {},
+      harnessSettings: {},
     },
     showSettings: false,
     paused: false,
     agentType: opts?.agentType ?? 'claude',
     autoModeAvailable,
     githubConnected,
+    runnerCapabilities: opts?.runnerCapabilities,
   };
 }
