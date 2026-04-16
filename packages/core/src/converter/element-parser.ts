@@ -189,6 +189,21 @@ function parseParagraph(
       listProps?.listProperties?.nestingLevels?.[nestingLevel];
     const glyphType = nestingProps?.glyphType;
 
+    // Detect checkbox lists (undocumented checkboxLevel property, or
+    // glyphSymbol containing a checkbox character like ☐/☑/✓/✔)
+    const isCheckbox =
+      (nestingProps as any)?.checkboxLevel === true ||
+      /[\u2610\u2611\u2713\u2714]/.test(nestingProps?.glyphSymbol ?? '');
+
+    if (isCheckbox) {
+      // Determine checked state: Google Docs applies strikethrough to checked items
+      const isChecked = elements.some(
+        (el) => el.textRun?.textStyle?.strikethrough === true,
+      );
+      const checkbox = isChecked ? '- [x]' : '- [ ]';
+      return prefix + indent + checkbox + ' ' + text;
+    }
+
     // If glyph type is set (DECIMAL, ALPHA, etc.), it's ordered
     const isOrdered = glyphType && glyphType !== 'GLYPH_TYPE_UNSPECIFIED';
     const marker = isOrdered ? '1.' : '-';

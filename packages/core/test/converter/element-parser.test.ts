@@ -211,6 +211,113 @@ describe('element-parser edge cases', () => {
     expect(md).toContain('  - inner');
   });
 
+  it('handles checkbox lists (unchecked)', () => {
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 12,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 12,
+                textRun: { content: 'buy milk\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-cb', nestingLevel: 0 },
+          },
+        },
+      ],
+      {
+        lists: {
+          'list-cb': {
+            listProperties: {
+              nestingLevels: [
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED', glyphSymbol: '\u2610' },
+              ],
+            },
+          },
+        },
+      },
+    );
+    const md = docsToMarkdown(doc);
+    expect(md).toContain('- [ ] buy milk');
+  });
+
+  it('handles checkbox lists (checked via strikethrough)', () => {
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 10,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 10,
+                textRun: { content: 'done task\n', textStyle: { strikethrough: true } },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-cb', nestingLevel: 0 },
+          },
+        },
+      ],
+      {
+        lists: {
+          'list-cb': {
+            listProperties: {
+              nestingLevels: [
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED', glyphSymbol: '\u2610' },
+              ],
+            },
+          },
+        },
+      },
+    );
+    const md = docsToMarkdown(doc);
+    expect(md).toContain('- [x]');
+  });
+
+  it('handles checkbox lists via checkboxLevel property', () => {
+    const nestingLevel: any = {
+      glyphType: 'NONE',
+      checkboxLevel: true,
+    };
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 8,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 8,
+                textRun: { content: 'a task\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-cb2', nestingLevel: 0 },
+          },
+        },
+      ],
+      {
+        lists: {
+          'list-cb2': {
+            listProperties: {
+              nestingLevels: [nestingLevel],
+            },
+          },
+        },
+      },
+    );
+    const md = docsToMarkdown(doc);
+    expect(md).toContain('- [ ] a task');
+  });
+
   it('handles a table', () => {
     const doc = makeDoc([
       {

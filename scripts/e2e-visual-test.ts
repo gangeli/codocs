@@ -158,6 +158,15 @@ Ordered list:
 3. Step three`,
   },
 
+  {
+    title: 'Checkbox (task) list',
+    expect: 'Each item should have a native Google Docs checkbox (clickable, not a Unicode symbol). All boxes should start unchecked. Clicking a box should check it and strike through the text.',
+    markdown: `- [ ] Buy groceries
+- [ ] Review pull request
+- [ ] Write tests
+- [ ] Deploy to staging`,
+  },
+
   // ── Code blocks ──────────────────────────────────────────
 
   {

@@ -384,6 +384,7 @@ function walkList(
   const children = node.children as Content[];
   for (let i = 0; i < children.length; i++) {
     const item = children[i] as ListItem;
+    const isCheckbox = item.checked !== null && item.checked !== undefined;
     const itemStart = ctx.offset;
 
     // Walk the list item's content
@@ -393,9 +394,11 @@ function walkList(
     ctx.bullets.push({
       createParagraphBullets: {
         range: { startIndex: itemStart, endIndex: itemEnd },
-        bulletPreset: node.ordered
-          ? 'NUMBERED_DECIMAL_NESTED'
-          : 'BULLET_DISC_CIRCLE_SQUARE',
+        bulletPreset: isCheckbox
+          ? ('CHECKBOX' as string)
+          : node.ordered
+            ? 'NUMBERED_DECIMAL_NESTED'
+            : 'BULLET_DISC_CIRCLE_SQUARE',
       },
     });
   }

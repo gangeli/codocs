@@ -114,6 +114,27 @@ describe('markdownToDocsRequests', () => {
     ).toBe('NUMBERED_DECIMAL_NESTED');
   });
 
+  it('converts a task list (checkboxes) with CHECKBOX preset', () => {
+    const md = '- [ ] unchecked item\n- [x] checked item\n- [ ] another unchecked';
+    const { text, requests } = markdownToDocsRequests(md);
+    expect(text).toContain('unchecked item');
+    expect(text).toContain('checked item');
+    const bulletReqs = requests.filter((r) => r.createParagraphBullets);
+    expect(bulletReqs.length).toBe(3);
+    for (const req of bulletReqs) {
+      expect(req.createParagraphBullets!.bulletPreset).toBe('CHECKBOX');
+    }
+  });
+
+  it('uses regular bullet preset for non-checkbox list items', () => {
+    const md = '- regular item\n- another item';
+    const { requests } = markdownToDocsRequests(md);
+    const bulletReqs = requests.filter((r) => r.createParagraphBullets);
+    for (const req of bulletReqs) {
+      expect(req.createParagraphBullets!.bulletPreset).toBe('BULLET_DISC_CIRCLE_SQUARE');
+    }
+  });
+
   it('prepends a delete request when clearFirst is true', () => {
     const { requests } = markdownToDocsRequests('Hello', 1, true, 50);
     const deleteReq = requests.find((r) => r.deleteContentRange);
