@@ -79,6 +79,50 @@ const SCHEMA = `
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (document_id, source_hash)
   );
+
+  CREATE TABLE IF NOT EXISTS chat_tabs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id       TEXT NOT NULL,
+    tab_id            TEXT NOT NULL,
+    title             TEXT NOT NULL,
+    agent_name        TEXT NOT NULL,
+    source_comment_id TEXT,
+    active_comment_id TEXT,
+    status            TEXT NOT NULL DEFAULT 'active',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (document_id, tab_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chat_tabs_document
+    ON chat_tabs (document_id, status);
+
+  CREATE INDEX IF NOT EXISTS idx_chat_tabs_active_comment
+    ON chat_tabs (active_comment_id);
+
+  CREATE TABLE IF NOT EXISTS chat_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_tab_id     INTEGER NOT NULL REFERENCES chat_tabs(id),
+    role            TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chat_messages_tab
+    ON chat_messages (chat_tab_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS codocs_sessions (
+    id             TEXT PRIMARY KEY,
+    directory      TEXT NOT NULL,
+    doc_ids        TEXT NOT NULL,
+    doc_title      TEXT,
+    agent_type     TEXT NOT NULL,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_codocs_sessions_directory
+    ON codocs_sessions (directory, last_used_at DESC);
 `;
 
 function getDataDir(): string {

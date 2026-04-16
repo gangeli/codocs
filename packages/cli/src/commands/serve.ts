@@ -21,7 +21,7 @@ import {
   type SubscriptionInfo,
   type PermissionMode,
 } from '@codocs/core';
-import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore, CodeTaskStore } from '@codocs/db';
+import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore, CodeTaskStore, CodocsSessionStore, type CodocsSession } from '@codocs/db';
 import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -138,12 +138,13 @@ function createEventEmitter(tuiRef: TuiStateRef | null) {
 /**
  * Show the welcome screen and return the user's choice.
  */
-async function showWelcome(useTui: boolean): Promise<WelcomeChoice> {
+async function showWelcome(useTui: boolean, recentSessions: CodocsSession[]): Promise<WelcomeChoice> {
   if (useTui) {
     return new Promise<WelcomeChoice>((resolve) => {
       const { unmount } = render(
         React.createElement(Welcome, {
           cwd: process.cwd(),
+          recentSessions,
           onChoice: (choice: WelcomeChoice) => { unmount(); resolve(choice); },
         }),
         { exitOnCtrlC: true },
@@ -153,6 +154,25 @@ async function showWelcome(useTui: boolean): Promise<WelcomeChoice> {
 
   // Plain text fallback
   const rl = createInterface({ input: process.stdin, output: process.stderr });
+  if (recentSessions.length > 0) {
+    console.error('Recent sessions:');
+    for (let i = 0; i < recentSessions.length; i++) {
+      const s = recentSessions[i];
+      const label = s.docTitle ?? s.docIds[0].slice(0, 16) + '...';
+      console.error(`  ${i + 1}) ${label} [${s.id}]`);
+    }
+    console.error('');
+    const answer = await rl.question('Enter a number to resume, a Doc URL/ID, or press Enter to create new: ');
+    rl.close();
+    const trimmed = answer.trim();
+    if (!trimmed) return { type: 'from-repo' };
+    const num = parseInt(trimmed, 10);
+    if (num >= 1 && num <= recentSessions.length) {
+      const s = recentSessions[num - 1];
+      return { type: 'resume', sessionId: s.id, docIds: s.docIds, agentType: s.agentType };
+    }
+    return { type: 'open', docId: trimmed };
+  }
   const answer = await rl.question('Enter a Doc URL/ID, or press Enter to create new: ');
   rl.close();
   if (answer.trim()) {
@@ -170,6 +190,10 @@ async function resolveWelcomeChoice(
   standalonePermissions?: import('@codocs/core').PermissionMode,
 ): Promise<{ docId?: string; content?: string }> {
   switch (choice.type) {
+    case 'resume':
+      // Handled before resolveWelcomeChoice is called
+      return { docId: choice.docIds[0] };
+
     case 'open':
       return { docId: choice.docId };
 
@@ -329,6 +353,7 @@ export function registerServeCommand(program: Command) {
     .option('--db-path <path>', 'SQLite database path')
     .option('--fallback-agent <name>', 'Default agent for unattributed text (auto-generated if omitted)')
     .option('--no-bot-replies', 'Disable bot identity for comment replies (reply as yourself instead)')
+    .option('--resume [id]', 'Resume a previous session (optionally by ID)')
     .action(
       withErrorHandler(async (docIds: string[], opts: {
         debug?: boolean;
@@ -337,6 +362,7 @@ export function registerServeCommand(program: Command) {
         dbPath?: string;
         fallbackAgent?: string;
         botReplies?: boolean;
+        resume?: string | boolean;
       }) => {
         const debugMode = opts.debug ?? false;
         const useTui = opts.tui !== false;
@@ -345,8 +371,47 @@ export function registerServeCommand(program: Command) {
         // Clear screen for a fresh start
         process.stderr.write('\x1b[2J\x1b[H');
 
+        // Handle --resume: load session from DB before anything else
+        if (opts.resume) {
+          const tempDb = await openDatabase(opts.dbPath);
+          const tempSessions = new CodocsSessionStore(tempDb);
+          let session: CodocsSession | null;
+          if (typeof opts.resume === 'string') {
+            session = tempSessions.get(opts.resume);
+          } else {
+            const recent = tempSessions.listByDirectory(process.cwd(), 1);
+            session = recent[0] ?? null;
+          }
+          tempDb.close();
+          if (!session) {
+            console.error(typeof opts.resume === 'string'
+              ? `No session found with ID "${opts.resume}".`
+              : 'No previous session found for this directory.');
+            process.exit(1);
+          }
+          docIds = session.docIds;
+          if (!opts.agentType || opts.agentType === 'claude') {
+            opts.agentType = session.agentType;
+          }
+        }
+
         if (docIds.length === 0) {
-          const choice = await showWelcome(useTui);
+          // Load recent sessions for the Welcome screen
+          let recentSessions: CodocsSession[] = [];
+          {
+            const tempDb = await openDatabase(opts.dbPath);
+            const tempSessions = new CodocsSessionStore(tempDb);
+            recentSessions = tempSessions.listByDirectory(process.cwd(), 3);
+            tempDb.close();
+          }
+
+          const choice = await showWelcome(useTui, recentSessions);
+
+          // Handle resume choice from Welcome screen
+          if (choice.type === 'resume') {
+            docIds = choice.docIds;
+            opts.agentType = choice.agentType;
+          } else {
           const agentTypeRaw = opts.agentType ?? 'claude';
           if (!isAgentType(agentTypeRaw)) {
             console.error(`Unknown agent type "${agentTypeRaw}". Available: ${Object.keys(AGENT_RUNNERS).join(', ')}`);
@@ -398,6 +463,7 @@ export function registerServeCommand(program: Command) {
             console.error(`Location: My Drive > Codocs > ${docName}\n`);
             docIds = [docId];
           }
+          } // end else (non-resume choice)
         }
 
         // ── Auth & config ─────────────────────────────────────────
@@ -463,6 +529,18 @@ export function registerServeCommand(program: Command) {
         }
         const agentType: AgentType = agentTypeRaw;
         const agentRunner = AGENT_RUNNERS[agentType]();
+
+        // ── Persist session for resume ────────────────────────────
+        const codocsSessionStore = new CodocsSessionStore(db);
+        const codocsSession = codocsSessionStore.upsert(cwd, normalizedDocIds, agentType);
+        saveDatabase(db);
+
+        process.on('exit', () => {
+          const docArgs = normalizedDocIds.join(' ');
+          process.stderr.write(
+            `\nTo resume this session, run:\n  codocs ${docArgs}\n  codocs --resume ${codocsSession.id}\n\n`,
+          );
+        });
 
         // ── GitHub auth (check only — debug logging deferred) ──
         const ghTokens = readGitHubTokens();
@@ -561,7 +639,11 @@ export function registerServeCommand(program: Command) {
         // Fetch document title for the TUI header
         try {
           const doc = await client.getDocument(primaryDocId);
-          if (doc.title && tui.ref) tui.ref.setDocTitle(doc.title);
+          if (doc.title) {
+            if (tui.ref) tui.ref.setDocTitle(doc.title);
+            codocsSessionStore.setDocTitle(codocsSession.id, doc.title);
+            saveDatabase(db);
+          }
         } catch { /* keep truncated ID fallback */ }
 
         // Use a service account for comment replies so they appear from

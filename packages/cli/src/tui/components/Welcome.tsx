@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import type { CodocsSession } from '@codocs/db';
 
 export type WelcomeChoice =
+  | { type: 'resume'; sessionId: string; docIds: string[]; agentType: string }
   | { type: 'open'; docId: string }
   | { type: 'from-repo' }
   | { type: 'import-file'; path: string }
@@ -11,6 +13,7 @@ export type WelcomeChoice =
 interface WelcomeProps {
   onChoice: (choice: WelcomeChoice) => void;
   cwd: string;
+  recentSessions?: CodocsSession[];
 }
 
 type Step = 'menu' | 'enter-url' | 'enter-path' | 'enter-prompt';
@@ -35,7 +38,12 @@ interface MenuSection {
   items: MenuItem[];
 }
 
-const MENU_SECTIONS: MenuSection[] = [
+interface FlatItem extends MenuItem {
+  section: number;
+  item: number;
+}
+
+const BASE_MENU_SECTIONS: MenuSection[] = [
   {
     title: 'Open existing',
     items: [
@@ -73,11 +81,6 @@ const MENU_SECTIONS: MenuSection[] = [
   },
 ];
 
-/** Flat list of all selectable items with their section index and item index. */
-const FLAT_ITEMS = MENU_SECTIONS.flatMap((section, si) =>
-  section.items.map((item, ii) => ({ section: si, item: ii, ...item })),
-);
-
 function shortenPath(p: string): string {
   const home = process.env.HOME ?? '';
   if (home && p.startsWith(home)) return '~' + p.slice(home.length);
@@ -99,10 +102,41 @@ function isValidDocInput(value: string): boolean {
   return false;
 }
 
-export function Welcome({ onChoice, cwd }: WelcomeProps) {
+function buildMenuSections(sessions: CodocsSession[]): MenuSection[] {
+  if (sessions.length === 0) return BASE_MENU_SECTIONS;
+
+  const resumeSection: MenuSection = {
+    title: 'Resume',
+    items: sessions.map((s) => {
+      const label = s.docTitle ?? s.docIds[0].slice(0, 20) + '...';
+      return {
+        icon: '\u25B6', // ▶
+        label,
+        description: `Resume session ${s.id} with ${s.docIds.length} doc${s.docIds.length !== 1 ? 's' : ''} using ${s.agentType} agent.`,
+      };
+    }),
+  };
+
+  return [resumeSection, ...BASE_MENU_SECTIONS];
+}
+
+function flattenSections(sections: MenuSection[]): FlatItem[] {
+  return sections.flatMap((section, si) =>
+    section.items.map((item, ii) => ({ section: si, item: ii, ...item })),
+  );
+}
+
+export function Welcome({ onChoice, cwd, recentSessions = [] }: WelcomeProps) {
   const [step, setStep] = useState<Step>('menu');
   const [selected, setSelected] = useState(0);
   const [input, setInput] = useState('');
+
+  const menuSections = useMemo(() => buildMenuSections(recentSessions), [recentSessions]);
+  const flatItems = useMemo(() => flattenSections(menuSections), [menuSections]);
+
+  // Number of resume items (shifts the base section indices)
+  const resumeCount = recentSessions.length > 0 ? recentSessions.length : 0;
+  const hasResume = resumeCount > 0;
 
   useInput((ch, key) => {
     // ── Text input steps ──────────────────────────────────
@@ -139,14 +173,24 @@ export function Welcome({ onChoice, cwd }: WelcomeProps) {
     if (key.upArrow || ch === 'k') {
       setSelected((s) => Math.max(0, s - 1));
     } else if (key.downArrow || ch === 'j') {
-      setSelected((s) => Math.min(FLAT_ITEMS.length - 1, s + 1));
+      setSelected((s) => Math.min(flatItems.length - 1, s + 1));
     } else if (key.return) {
-      const { section, item } = FLAT_ITEMS[selected];
-      if (section === 0 && item === 0) setStep('enter-url');
-      else if (section === 0 && item === 1) setStep('enter-path');
-      else if (section === 1 && item === 0) onChoice({ type: 'from-repo' });
-      else if (section === 1 && item === 1) onChoice({ type: 'write-new' });
-      else if (section === 1 && item === 2) setStep('enter-prompt');
+      const flat = flatItems[selected];
+
+      // Resume section items
+      if (hasResume && flat.section === 0) {
+        const session = recentSessions[flat.item];
+        onChoice({ type: 'resume', sessionId: session.id, docIds: session.docIds, agentType: session.agentType });
+        return;
+      }
+
+      // Base sections (offset by resume section if present)
+      const baseSection = hasResume ? flat.section - 1 : flat.section;
+      if (baseSection === 0 && flat.item === 0) setStep('enter-url');
+      else if (baseSection === 0 && flat.item === 1) setStep('enter-path');
+      else if (baseSection === 1 && flat.item === 0) onChoice({ type: 'from-repo' });
+      else if (baseSection === 1 && flat.item === 1) onChoice({ type: 'write-new' });
+      else if (baseSection === 1 && flat.item === 2) setStep('enter-prompt');
     } else if (ch === 'q' || key.escape) {
       process.exit(0);
     }
@@ -172,15 +216,15 @@ export function Welcome({ onChoice, cwd }: WelcomeProps) {
           <Box>
             {/* Left: menu items with section headers */}
             <Box flexDirection="column" width={34}>
-              {MENU_SECTIONS.map((section, si) => {
-                const sectionItems = FLAT_ITEMS.filter((f) => f.section === si);
+              {menuSections.map((section, si) => {
+                const sectionItems = flatItems.filter((f) => f.section === si);
                 return (
-                  <Box key={si} flexDirection="column" marginBottom={si < MENU_SECTIONS.length - 1 ? 1 : 0}>
+                  <Box key={si} flexDirection="column" marginBottom={si < menuSections.length - 1 ? 1 : 0}>
                     <Box marginBottom={0}>
                       <Text dimColor bold>{section.title}</Text>
                     </Box>
                     {sectionItems.map((flat) => {
-                      const flatIdx = FLAT_ITEMS.indexOf(flat);
+                      const flatIdx = flatItems.indexOf(flat);
                       const isSelected = flatIdx === selected;
                       const isLast = flat.item === section.items.length - 1;
                       return (
@@ -206,7 +250,7 @@ export function Welcome({ onChoice, cwd }: WelcomeProps) {
             <Box flexDirection="column" marginLeft={1} paddingLeft={2} width={34}
               borderStyle="single" borderTop={false} borderBottom={false} borderRight={false} borderLeft={true}
             >
-              <Text dimColor wrap="wrap">{FLAT_ITEMS[selected].description}</Text>
+              <Text dimColor wrap="wrap">{flatItems[selected].description}</Text>
             </Box>
           </Box>
 
