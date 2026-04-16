@@ -8,9 +8,9 @@
  */
 
 export interface Classification {
-  /** Whether this is a code modification request or a document-level action. */
-  mode: 'code' | 'doc';
-  /** Brief description of the code change (only present for code mode). */
+  /** Whether this is a code modification, document action, or chat conversation. */
+  mode: 'code' | 'doc' | 'chat';
+  /** Brief description (for code: the change; for chat: the topic). */
   description?: string;
   /** The agent's response with the classification header stripped. */
   response: string;
@@ -24,15 +24,17 @@ export function buildClassificationPreamble(): string {
   return `IMPORTANT: Before your response, output exactly ONE of these on the FIRST line:
 [MODE: code] <brief description of the code change>
 [MODE: doc]
+[MODE: chat] <topic for the conversation>
 
 Use [MODE: code] if the comment asks you to modify, fix, add, remove, or refactor source code in the repository.
 Use [MODE: doc] if the comment is about the document itself, is an informational question, or doesn't involve code changes.
+Use [MODE: chat] if the comment starts a complex discussion, asks to "discuss", "let's talk about", "open a chat", or would clearly benefit from a multi-turn conversation (e.g., brainstorming, design exploration, detailed Q&A).
 
 Then provide your full response starting from the second line.
 `;
 }
 
-const MODE_PATTERN = /^\[MODE:\s*(code|doc)\]\s*(.*)?$/i;
+const MODE_PATTERN = /^\[MODE:\s*(code|doc|chat)\]\s*(.*)?$/i;
 
 /**
  * Parse the classification header from agent stdout.
@@ -50,7 +52,7 @@ export function parseClassification(stdout: string): Classification {
     return { mode: 'doc', response: stdout };
   }
 
-  const mode = match[1].toLowerCase() as 'code' | 'doc';
+  const mode = match[1].toLowerCase() as Classification['mode'];
   const description = match[2]?.trim() || undefined;
   const response = lines.slice(1).join('\n').trim();
 

@@ -53,10 +53,128 @@ export class CodocsClient {
   }
 
   /**
+   * Fetch the full document with all tabs included.
+   */
+  async getDocumentWithTabs(docId: string): Promise<import('googleapis').docs_v1.Schema$Document> {
+    return this.docsApi.getDocumentWithTabs(docId);
+  }
+
+  /**
    * Send a batch of update requests to the document.
    */
   async batchUpdate(docId: string, requests: import('googleapis').docs_v1.Schema$Request[]): Promise<void> {
     await this.docsApi.batchUpdate(docId, requests);
+  }
+
+  // ── Tab operations ────────────────────────────────────────────────
+
+  /**
+   * Create a new tab in a document. Returns the tab ID.
+   */
+  async createTab(docId: string, title: string, index?: number): Promise<string> {
+    return this.docsApi.addTab(docId, title, index);
+  }
+
+  /**
+   * Delete a tab from a document.
+   */
+  async deleteTab(docId: string, tabId: string): Promise<void> {
+    return this.docsApi.deleteTab(docId, tabId);
+  }
+
+  /**
+   * Read a specific tab as markdown.
+   * The document is fetched with `includeTabsContent: true`.
+   */
+  async getTabMarkdown(docId: string, tabId: string, opts: ReadOptions = {}): Promise<string> {
+    const doc = await this.docsApi.getDocumentWithTabs(docId);
+    return docsToMarkdown(doc, { ...opts, tabId });
+  }
+
+  /**
+   * Write markdown content to a specific tab.
+   */
+  async writeTabMarkdown(
+    docId: string,
+    tabId: string,
+    markdown: string,
+    opts: WriteOptions = {},
+  ): Promise<void> {
+    const doc = await this.docsApi.getDocumentWithTabs(docId);
+    const { getTabBody } = await import('../converter/docs-to-md.js');
+    const tabBody = getTabBody(doc, tabId);
+    const bodyEndIndex = tabBody?.content?.length
+      ? (tabBody.content[tabBody.content.length - 1].endIndex ?? 1)
+      : 1;
+
+    const mode = opts.mode ?? 'replace';
+    let insertionIndex: number;
+    let clearFirst: boolean;
+
+    if (opts.insertAt !== undefined) {
+      insertionIndex = opts.insertAt;
+      clearFirst = false;
+    } else if (mode === 'append') {
+      insertionIndex = Math.max(1, bodyEndIndex - 1);
+      clearFirst = false;
+    } else {
+      insertionIndex = 1;
+      clearFirst = bodyEndIndex > 2;
+    }
+
+    const hasMermaid = /```mermaid\b/.test(markdown);
+
+    if (hasMermaid) {
+      const { markdownToDocsRequestsAsync } = await import('../converter/md-to-docs.js');
+      const result = await markdownToDocsRequestsAsync(
+        markdown,
+        insertionIndex,
+        clearFirst,
+        bodyEndIndex,
+        { driveApi: this.driveApi, documentId: docId },
+      );
+      if (result.requests.length === 0) return;
+
+      if (opts.agent && result.text.length > 0) {
+        const attrRequests = createAttributionRequests(
+          opts.agent.name,
+          insertionIndex,
+          insertionIndex + result.text.length,
+          opts.agent.color,
+        );
+        result.requests.push(...attrRequests);
+      }
+
+      try {
+        await this.docsApi.batchUpdateTab(docId, tabId, result.requests);
+      } finally {
+        for (const fileId of result.tempDriveFileIds) {
+          try { await this.driveApi.deleteFile(fileId); } catch { /* best-effort */ }
+        }
+      }
+      return;
+    }
+
+    const { markdownToDocsRequests } = await import('../converter/md-to-docs.js');
+    const { text, requests } = markdownToDocsRequests(
+      markdown,
+      insertionIndex,
+      clearFirst,
+      bodyEndIndex,
+    );
+    if (requests.length === 0) return;
+
+    if (opts.agent && text.length > 0) {
+      const attrRequests = createAttributionRequests(
+        opts.agent.name,
+        insertionIndex,
+        insertionIndex + text.length,
+        opts.agent.color,
+      );
+      requests.push(...attrRequests);
+    }
+
+    await this.docsApi.batchUpdateTab(docId, tabId, requests);
   }
 
   /**

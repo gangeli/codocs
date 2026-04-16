@@ -24,6 +24,10 @@ import {
   pushBranch, rebaseOnto,
 } from './worktree.js';
 import { getRepoInfo, createDraftPR, addPRComment, buildPRBody } from './pr.js';
+import { routeComment } from '../chat/chat-router.js';
+import { ChatTabManager } from '../chat/chat-tab-manager.js';
+import { ChatOrchestrator } from '../chat/chat-orchestrator.js';
+import type { ChatTabStore } from '@codocs/db';
 
 export type CodeMode = 'pr' | 'direct' | 'off';
 
@@ -74,6 +78,10 @@ export interface OrchestratorConfig {
   model?: string | (() => string | undefined);
   /** Harness-specific settings (e.g., codex approval mode, opencode provider). Called per-invocation. */
   harnessSettings?: Record<string, string> | (() => Record<string, string>);
+  /** Chat tab store for tracking chat tabs and messages. Required for chat mode. */
+  chatTabStore?: ChatTabStore;
+  /** Whether chat tab forking is enabled. Called per-invocation. Defaults to false. */
+  chatEnabled?: boolean | (() => boolean);
   /** Optional logger. */
   debug?: (msg: string) => void;
 }
@@ -96,6 +104,10 @@ export class AgentOrchestrator {
   private repoRoot: string;
   private getModel: () => string | undefined;
   private getHarnessSettings: () => Record<string, string>;
+  private chatTabStore?: ChatTabStore;
+  private chatOrchestrator?: ChatOrchestrator;
+  private chatTabManager?: ChatTabManager;
+  private getChatEnabled: () => boolean;
 
   /** Agents currently being drained. Prevents double-drain. */
   private processingAgents = new Set<string>();
@@ -126,6 +138,31 @@ export class AgentOrchestrator {
     this.getModel = typeof m === 'function' ? m : () => m;
     const hs = config.harnessSettings;
     this.getHarnessSettings = typeof hs === 'function' ? hs : () => hs ?? {};
+
+    // Chat tab setup
+    this.chatTabStore = config.chatTabStore;
+    const ce = config.chatEnabled;
+    this.getChatEnabled = typeof ce === 'function' ? ce : () => ce ?? false;
+
+    if (this.chatTabStore) {
+      this.chatTabManager = new ChatTabManager(
+        this.client,
+        this.chatTabStore,
+        this.debug,
+      );
+      this.chatOrchestrator = new ChatOrchestrator({
+        client: this.client,
+        replyClient: this.replyClient,
+        sessionStore: this.sessionStore,
+        chatTabStore: this.chatTabStore,
+        chatTabManager: this.chatTabManager,
+        agentRunner: this.agentRunner,
+        permissionMode: config.permissionMode,
+        model: config.model,
+        harnessSettings: config.harnessSettings,
+        debug: this.debug,
+      });
+    }
   }
 
   /** Resolve the fallback agent name for a given document. */
@@ -167,6 +204,18 @@ export class AgentOrchestrator {
     }
 
     this.debug(`Handling comment on doc ${documentId}: "${commentText}"`);
+
+    // Step 0: Check if this comment belongs to a chat tab
+    if (this.chatTabStore && this.chatOrchestrator) {
+      const route = await routeComment(event, this.chatTabStore, this.client);
+      if (route.type === 'chat') {
+        this.debug(`Routing to chat tab: ${route.chatTab.title}`);
+        const result = await this.chatOrchestrator.handleChatMessage(route.chatTab, event);
+        const agentName = route.chatTab.agentName;
+        this.onCommentProcessed({ agentName, ...result });
+        return { agentName, ...result };
+      }
+    }
 
     // Step 1: Fetch document and attributions to assign the agent
     const document = await this.client.getDocument(documentId);
@@ -359,6 +408,13 @@ export class AgentOrchestrator {
           await this.replaceThinkingReply(documentId, comment.id, thinkingReplyId, null);
           thinkingReplyId = null; // prevent double-cleanup in finally
           return this.processCodeComment(event, agentName, null, classification.description);
+        }
+        if (classification.mode === 'chat' && this.getChatEnabled() && this.chatTabManager) {
+          this.debug(`[processComment] Classified as chat: ${classification.description}`);
+          await cleanupTempFiles(editPath, basePath);
+          await this.replaceThinkingReply(documentId, comment.id, thinkingReplyId, null);
+          thinkingReplyId = null;
+          return this.forkToChat(event, agentName, classification.description, classification.response);
         }
         // Doc mode — use the stripped response (without the [MODE: doc] header)
         result = { ...result, stdout: classification.response };
@@ -683,5 +739,62 @@ export class AgentOrchestrator {
     }
 
     return { replyPreview: replyContent, editSummary };
+  }
+
+  /**
+   * Fork a comment conversation into a chat tab.
+   *
+   * Creates a new tab, seeds it with the conversation context,
+   * writes the agent's initial response, and replies to the original
+   * comment with a redirect message.
+   */
+  private async forkToChat(
+    event: CommentEvent,
+    agentName: string,
+    topic?: string,
+    initialResponse?: string,
+  ): Promise<{ replyPreview: string; editSummary: string }> {
+    if (!this.chatTabManager) {
+      return { replyPreview: 'Chat tabs not configured', editSummary: '' };
+    }
+
+    const { documentId, comment } = event;
+    const title = topic ?? comment.content?.slice(0, 40) ?? 'Discussion';
+
+    this.debug(`[forkToChat] Creating chat tab: "${title}"`);
+
+    // Create the chat tab with seed context
+    const { chatTabId, tabId } = await this.chatTabManager.createChatTab(
+      documentId,
+      title,
+      agentName,
+      {
+        commentText: comment.content ?? '',
+        quotedText: comment.quotedText,
+        threadHistory: event.thread,
+      },
+      comment.id,
+    );
+
+    // If the agent already produced an initial response, append it
+    if (initialResponse) {
+      await this.chatTabManager.appendMessage(
+        documentId, tabId, chatTabId,
+        agentName, 'agent', initialResponse,
+      );
+    }
+
+    // Reply to the original comment with a redirect
+    const replyContent = `Continuing in the "Chat: ${title}" tab \u2192`;
+    if (comment.id) {
+      try {
+        await this.replyClient.replyToComment(documentId, comment.id, replyContent);
+      } catch (err) {
+        this.debug(`[forkToChat] Failed to post redirect reply: ${err}`);
+      }
+    }
+
+    this.debug(`[forkToChat] Done — tab ${tabId}, chat ${chatTabId}`);
+    return { replyPreview: replyContent, editSummary: `Chat tab created: ${title}` };
   }
 }

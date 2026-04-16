@@ -44,6 +44,8 @@ export interface ParseOptions {
   includeAttribution?: boolean;
   /** Mermaid sources in document order, for restoring diagrams from images. */
   mermaidSources?: string[];
+  /** When set, read from a specific tab (document must be fetched with includeTabsContent). */
+  tabId?: string;
 }
 
 export function parseDocumentToMarkdown(
