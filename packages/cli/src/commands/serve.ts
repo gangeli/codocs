@@ -588,6 +588,7 @@ export function registerServeCommand(program: Command) {
         let listener: CommentListenerHandle | null = null;
         let renewalTimer: ReturnType<typeof setInterval> | null = null;
         let orchestrator: AgentOrchestrator | null = null;
+        let sessionInfo: { id: string; docArgs: string } | null = null;
 
         const shutdown = async () => {
           // Kill any active agent processes first
@@ -610,6 +611,11 @@ export function registerServeCommand(program: Command) {
           if (renewalTimer) clearInterval(renewalTimer);
           if (listener) await listener.close();
           db.close();
+          if (sessionInfo) {
+            process.stdout.write(
+              `\nTo resume this session, run:\n  codocs ${sessionInfo.docArgs}\n  codocs --resume ${sessionInfo.id}\n\n`,
+            );
+          }
           process.exit(0);
         };
 
@@ -626,13 +632,7 @@ export function registerServeCommand(program: Command) {
         const codocsSessionStore = new CodocsSessionStore(db);
         const codocsSession = codocsSessionStore.upsert(cwd, normalizedDocIds, agentType);
         saveDatabase(db);
-
-        process.on('exit', () => {
-          const docArgs = normalizedDocIds.join(' ');
-          process.stderr.write(
-            `\nTo resume this session, run:\n  codocs ${docArgs}\n  codocs --resume ${codocsSession.id}\n\n`,
-          );
-        });
+        sessionInfo = { id: codocsSession.id, docArgs: normalizedDocIds.join(' ') };
 
         // ── GitHub auth (check only — debug logging deferred) ──
         const ghTokens = readGitHubTokens();
