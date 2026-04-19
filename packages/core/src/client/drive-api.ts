@@ -221,6 +221,35 @@ export class DriveApi {
     return deleted;
   }
 
+  // ── App properties (cross-machine server lock) ─────────────
+
+  /**
+   * Read appProperties from a file. Returns an empty object if none set.
+   * appProperties are scoped to the OAuth client ID, so different apps
+   * won't collide.
+   */
+  async getAppProperties(fileId: string): Promise<Record<string, string>> {
+    const res = await this.drive.files.get({
+      fileId,
+      fields: 'appProperties',
+    });
+    return (res.data.appProperties as Record<string, string>) ?? {};
+  }
+
+  /**
+   * Set (merge) appProperties on a file.
+   * To delete a key, set its value to null.
+   */
+  async setAppProperties(
+    fileId: string,
+    properties: Record<string, string | null>,
+  ): Promise<void> {
+    await this.drive.files.update({
+      fileId,
+      requestBody: { appProperties: properties as any },
+    });
+  }
+
   /**
    * Share a file with an email address. Idempotent — silently succeeds
    * if the permission already exists.

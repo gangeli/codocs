@@ -392,6 +392,41 @@ export class CodocsClient {
     return resolveCommentImpl(this.driveApi, docId, commentId);
   }
 
+  // ── Server lock (cross-machine singleton) ──────────────────────
+
+  /**
+   * Check if another codocs server is actively running for this document.
+   * Returns the heartbeat info if a live server is detected, or null.
+   */
+  async getServerHeartbeat(docId: string): Promise<{ timestamp: string; host: string; sessionId: string } | null> {
+    const props = await this.driveApi.getAppProperties(docId);
+    const raw = props.codocs_heartbeat;
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Write a server heartbeat to the document's appProperties.
+   */
+  async setServerHeartbeat(docId: string, info: { timestamp: string; host: string; sessionId: string }): Promise<void> {
+    await this.driveApi.setAppProperties(docId, {
+      codocs_heartbeat: JSON.stringify(info),
+    });
+  }
+
+  /**
+   * Clear the server heartbeat (on shutdown).
+   */
+  async clearServerHeartbeat(docId: string): Promise<void> {
+    await this.driveApi.setAppProperties(docId, {
+      codocs_heartbeat: null,
+    });
+  }
+
   /**
    * Get all agent attribution spans in a document.
    */

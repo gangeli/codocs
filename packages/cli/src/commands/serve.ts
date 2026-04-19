@@ -25,9 +25,14 @@ import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, S
 import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir, homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+
+/** How long before a heartbeat is considered stale (45s = 3 missed beats). */
+const HEARTBEAT_STALE_MS = 45_000;
+/** How often to refresh the heartbeat. */
+const HEARTBEAT_INTERVAL_MS = 15_000;
 
 /**
  * Check if Claude Code's auto permission mode is available.
@@ -112,6 +117,27 @@ const FAREWELLS = [
 
 function pickFarewell(): string {
   return FAREWELLS[Math.floor(Math.random() * FAREWELLS.length)]!;
+}
+
+function printServerAlreadyRunning(docId: string, remoteHost: string, remoteSession: string): void {
+  const dim = '\x1b[2m';
+  const bold = '\x1b[1m';
+  const red = '\x1b[31m';
+  const yellow = '\x1b[33m';
+  const reset = '\x1b[0m';
+
+  process.stderr.write(
+    `\n` +
+    `  ${red}${bold}Another codocs server is already running${reset}\n` +
+    `\n` +
+    `  ${dim}Document:${reset} ${docId.slice(0, 20)}...\n` +
+    `  ${dim}Host:${reset}     ${remoteHost}\n` +
+    `  ${dim}Session:${reset}  ${remoteSession}\n` +
+    `\n` +
+    `  ${yellow}Only one server can be active per document at a time.${reset}\n` +
+    `  ${dim}If the other server crashed, wait ~45 seconds for the lock to expire.${reset}\n` +
+    `\n`,
+  );
 }
 
 function printAuthRequired(): void {
@@ -616,6 +642,47 @@ export function registerServeCommand(program: Command) {
         const normalizedDocIds = docIds.map(extractDocId);
         const primaryDocId = normalizedDocIds[0];
 
+        // ── Server lock (prevent duplicate servers per doc) ──────
+        const lockClient = new CodocsClient({
+          oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
+        });
+        const lockSessionId = `${hostname()}-${process.pid}-${Date.now()}`;
+
+        for (const docId of normalizedDocIds) {
+          try {
+            const heartbeat = await lockClient.getServerHeartbeat(docId);
+            if (heartbeat) {
+              const age = Date.now() - new Date(heartbeat.timestamp).getTime();
+              if (age < HEARTBEAT_STALE_MS) {
+                printServerAlreadyRunning(docId, heartbeat.host, heartbeat.sessionId);
+                process.exit(1);
+              }
+            }
+            // Claim the lock
+            await lockClient.setServerHeartbeat(docId, {
+              timestamp: new Date().toISOString(),
+              host: hostname(),
+              sessionId: lockSessionId,
+            });
+          } catch (err: any) {
+            // Non-fatal: don't block startup if appProperties fails
+            console.error(`Warning: could not check server lock for ${docId.slice(0, 12)}...: ${err.message}`);
+          }
+        }
+
+        // Heartbeat refresh
+        const heartbeatTimer = setInterval(async () => {
+          for (const docId of normalizedDocIds) {
+            try {
+              await lockClient.setServerHeartbeat(docId, {
+                timestamp: new Date().toISOString(),
+                host: hostname(),
+                sessionId: lockSessionId,
+              });
+            } catch { /* best-effort */ }
+          }
+        }, HEARTBEAT_INTERVAL_MS);
+
         // ── Database ──────────────────────────────────────────────
         const db = await openDatabase(opts.dbPath);
         const settingsStore = new SettingsStore(db);
@@ -650,6 +717,11 @@ export function registerServeCommand(program: Command) {
               }
             }
             if (renewalTimer) clearInterval(renewalTimer);
+            clearInterval(heartbeatTimer);
+            // Release server lock
+            for (const docId of normalizedDocIds) {
+              try { await lockClient.clearServerHeartbeat(docId); } catch { /* best-effort */ }
+            }
             if (listener) await listener.close();
             db.close();
           } catch { /* best-effort cleanup */ }
