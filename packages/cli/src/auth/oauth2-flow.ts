@@ -179,25 +179,7 @@ function renderPage(title: string, message: string, isError: boolean): string {
       border-bottom-left-radius: 4px;
     }
 
-    /* Faint ruled lines */
-    .page::after {
-      content: '';
-      position: absolute;
-      top: 48px; left: 40px; right: 40px; bottom: 40px;
-      background: repeating-linear-gradient(
-        to bottom,
-        transparent,
-        transparent 31px,
-        rgba(180, 170, 155, 0.15) 31px,
-        rgba(180, 170, 155, 0.15) 32px
-      );
-      pointer-events: none;
-      z-index: 0;
-    }
-
     .content {
-      position: relative;
-      z-index: 1;
       text-align: center;
     }
 
