@@ -93,6 +93,27 @@ async function generateDocName(
 /** How often to renew subscriptions (6 days, well before 7-day expiry). */
 const RENEWAL_INTERVAL_MS = 6 * 24 * 60 * 60 * 1000;
 
+const FAREWELLS = [
+  'Exiting gracefully, unlike most software.',
+  'May your merges be conflict-free.',
+  'See you on the other side of the diff.',
+  'Thanks for all the comments.',
+  'ctrl-c you later.',
+  'Process terminated. Feelings intact.',
+  "It's not a bug, it's a farewell.",
+  'Segfault avoided. Clean exit.',
+  'Your uptime was impressive.',
+  'All threads joined. All promises resolved.',
+  'No memory leaks here. Probably.',
+  'Committed to saying goodbye.',
+  'LGTM. Ship it. Go home.',
+  'This session has been garbage collected.',
+];
+
+function pickFarewell(): string {
+  return FAREWELLS[Math.floor(Math.random() * FAREWELLS.length)]!;
+}
+
 function formatCommentEvent(event: CommentEvent): string {
   const parts: string[] = [];
   const time = event.eventTime
@@ -907,15 +928,14 @@ export function registerServeCommand(program: Command) {
           await inkInstance!.waitUntilExit();
           // Clear screen and show styled exit message
           process.stdout.write('\x1b[2J\x1b[H');
+          const farewell = pickFarewell();
+          process.stdout.write(`\x1b[2m~ ${farewell} ~\x1b[0m\n\n`);
           if (sessionInfo) {
             process.stdout.write(
-              `\x1b[1mGoodbye!\x1b[0m\n\n` +
               `To resume this session, run:\n` +
               `  \x1b[36mcodocs \x1b[0m${sessionInfo.docArgs}\n` +
               `  \x1b[36mcodocs \x1b[0m--resume ${sessionInfo.id}\n\n`,
             );
-          } else {
-            process.stdout.write(`\x1b[1mGoodbye!\x1b[0m\n\n`);
           }
           process.exit(0);
         } else {
