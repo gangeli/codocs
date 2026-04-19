@@ -397,24 +397,27 @@ export class CodocsClient {
   /**
    * Check if another codocs server is actively running for this document.
    * Returns the heartbeat info if a live server is detected, or null.
+   *
+   * Stored as `{epoch_ms}:{hash}` to fit within Drive's 124-byte
+   * appProperties limit (key + value combined).
    */
-  async getServerHeartbeat(docId: string): Promise<{ timestamp: string; host: string; sessionId: string } | null> {
+  async getServerHeartbeat(docId: string): Promise<{ timestamp: number; serverHash: string } | null> {
     const props = await this.driveApi.getAppProperties(docId);
-    const raw = props.codocs_heartbeat;
+    const raw = props.cl_hb;
     if (!raw) return null;
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return null;
-    }
+    const sep = raw.indexOf(':');
+    if (sep === -1) return null;
+    const ts = Number(raw.slice(0, sep));
+    if (!Number.isFinite(ts)) return null;
+    return { timestamp: ts, serverHash: raw.slice(sep + 1) };
   }
 
   /**
    * Write a server heartbeat to the document's appProperties.
    */
-  async setServerHeartbeat(docId: string, info: { timestamp: string; host: string; sessionId: string }): Promise<void> {
+  async setServerHeartbeat(docId: string, serverHash: string): Promise<void> {
     await this.driveApi.setAppProperties(docId, {
-      codocs_heartbeat: JSON.stringify(info),
+      cl_hb: `${Date.now()}:${serverHash}`,
     });
   }
 
@@ -423,7 +426,7 @@ export class CodocsClient {
    */
   async clearServerHeartbeat(docId: string): Promise<void> {
     await this.driveApi.setAppProperties(docId, {
-      codocs_heartbeat: null,
+      cl_hb: null,
     });
   }
 

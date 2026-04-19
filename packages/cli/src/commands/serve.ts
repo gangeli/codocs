@@ -25,6 +25,7 @@ import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, S
 import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir, homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -119,7 +120,7 @@ function pickFarewell(): string {
   return FAREWELLS[Math.floor(Math.random() * FAREWELLS.length)]!;
 }
 
-function printServerAlreadyRunning(docId: string, remoteHost: string, remoteSession: string): void {
+function printServerAlreadyRunning(docId: string): void {
   const dim = '\x1b[2m';
   const bold = '\x1b[1m';
   const red = '\x1b[31m';
@@ -131,8 +132,6 @@ function printServerAlreadyRunning(docId: string, remoteHost: string, remoteSess
     `  ${red}${bold}Another codocs server is already running${reset}\n` +
     `\n` +
     `  ${dim}Document:${reset} ${docId.slice(0, 20)}...\n` +
-    `  ${dim}Host:${reset}     ${remoteHost}\n` +
-    `  ${dim}Session:${reset}  ${remoteSession}\n` +
     `\n` +
     `  ${yellow}Only one server can be active per document at a time.${reset}\n` +
     `  ${dim}If the other server crashed, wait ~45 seconds for the lock to expire.${reset}\n` +
@@ -646,24 +645,23 @@ export function registerServeCommand(program: Command) {
         const lockClient = new CodocsClient({
           oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
         });
-        const lockSessionId = `${hostname()}-${process.pid}-${Date.now()}`;
+        const serverHash = createHash('sha256')
+          .update(`${hostname()}\0${process.pid}\0${Date.now()}`)
+          .digest('base64url')
+          .slice(0, 16);
 
         for (const docId of normalizedDocIds) {
           try {
             const heartbeat = await lockClient.getServerHeartbeat(docId);
             if (heartbeat) {
-              const age = Date.now() - new Date(heartbeat.timestamp).getTime();
+              const age = Date.now() - heartbeat.timestamp;
               if (age < HEARTBEAT_STALE_MS) {
-                printServerAlreadyRunning(docId, heartbeat.host, heartbeat.sessionId);
+                printServerAlreadyRunning(docId);
                 process.exit(1);
               }
             }
             // Claim the lock
-            await lockClient.setServerHeartbeat(docId, {
-              timestamp: new Date().toISOString(),
-              host: hostname(),
-              sessionId: lockSessionId,
-            });
+            await lockClient.setServerHeartbeat(docId, serverHash);
           } catch (err: any) {
             // Non-fatal: don't block startup if appProperties fails
             console.error(`Warning: could not check server lock for ${docId.slice(0, 12)}...: ${err.message}`);
@@ -674,11 +672,7 @@ export function registerServeCommand(program: Command) {
         const heartbeatTimer = setInterval(async () => {
           for (const docId of normalizedDocIds) {
             try {
-              await lockClient.setServerHeartbeat(docId, {
-                timestamp: new Date().toISOString(),
-                host: hostname(),
-                sessionId: lockSessionId,
-              });
+              await lockClient.setServerHeartbeat(docId, serverHash);
             } catch { /* best-effort */ }
           }
         }, HEARTBEAT_INTERVAL_MS);
