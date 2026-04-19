@@ -652,6 +652,8 @@ export function registerServeCommand(program: Command) {
           .slice(0, 16);
 
         for (const docId of normalizedDocIds) {
+          // Skip lock check for malformed doc IDs — the repair screen will flag them.
+          if (!/^[a-zA-Z0-9_-]{40,44}$/.test(docId)) continue;
           try {
             const heartbeat = await lockClient.getServerHeartbeat(docId);
             if (heartbeat) {

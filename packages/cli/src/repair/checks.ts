@@ -11,6 +11,7 @@ import type { Check, Issue, RepairContext } from './types.js';
 import {
   deleteSessionFix,
   stripDocIdFromSessionFix,
+  quitProgramFix,
   resetStaleQueueFix,
   purgeOldQueueFix,
   markCodeTaskCompletedFix,
@@ -87,7 +88,7 @@ export const targetDocIdWellformed: Check = {
         context: { docId, sessionId: session?.id },
         fixes: session
           ? [stripDocIdFromSessionFix, deleteSessionFix]
-          : [],
+          : [quitProgramFix],
       });
     }
     return issues;

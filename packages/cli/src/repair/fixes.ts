@@ -139,6 +139,18 @@ export const deleteSubscriptionFix: Fix = {
   },
 };
 
+// ── Exit fixes ────────────────────────────────────────────────
+
+export const quitProgramFix: Fix = {
+  id: 'quit-program',
+  label: 'Quit',
+  description: 'Exit the program. Re-run with a valid Google Doc ID.',
+  destructive: false,
+  async apply(): Promise<FixResult> {
+    process.exit(1);
+  },
+};
+
 // ── Auth fixes ─────────────────────────────────────────────────
 
 export const relaunchAuthLoginFix: Fix = {

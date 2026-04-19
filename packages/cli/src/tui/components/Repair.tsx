@@ -170,6 +170,10 @@ export function Repair({
         return;
       }
       setConfirmFixId(null);
+      if (fix.id === 'quit-program') {
+        onAction({ type: 'quit' });
+        return;
+      }
       onAction({ type: 'apply-fix', issue: current, fix });
     }
   });
