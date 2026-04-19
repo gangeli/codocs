@@ -27,6 +27,7 @@ export {
   type CommentListenerHandle,
   type PubSubAuth,
   classifyComment,
+  ReplyTracker,
 } from './events/index.js';
 export type { EventListenerConfig, CommentEvent, AgentTask } from './types.js';
 export { docsToMarkdownWithMapping, type MarkdownWithMapping } from './converter/index.js';

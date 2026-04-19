@@ -10,6 +10,7 @@ import type { CodocsClient } from '../client/index.js';
 import type { CommentEvent } from '../types.js';
 import type { AgentRunner, PermissionMode } from '../harness/agent.js';
 import type { SessionStore } from '../harness/types.js';
+import type { ReplyTracker } from '../events/reply-tracker.js';
 import type { ChatTabStore, ChatTab } from '@codocs/db';
 import { ChatTabManager } from './chat-tab-manager.js';
 import { buildChatPrompt } from './chat-prompt.js';
@@ -22,6 +23,7 @@ import { buildConflictPrompt } from '../harness/prompt.js';
 export interface ChatOrchestratorConfig {
   client: CodocsClient;
   replyClient?: CodocsClient;
+  replyTracker?: ReplyTracker;
   sessionStore: SessionStore;
   chatTabStore: ChatTabStore;
   chatTabManager: ChatTabManager;
@@ -35,6 +37,7 @@ export interface ChatOrchestratorConfig {
 export class ChatOrchestrator {
   private client: CodocsClient;
   private replyClient: CodocsClient;
+  private replyTracker?: ReplyTracker;
   private sessionStore: SessionStore;
   private chatTabStore: ChatTabStore;
   private chatTabManager: ChatTabManager;
@@ -47,6 +50,7 @@ export class ChatOrchestrator {
   constructor(config: ChatOrchestratorConfig) {
     this.client = config.client;
     this.replyClient = config.replyClient ?? config.client;
+    this.replyTracker = config.replyTracker;
     this.sessionStore = config.sessionStore;
     this.chatTabStore = config.chatTabStore;
     this.chatTabManager = config.chatTabManager;
@@ -100,6 +104,7 @@ export class ChatOrchestrator {
         thinkingReplyId = await this.replyClient.replyToComment(
           documentId, comment.id, '\u{1F914}',
         );
+        this.replyTracker?.add(thinkingReplyId);
       } catch (err) {
         this.debug(`[chat] Failed to post thinking reply: ${err}`);
       }

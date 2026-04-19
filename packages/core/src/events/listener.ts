@@ -92,6 +92,10 @@ export interface ListenOptions {
   /** Email addresses of known bot identities. Used to skip events
    *  triggered by the bot's own replies (e.g., the 🤔 thinking emoji). */
   botEmails?: string[];
+  /** Tracker of reply IDs posted by codocs itself. Used to break reply
+   *  loops when codocs replies using the user's own OAuth credentials —
+   *  in that case the author looks identical to a human reply. */
+  replyTracker?: { has(id: string): boolean };
 }
 
 /**
@@ -193,14 +197,14 @@ export function listenForComments(
         const content = lastMessage.content ?? '';
 
         // Classify: only process events where the latest message is from a human
-        const botEmails = options?.botEmails ?? [];
-        if (botEmails.length > 0) {
-          const origin = classifyComment(comment, { botEmails });
-          if (origin.type === 'bot') {
-            debug(`  → Skipping: last message is from bot (${origin.author})`);
-            message.ack();
-            return;
-          }
+        const origin = classifyComment(comment, {
+          botEmails: options?.botEmails ?? [],
+          ownReplyIds: options?.replyTracker,
+        });
+        if (origin.type === 'bot') {
+          debug(`  → Skipping: last message is from codocs (${origin.author})`);
+          message.ack();
+          return;
         }
 
         const event: CommentEvent = {

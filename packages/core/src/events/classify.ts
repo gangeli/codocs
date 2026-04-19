@@ -17,6 +17,13 @@ export interface ClassifyOptions {
   botEmails: string[];
   /** Display names of known bot identities (fallback when email is unavailable). */
   botDisplayNames?: string[];
+  /**
+   * Reply IDs codocs has posted itself. If the last reply on the thread
+   * matches, it is classified as a bot reply regardless of author. Required
+   * to break reply loops when codocs posts replies as the user's own OAuth
+   * identity (no service account configured).
+   */
+  ownReplyIds?: { has(id: string): boolean };
 }
 
 /**
@@ -40,6 +47,12 @@ export function classifyComment(
 
   const email = lastEntry.author?.emailAddress ?? '';
   const displayName = lastEntry.author?.displayName ?? '';
+
+  // Is this a reply codocs posted itself? Only meaningful when lastEntry is
+  // a reply (the root comment's ID is never added to the tracker).
+  if (replies.length > 0 && lastEntry.id && opts.ownReplyIds?.has(lastEntry.id)) {
+    return { type: 'bot', author: displayName || email || 'codocs' };
+  }
 
   // Match on email if available
   if (email && opts.botEmails.some((botEmail) => email === botEmail)) {

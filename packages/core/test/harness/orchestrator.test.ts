@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AgentOrchestrator } from '../../src/harness/orchestrator.js';
+import { ReplyTracker } from '../../src/events/reply-tracker.js';
+import { classifyComment } from '../../src/events/classify.js';
 import type { CommentEvent } from '../../src/types.js';
 import type { AgentRunner, AgentRunResult, ActiveAgent } from '../../src/harness/agent.js';
 import type { SessionStore, SessionMapping } from '../../src/harness/types.js';
@@ -500,5 +502,63 @@ describe('AgentOrchestrator E2E', () => {
     // Agent should still run
     const agentCalls = callLog.filter((c) => c.method === 'agentRun');
     expect(agentCalls).toHaveLength(1);
+  });
+
+  // Regression: without a service account, codocs replies using the user's
+  // own OAuth credentials, making its replies indistinguishable from the
+  // user's by author. The ReplyTracker records the IDs of codocs's replies
+  // so the listener can filter out the self-triggered events instead of
+  // treating them as new user comments and looping.
+  it('records posted reply IDs in ReplyTracker, which then flags self-replies as bot', async () => {
+    const client = createMockClient(callLog);
+    // Give each reply a distinct ID so the tracker can be verified per-call.
+    let replyCounter = 0;
+    const replyClient = {
+      replyToComment: async (docId: string, commentId: string, content: string) => {
+        callLog.push({ method: 'reply:replyToComment', args: [docId, commentId, content] });
+        return `self-reply-${++replyCounter}`;
+      },
+      deleteReply: async (docId: string, commentId: string, replyId: string) => {
+        callLog.push({ method: 'reply:deleteReply', args: [docId, commentId, replyId] });
+      },
+      updateReply: async () => {},
+    } as unknown as CodocsClient;
+    const runner = createMockRunner(callLog, 'Fixed.');
+    const replyTracker = new ReplyTracker();
+
+    const orchestrator = new AgentOrchestrator({
+      client,
+      replyClient,
+      replyTracker,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    await orchestrator.handleComment(makeCommentEvent());
+    await orchestrator.waitForIdle();
+
+    // Both the thinking reply and the final reply must be in the tracker.
+    expect(replyTracker.has('self-reply-1')).toBe(true);
+    expect(replyTracker.has('self-reply-2')).toBe(true);
+
+    // Simulate the follow-up Pub/Sub event: same thread, the last reply is
+    // codocs's own final reply. With an empty botEmails list (no service
+    // account) and author identical to the user, only the tracker can
+    // distinguish this from a new human comment.
+    const followUpComment = {
+      id: 'comment-abc',
+      author: { displayName: 'Gabor', emailAddress: 'user@example.com' },
+      replies: [
+        { id: 'self-reply-1', author: { displayName: 'Gabor', emailAddress: 'user@example.com' } },
+        { id: 'self-reply-2', author: { displayName: 'Gabor', emailAddress: 'user@example.com' } },
+      ],
+    };
+    const origin = classifyComment(followUpComment, {
+      botEmails: [],
+      ownReplyIds: replyTracker,
+    });
+    expect(origin.type).toBe('bot');
   });
 });

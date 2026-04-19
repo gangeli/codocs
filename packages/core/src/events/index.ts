@@ -8,3 +8,4 @@ export {
 } from './subscriptions.js';
 export { listenForComments, type CommentListenerHandle, type PubSubAuth, type ListenOptions } from './listener.js';
 export { classifyComment, type CommentOrigin, type ClassifyOptions } from './classify.js';
+export { ReplyTracker } from './reply-tracker.js';

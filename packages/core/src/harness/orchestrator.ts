@@ -27,6 +27,7 @@ import { getRepoInfo, createDraftPR, addPRComment, buildPRBody } from './pr.js';
 import { routeComment } from '../chat/chat-router.js';
 import { ChatTabManager } from '../chat/chat-tab-manager.js';
 import { ChatOrchestrator } from '../chat/chat-orchestrator.js';
+import type { ReplyTracker } from '../events/reply-tracker.js';
 import type { ChatTabStore } from '@codocs/db';
 
 export type CodeMode = 'pr' | 'direct' | 'off';
@@ -58,6 +59,13 @@ export interface OrchestratorConfig {
    * the main client's identity. The doc must be shared with the service account.
    */
   replyClient?: CodocsClient;
+  /**
+   * Tracks reply IDs posted by this orchestrator. If provided, the same
+   * tracker must be passed to the comment listener so self-replies are
+   * filtered out. Critical when replyClient is the user's own OAuth client,
+   * where author-based filtering can't distinguish codocs from the user.
+   */
+  replyTracker?: ReplyTracker;
   /** Called when an agent is assigned to handle a comment, before processing starts. */
   onAgentAssigned?: (agentName: string, task: string) => void;
   /** Called when a comment has been fully processed (agent ran, reply posted). */
@@ -93,6 +101,7 @@ export interface OrchestratorConfig {
 export class AgentOrchestrator {
   private client: CodocsClient;
   private replyClient: CodocsClient;
+  private replyTracker?: ReplyTracker;
   private sessionStore: SessionStore;
   private queueStore: QueueStore;
   private agentRunner: AgentRunner;
@@ -128,6 +137,7 @@ export class AgentOrchestrator {
   constructor(config: OrchestratorConfig) {
     this.client = config.client;
     this.replyClient = config.replyClient ?? config.client;
+    this.replyTracker = config.replyTracker;
     this.sessionStore = config.sessionStore;
     this.queueStore = config.queueStore;
     this.agentRunner = config.agentRunner;
@@ -166,6 +176,7 @@ export class AgentOrchestrator {
       this.chatOrchestrator = new ChatOrchestrator({
         client: this.client,
         replyClient: this.replyClient,
+        replyTracker: this.replyTracker,
         sessionStore: this.sessionStore,
         chatTabStore: this.chatTabStore,
         chatTabManager: this.chatTabManager,
@@ -183,6 +194,16 @@ export class AgentOrchestrator {
     return typeof this.fallbackAgent === 'function'
       ? this.fallbackAgent(documentId)
       : this.fallbackAgent;
+  }
+
+  /**
+   * Post a reply and record its ID in the reply tracker so the listener
+   * can filter out the resulting self-triggered event.
+   */
+  private async postReply(documentId: string, commentId: string, content: string): Promise<string> {
+    const id = await this.replyClient.replyToComment(documentId, commentId, content);
+    this.replyTracker?.add(id);
+    return id;
   }
 
   /** Return currently active agent processes. */
@@ -384,7 +405,7 @@ export class AgentOrchestrator {
     let thinkingReplyId: string | null = null;
     if (comment.id) {
       try {
-        thinkingReplyId = await this.replyClient.replyToComment(
+        thinkingReplyId = await this.postReply(
           documentId,
           comment.id,
           '\u{1F914}',
@@ -579,7 +600,7 @@ export class AgentOrchestrator {
       }
       if (replyContent) {
         try {
-          await this.replyClient.replyToComment(documentId, commentId, replyContent);
+          await this.postReply(documentId, commentId, replyContent);
           this.debug(`Posted final reply`);
         } catch (replyErr: any) {
           this.debug(`Failed to post final reply: ${replyErr.message ?? replyErr}`);
@@ -587,7 +608,7 @@ export class AgentOrchestrator {
       }
     } else if (commentId && replyContent) {
       try {
-        await this.replyClient.replyToComment(documentId, commentId, replyContent);
+        await this.postReply(documentId, commentId, replyContent);
         this.debug(`Reply created (no thinking reply to update)`);
       } catch (err: any) {
         this.debug(`Reply failed: ${err.message ?? err}`);
@@ -614,7 +635,7 @@ export class AgentOrchestrator {
     let thinkingReplyId: string | null = null;
     if (comment.id) {
       try {
-        thinkingReplyId = await this.replyClient.replyToComment(documentId, comment.id, '\u{1F914}');
+        thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F914}');
       } catch (err) {
         this.debug(`Failed to post thinking reply: ${err}`);
       }
@@ -847,7 +868,7 @@ export class AgentOrchestrator {
     const replyContent = `Continuing in the "Chat: ${title}" tab \u2192`;
     if (comment.id) {
       try {
-        await this.replyClient.replyToComment(documentId, comment.id, replyContent);
+        await this.postReply(documentId, comment.id, replyContent);
       } catch (err) {
         this.debug(`[forkToChat] Failed to post redirect reply: ${err}`);
       }

@@ -8,6 +8,7 @@ import {
   ensureSubscription,
   renewSubscription,
   listenForComments,
+  ReplyTracker,
   AgentOrchestrator,
   ClaudeRunner,
   CodexRunner,
@@ -895,6 +896,12 @@ export function registerServeCommand(program: Command) {
         // the Codocs bot identity rather than the user's account.
         // Key provisioned by `make infra` (Terraform) at ~/.local/share/codocs/service-account.json
         // Disable with --no-bot-replies to reply as yourself.
+        //
+        // The replyTracker is always on: it records the IDs of replies codocs
+        // posts and lets the listener skip the resulting self-triggered
+        // events. Critical when no service account is configured (replies
+        // look identical to the user's own human replies).
+        const replyTracker = new ReplyTracker();
         let replyClient: CodocsClient | undefined;
         let botEmail: string | null = null;
         if (opts.botReplies !== false) {
@@ -924,6 +931,7 @@ export function registerServeCommand(program: Command) {
         orchestrator = new AgentOrchestrator({
           client,
           replyClient,
+          replyTracker,
           sessionStore,
           queueStore,
           agentRunner,
@@ -1036,7 +1044,7 @@ export function registerServeCommand(program: Command) {
           (error: Error) => {
             emit({ time: new Date(), type: 'error', content: `Pub/Sub error: ${error.message}` });
           },
-          { debug, botEmails: botEmail ? [botEmail] : [] },
+          { debug, botEmails: botEmail ? [botEmail] : [], replyTracker },
         );
 
         // ── Subscription renewal ──────────────────────────────────

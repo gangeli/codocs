@@ -103,4 +103,47 @@ describe('classifyComment', () => {
     const result = classifyComment(comment, { botEmails: BOT_EMAILS });
     expect(result.type).toBe('bot');
   });
+
+  // Regression: when codocs replies using the user's own OAuth credentials
+  // (no service account), the reply's author IS the user — identical to a
+  // human reply. Without tracking our own reply IDs, the listener would
+  // re-process the reply as a fresh human comment, triggering an infinite
+  // loop of the bot replying to itself.
+  it('classifies as bot when the last reply ID matches a tracked own-reply', () => {
+    const comment = makeComment({
+      // The user posted the root comment...
+      author: { displayName: 'Gabor', emailAddress: 'user@example.com' },
+      replies: [
+        // ...and codocs posted the thinking emoji using the user's OAuth
+        // credentials, so the author looks identical to the human author.
+        { id: 'reply-self-1', content: '🤔', author: { displayName: 'Gabor', emailAddress: 'user@example.com' } },
+      ],
+    });
+    const ownReplyIds = new Set(['reply-self-1']);
+    const result = classifyComment(comment, { botEmails: [], ownReplyIds });
+    expect(result.type).toBe('bot');
+  });
+
+  it('ignores ownReplyIds that do not match the last reply', () => {
+    const comment = makeComment({
+      author: { displayName: 'Gabor', emailAddress: 'user@example.com' },
+      replies: [
+        { id: 'reply-human', content: 'Please fix it', author: { displayName: 'Gabor', emailAddress: 'user@example.com' } },
+      ],
+    });
+    const ownReplyIds = new Set(['some-other-reply']);
+    const result = classifyComment(comment, { botEmails: [], ownReplyIds });
+    expect(result.type).toBe('human');
+  });
+
+  it('treats tracked own-reply as bot even when email/name also match botEmails', () => {
+    const comment = makeComment({
+      replies: [
+        { id: 'reply-self-1', content: 'hi', author: { displayName: 'Codocs Bot', emailAddress: BOT_EMAILS[0] } },
+      ],
+    });
+    const ownReplyIds = new Set(['reply-self-1']);
+    const result = classifyComment(comment, { botEmails: BOT_EMAILS, ownReplyIds });
+    expect(result.type).toBe('bot');
+  });
 });
