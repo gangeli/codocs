@@ -24,6 +24,7 @@ import {
 import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore, CodeTaskStore, CodocsSessionStore, type CodocsSession } from '@codocs/db';
 import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
+import { buildRepairContext, runStartupChecks, runRepairUi } from '../repair/index.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir, homedir, hostname } from 'node:os';
@@ -681,6 +682,40 @@ export function registerServeCommand(program: Command) {
         const db = await openDatabase(opts.dbPath);
         const settingsStore = new SettingsStore(db);
         const cwd = process.cwd();
+
+        // ── Startup validation (see packages/cli/src/repair) ─────
+        // Catches bad state (malformed doc IDs, missing auth, unreachable
+        // docs) before we commit to subscription setup — which exits on
+        // failure. Opens a Repair screen if anything's broken so the user
+        // can fix it without hand-editing the sqlite DB.
+        {
+          const repairCtx = await buildRepairContext({
+            db,
+            dbPath: opts.dbPath,
+            cwd,
+            targetDocIds: normalizedDocIds,
+          });
+          const startupIssues = await runStartupChecks(repairCtx);
+          const hasErrors = startupIssues.some((i) => i.severity === 'error');
+          if (hasErrors) {
+            const outcome = await runRepairUi(startupIssues, repairCtx, {
+              auto: false,
+              useTui,
+              headerMessage: 'Codocs found issues during startup',
+              rerunChecks: runStartupChecks,
+            });
+            if (!outcome.resolved) {
+              db.close();
+              process.exit(1);
+            }
+            // Something was fixed — docIds may no longer reflect reality
+            // (e.g. user stripped a doc from a resumed session). Safest
+            // path: exit cleanly and ask the user to re-run.
+            db.close();
+            console.error('\nIssues resolved. Re-run `codocs` to continue.');
+            process.exit(0);
+          }
+        }
 
         // ── TUI or plain mode ─────────────────────────────────────
         // Use a mutable container so callbacks can access the ref

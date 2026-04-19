@@ -5,6 +5,7 @@ import { registerSectionsCommand } from './commands/sections.js';
 import { registerEditCommand } from './commands/edit.js';
 import { registerInsertCommand } from './commands/insert.js';
 import { registerCommentCommand } from './commands/comment.js';
+import { registerRepairCommand } from './commands/repair.js';
 import { registerServeCommand } from './commands/serve.js';
 import { BUILD_VERSION } from './version.js';
 
@@ -21,6 +22,7 @@ registerSectionsCommand(program);
 registerEditCommand(program);
 registerInsertCommand(program);
 registerCommentCommand(program);
+registerRepairCommand(program);
 registerServeCommand(program);
 
 program.parse();

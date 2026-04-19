@@ -166,6 +166,7 @@ export async function openDatabase(path?: string): Promise<Database> {
  */
 export function saveDatabase(db: Database, path?: string): void {
   const dbPath = path ?? defaultDbPath();
+  if (dbPath === ':memory:') return;
   const data = db.export();
   mkdirSync(dirname(dbPath), { recursive: true });
   writeFileSync(dbPath, Buffer.from(data));

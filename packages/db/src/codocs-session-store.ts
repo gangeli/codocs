@@ -115,10 +115,38 @@ export class CodocsSessionStore {
     return results;
   }
 
+  /** List every session, newest first. Used by repair/health checks. */
+  listAll(): CodocsSession[] {
+    const stmt = this.db.prepare(
+      `SELECT * FROM codocs_sessions ORDER BY last_used_at DESC`,
+    );
+    const results: CodocsSession[] = [];
+    while (stmt.step()) {
+      results.push(this.rowToSession(stmt.getAsObject()));
+    }
+    stmt.free();
+    return results;
+  }
+
   setDocTitle(id: string, title: string): void {
     this.db.run(
       `UPDATE codocs_sessions SET doc_title = ? WHERE id = ?`,
       [title, id],
     );
+  }
+
+  /** Replace the doc ID list on a session. */
+  setDocIds(id: string, docIds: string[]): void {
+    const docIdsJson = JSON.stringify(docIds.slice().sort());
+    this.db.run(
+      `UPDATE codocs_sessions SET doc_ids = ? WHERE id = ?`,
+      [docIdsJson, id],
+    );
+  }
+
+  /** Delete a session permanently. Returns true if a row was deleted. */
+  delete(id: string): boolean {
+    this.db.run(`DELETE FROM codocs_sessions WHERE id = ?`, [id]);
+    return this.db.getRowsModified() > 0;
   }
 }
