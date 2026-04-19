@@ -59,7 +59,7 @@ typecheck: deps
 	npm run typecheck -w @codocs/db
 	npm run typecheck -w @codocs/cli
 
-check: test typecheck
+check: build test typecheck
 
 gcloud-auth:
 	@if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then \
