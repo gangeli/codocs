@@ -26,6 +26,7 @@ import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, S
 import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
 import { buildRepairContext, runStartupChecks, runRepairUi } from '../repair/index.js';
+import { metaRestartShutdown, type MetaRestartShutdownCtx } from './meta-restart.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir, homedir, hostname } from 'node:os';
@@ -221,23 +222,14 @@ function handleSilenceHook(command: string, emit: EventEmitter): void {
 
 function handleMetaRestart(
   sessionId: string,
-  ctx: {
-    orchestrator: AgentOrchestrator;
-    renewalTimer: ReturnType<typeof setInterval> | null;
-    listener: CommentListenerHandle | null;
-    db: { close: () => void };
-    emit: EventEmitter;
-  },
+  ctx: MetaRestartShutdownCtx & { emit: EventEmitter },
 ): void {
   ctx.emit({ time: new Date(), type: 'system', content: 'All agents idle — meta rebuild starting...' });
 
   (async () => {
     // 1. Graceful shutdown (without process.exit)
     try {
-      ctx.orchestrator.cancelIdleCheck();
-      if (ctx.renewalTimer) clearInterval(ctx.renewalTimer);
-      if (ctx.listener) await ctx.listener.close();
-      ctx.db.close();
+      await metaRestartShutdown(ctx);
     } catch (err: any) {
       console.error(`[meta] Shutdown error (continuing): ${err.message}`);
     }
@@ -1008,7 +1000,16 @@ export function registerServeCommand(program: Command) {
             emit({ time: new Date(), type: 'error', content: `Agent error: ${error}` });
           },
           onIdle: opts.meta
-            ? () => handleMetaRestart(codocsSession.id, { orchestrator: orchestrator!, renewalTimer, listener, db, emit })
+            ? () => handleMetaRestart(codocsSession.id, {
+                orchestrator: orchestrator!,
+                renewalTimer,
+                heartbeatTimer,
+                listener,
+                db,
+                lockClient,
+                docIds: normalizedDocIds,
+                emit,
+              })
             : opts.silenceHook
               ? () => handleSilenceHook(opts.silenceHook!, emit)
               : undefined,
