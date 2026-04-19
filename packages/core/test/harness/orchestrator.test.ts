@@ -13,7 +13,7 @@ interface CallLog {
   args: any[];
 }
 
-function createMockClient(callLog: CallLog[]): CodocsClient {
+function createMockClient(callLog: CallLog[], opts?: { canAccess?: boolean }): CodocsClient {
   return {
     getDocument: vi.fn(async (docId: string) => {
       callLog.push({ method: 'getDocument', args: [docId] });
@@ -49,6 +49,8 @@ function createMockClient(callLog: CallLog[]): CodocsClient {
       callLog.push({ method: 'batchUpdate', args: [] });
     }),
     ensureShared: vi.fn(async () => {}),
+    removePermission: vi.fn(async () => {}),
+    canAccess: vi.fn(async () => opts?.canAccess ?? true),
   } as unknown as CodocsClient;
 }
 
@@ -449,5 +451,54 @@ describe('AgentOrchestrator E2E', () => {
 
     const agentCall = callLog.find((c) => c.method === 'agentRun');
     expect(agentCall!.args[1]).toHaveProperty('model', undefined);
+  });
+
+  it('skips reply when user has lost access to the document', async () => {
+    const client = createMockClient(callLog, { canAccess: false });
+    const replyClient = createMockReplyClient(callLog);
+    const runner = createMockRunner(callLog);
+
+    const orchestrator = new AgentOrchestrator({
+      client,
+      replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    await orchestrator.handleComment(makeCommentEvent());
+    await orchestrator.waitForIdle();
+
+    // Should NOT post any reply or run the agent
+    const replyMethods = callLog.filter((c) => c.method.startsWith('reply:'));
+    expect(replyMethods).toHaveLength(0);
+
+    const agentCalls = callLog.filter((c) => c.method === 'agentRun');
+    expect(agentCalls).toHaveLength(0);
+  });
+
+  it('does not check access when replyClient is the same as client', async () => {
+    const client = createMockClient(callLog, { canAccess: false });
+    const runner = createMockRunner(callLog, 'response');
+
+    // No separate replyClient — client is used for both
+    const orchestrator = new AgentOrchestrator({
+      client,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    await orchestrator.handleComment(makeCommentEvent());
+    await orchestrator.waitForIdle();
+
+    // canAccess should not have been called since replyClient === client
+    expect((client.canAccess as any)).not.toHaveBeenCalled();
+
+    // Agent should still run
+    const agentCalls = callLog.filter((c) => c.method === 'agentRun');
+    expect(agentCalls).toHaveLength(1);
   });
 });

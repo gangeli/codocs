@@ -379,6 +379,22 @@ export class CodocsClient {
   }
 
   /**
+   * Remove a permission from a doc by email. Idempotent.
+   * Used to revoke the service account's access on shutdown.
+   */
+  async removePermission(docId: string, email: string): Promise<void> {
+    return this.driveApi.removePermission(docId, email);
+  }
+
+  /**
+   * Check whether the caller has access to a file.
+   * Returns true if the file metadata can be fetched, false on 404/403.
+   */
+  async canAccess(docId: string): Promise<boolean> {
+    return this.driveApi.canAccess(docId);
+  }
+
+  /**
    * List all comments on a Google Doc.
    */
   async listComments(docId: string): Promise<DocComment[]> {

@@ -753,6 +753,12 @@ export function registerServeCommand(program: Command) {
             for (const docId of normalizedDocIds) {
               try { await lockClient.clearServerHeartbeat(docId); } catch { /* best-effort */ }
             }
+            // Revoke bot commenter access so it doesn't accumulate permissions
+            if (botEmail) {
+              for (const docId of normalizedDocIds) {
+                try { await client.removePermission(docId, botEmail); } catch { /* best-effort */ }
+              }
+            }
             if (listener) await listener.close();
             db.close();
           } catch { /* best-effort cleanup */ }

@@ -9,8 +9,9 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 function getDataDir(): string {
   const base = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
@@ -22,19 +23,29 @@ export function serviceAccountKeyPath(): string {
   return join(getDataDir(), 'service-account.json');
 }
 
+/** Path to the bundled service account key shipped with the repo. */
+function bundledKeyPath(): string {
+  // Walk up from packages/cli/src/auth/ → repo root
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  return join(thisDir, '..', '..', '..', '..', 'service-account.json');
+}
+
 /**
  * Load the service account credentials from disk.
+ * Checks the local XDG data dir first, then falls back to the
+ * bundled key shipped with the repo.
  * Returns null if not configured.
  */
 export function loadServiceAccountKey(): object | null {
-  const keyPath = serviceAccountKeyPath();
-  if (!existsSync(keyPath)) return null;
-
-  try {
-    return JSON.parse(readFileSync(keyPath, 'utf-8'));
-  } catch {
-    return null;
+  for (const keyPath of [serviceAccountKeyPath(), bundledKeyPath()]) {
+    if (!existsSync(keyPath)) continue;
+    try {
+      return JSON.parse(readFileSync(keyPath, 'utf-8'));
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 /**

@@ -360,6 +360,16 @@ export class AgentOrchestrator {
     this.debug(`[processComment] Starting for ${agentName}: "${commentText.slice(0, 40)}"`);
     this.onAgentAssigned(agentName, commentText.slice(0, 60));
 
+    // Verify the user (not the bot) still has access to this document.
+    // Prevents the bot from acting on docs the user has lost access to.
+    if (this.replyClient !== this.client) {
+      const userHasAccess = await this.client.canAccess(documentId);
+      if (!userHasAccess) {
+        this.debug(`[processComment] User no longer has access to ${documentId}, skipping`);
+        return { replyPreview: '', editSummary: 'Skipped — user lost access' };
+      }
+    }
+
     // Check for an existing code task on this thread (follow-up detection)
     const codeMode = this.getCodeMode();
     if (codeMode !== 'off' && comment.id && this.codeTaskStore) {

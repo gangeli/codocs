@@ -276,4 +276,41 @@ export class DriveApi {
       if (err.code !== 409) throw err;
     }
   }
+
+  /**
+   * Remove a permission from a file by email address.
+   * Silently succeeds if no matching permission is found.
+   */
+  async removePermission(fileId: string, email: string): Promise<void> {
+    // List permissions to find the one matching the email
+    const res = await this.drive.permissions.list({
+      fileId,
+      fields: 'permissions(id,emailAddress)',
+    });
+    const perm = res.data.permissions?.find(
+      (p) => p.emailAddress?.toLowerCase() === email.toLowerCase(),
+    );
+    if (!perm?.id) return;
+
+    try {
+      await this.drive.permissions.delete({ fileId, permissionId: perm.id });
+    } catch (err: any) {
+      // 404 = already removed
+      if (err.code !== 404) throw err;
+    }
+  }
+
+  /**
+   * Check if the caller has access to a file. Returns true if the
+   * file metadata can be fetched, false on 404/403.
+   */
+  async canAccess(fileId: string): Promise<boolean> {
+    try {
+      await this.drive.files.get({ fileId, fields: 'id' });
+      return true;
+    } catch (err: any) {
+      if (err.code === 404 || err.code === 403) return false;
+      throw err;
+    }
+  }
 }
