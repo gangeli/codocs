@@ -613,26 +613,28 @@ export function registerServeCommand(program: Command) {
         let inkInstance: InkInstance | null = null;
 
         const shutdown = async () => {
-          // Kill any active agent processes first
-          if (orchestrator) {
-            const killed = orchestrator.killAll();
-            if (killed.length > 0) {
-              const msg = `Killed ${killed.length} active agent(s): ${killed.join(', ')}`;
-              if (tui.ref) {
-                tui.ref.addEvent({
-                  id: `shutdown-${Date.now()}`,
-                  time: new Date(),
-                  type: 'system',
-                  content: msg,
-                });
-              } else {
-                console.error(msg);
+          try {
+            // Kill any active agent processes first
+            if (orchestrator) {
+              const killed = orchestrator.killAll();
+              if (killed.length > 0) {
+                const msg = `Killed ${killed.length} active agent(s): ${killed.join(', ')}`;
+                if (tui.ref) {
+                  tui.ref.addEvent({
+                    id: `shutdown-${Date.now()}`,
+                    time: new Date(),
+                    type: 'system',
+                    content: msg,
+                  });
+                } else {
+                  console.error(msg);
+                }
               }
             }
-          }
-          if (renewalTimer) clearInterval(renewalTimer);
-          if (listener) await listener.close();
-          db.close();
+            if (renewalTimer) clearInterval(renewalTimer);
+            if (listener) await listener.close();
+            db.close();
+          } catch { /* best-effort cleanup */ }
           if (!useTui) {
             if (sessionInfo) {
               console.log(
@@ -925,7 +927,7 @@ export function registerServeCommand(program: Command) {
         // Graceful shutdown
         if (useTui) {
           // Wait for TUI to fully unmount, then show resume info
-          await inkInstance!.waitUntilExit();
+          try { await inkInstance!.waitUntilExit(); } catch { /* exit may reject during shutdown */ }
           // Clear screen and show styled exit message
           process.stdout.write('\x1b[2J\x1b[H');
           const farewell = pickFarewell();
