@@ -4,6 +4,7 @@ import {
   parseSections,
   mergeDocuments,
   computeDocDiff,
+  interpolateDocIndex,
   type MdSection,
 } from '../../src/harness/diff.js';
 import type { IndexMapEntry } from '../../src/converter/element-parser.js';
@@ -774,9 +775,10 @@ Summer's melon treat
     const deleteReq = result.requests.find((r) => r.deleteContentRange);
     expect(deleteReq).toBeDefined();
     const delSize = deleteReq!.deleteContentRange!.range!.endIndex! - deleteReq!.deleteContentRange!.range!.startIndex!;
-    // "Summer's watermelon\n" is 20 chars; may include adjacent empty line
+    // "Summer's watermelon\n" is 20 chars in the doc; may include adjacent
+    // whitespace depending on index map interpolation accuracy.
     expect(delSize).toBeGreaterThanOrEqual(19);
-    expect(delSize).toBeLessThanOrEqual(25);
+    expect(delSize).toBeLessThanOrEqual(30);
 
     // The insert should contain the new text
     const insertReqs = result.requests.filter((r) => r.insertText);
@@ -850,5 +852,179 @@ New line five.
     // (unless it's a pure delete with no replacement)
     // At minimum: no two deletes in a row without an insert between
     // (this is a loose check — the real validation is that Google Docs accepts it)
+  });
+});
+
+describe('interpolateDocIndex', () => {
+  it('returns fallback when index map is empty', () => {
+    expect(interpolateDocIndex(100, [], 999)).toBe(999);
+  });
+
+  it('returns exact match when mdOffset matches an entry exactly', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 50, docIndex: 40 },
+      { mdOffset: 100, docIndex: 80 },
+    ];
+    expect(interpolateDocIndex(50, indexMap, 999)).toBe(40);
+  });
+
+  it('returns near match when within 5 chars of an entry', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 50, docIndex: 40 },
+      { mdOffset: 100, docIndex: 80 },
+    ];
+    // 3 chars away from entry at mdOffset=50 — should snap to docIndex=40
+    expect(interpolateDocIndex(53, indexMap, 999)).toBe(40);
+    expect(interpolateDocIndex(47, indexMap, 999)).toBe(40);
+  });
+
+  it('interpolates between two bracketing entries', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 100, docIndex: 80 },
+    ];
+    // mdOffset 50 is halfway between 0 and 100
+    // Expected: 1 + 0.5 * (80 - 1) = 1 + 39.5 = 40.5 → 41 (rounded)
+    expect(interpolateDocIndex(50, indexMap, 999)).toBe(41);
+  });
+
+  it('interpolates correctly with high formatting drift', () => {
+    // Simulates a doc with lots of markdown formatting:
+    // markdown is 2x the doc content due to ** , ## , links, etc.
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 200, docIndex: 100 },  // drift = 100
+      { mdOffset: 400, docIndex: 200 },  // drift = 200
+      { mdOffset: 600, docIndex: 300 },  // drift = 300
+    ];
+
+    // Between entries at 200 and 400:
+    // mdOffset 300 is halfway, expected: 100 + 0.5 * (200-100) = 150
+    expect(interpolateDocIndex(300, indexMap, 999)).toBe(150);
+
+    // mdOffset 500 is between 400 and 600:
+    // expected: 200 + 0.5 * (300-200) = 250
+    expect(interpolateDocIndex(500, indexMap, 999)).toBe(250);
+  });
+
+  it('does NOT use 1:1 mapping (the old bug)', () => {
+    // This is the exact scenario that caused the original crash.
+    // With 1:1 interpolation: preceding.docIndex + (mdOffset - preceding.mdOffset)
+    // = 300 + (600 - 400) = 500, which would exceed bodyEndIndex of 350.
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 200, docIndex: 100 },
+      { mdOffset: 400, docIndex: 200 },
+      { mdOffset: 600, docIndex: 300 },
+    ];
+    const bodyEnd = 350;
+
+    // mdOffset 590 is between 400 and 600
+    // Old (broken): 200 + (590 - 400) = 390 > 350 ← OUT OF BOUNDS
+    // New (correct): 200 + (590-400)/(600-400) * (300-200) = 200 + 95 = 295
+    const result = interpolateDocIndex(590, indexMap, bodyEnd);
+    expect(result).toBeLessThanOrEqual(bodyEnd);
+    expect(result).toBe(295);
+  });
+
+  it('extrapolates past the last entry using local ratio', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 100, docIndex: 80 },
+      { mdOffset: 200, docIndex: 160 },
+    ];
+    // Past last entry: ratio from last two entries = (160-80)/(200-100) = 0.8
+    // Expected: 160 + (250 - 200) * 0.8 = 160 + 40 = 200
+    expect(interpolateDocIndex(250, indexMap, 999)).toBe(200);
+  });
+
+  it('clamps extrapolation to fallback (bodyEndIndex)', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 100, docIndex: 80 },
+      { mdOffset: 200, docIndex: 160 },
+    ];
+    const bodyEnd = 180;
+    // Expected: 160 + (250 - 200) * 0.8 = 200, clamped to 180
+    expect(interpolateDocIndex(250, indexMap, bodyEnd)).toBe(bodyEnd);
+  });
+
+  it('handles single entry — extrapolation before', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 100, docIndex: 80 },
+    ];
+    // Before the only entry: 80 - (100 - 50) = 30
+    expect(interpolateDocIndex(50, indexMap, 999)).toBe(30);
+  });
+
+  it('handles single entry — extrapolation after', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 100, docIndex: 80 },
+    ];
+    // After the only entry with no second entry for ratio:
+    // Falls back to 1:1 offset from preceding, clamped to fallback
+    // 80 + (150 - 100) = 130
+    expect(interpolateDocIndex(150, indexMap, 999)).toBe(130);
+  });
+
+  it('clamps backward extrapolation to minimum of 1', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 100, docIndex: 10 },
+    ];
+    // 10 - (100 - 0) = -90, clamped to 1
+    expect(interpolateDocIndex(0, indexMap, 999)).toBe(1);
+  });
+
+  it('quarter-point interpolation is accurate', () => {
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 100, docIndex: 51 },  // ratio = 0.5
+    ];
+    // At mdOffset 25: 1 + 0.25 * (51-1) = 1 + 12.5 = 13.5 → 14
+    expect(interpolateDocIndex(25, indexMap, 999)).toBe(14);
+    // At mdOffset 75: 1 + 0.75 * (51-1) = 1 + 37.5 = 38.5 → 39
+    expect(interpolateDocIndex(75, indexMap, 999)).toBe(39);
+  });
+
+  it('handles entries with varying drift rates', () => {
+    // First region: heavy formatting (3:1 ratio), second region: light (1.2:1)
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 300, docIndex: 100 },   // heavy formatting region
+      { mdOffset: 420, docIndex: 200 },   // light formatting region
+    ];
+    // In heavy region (0-300): mdOffset 150 → 1 + 0.5 * (100-1) = 50.5 → 51
+    expect(interpolateDocIndex(150, indexMap, 999)).toBe(51);
+    // In light region (300-420): mdOffset 360 → 100 + 0.5 * (200-100) = 150
+    expect(interpolateDocIndex(360, indexMap, 999)).toBe(150);
+  });
+
+  it('regression: real-world doc drift produces valid indices', () => {
+    // Simulates the actual production scenario from the bug report:
+    // Document body ends at 28629, markdown is ~30K+ chars, drift ~1764
+    const indexMap: IndexMapEntry[] = [
+      { mdOffset: 0, docIndex: 1 },
+      { mdOffset: 5000, docIndex: 4500 },
+      { mdOffset: 10000, docIndex: 8800 },
+      { mdOffset: 15000, docIndex: 13000 },
+      { mdOffset: 20000, docIndex: 17000 },
+      { mdOffset: 25000, docIndex: 21000 },
+      { mdOffset: 30000, docIndex: 25000 },
+      { mdOffset: 31800, docIndex: 26400 },
+    ];
+    const bodyEnd = 28629;
+
+    // At mdOffset 33000 (past all entries), should not exceed bodyEnd
+    const result = interpolateDocIndex(33000, indexMap, bodyEnd);
+    expect(result).toBeLessThanOrEqual(bodyEnd);
+
+    // At mdOffset 31000, between last two entries:
+    // ratio from 30000→31800: (26400-25000)/(31800-30000) = 1400/1800 ≈ 0.778
+    // 25000 + (31000-30000) * 0.778 = 25000 + 778 = 25778
+    const mid = interpolateDocIndex(31000, indexMap, bodyEnd);
+    expect(mid).toBe(25778);
+    expect(mid).toBeLessThan(bodyEnd);
   });
 });

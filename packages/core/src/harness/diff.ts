@@ -415,9 +415,12 @@ export async function computeDocDiff(
       const oldLength = hunk.buffer1.length;
       const newContent = hunk.buffer2.chunk.join('\n');
 
-      const deleteStartIdx = oldOffset < lineDocIndices.length
-        ? lineDocIndices[oldOffset]
-        : change.docEndIndex;
+      const deleteStartIdx = Math.min(
+        oldOffset < lineDocIndices.length
+          ? lineDocIndices[oldOffset]
+          : change.docEndIndex,
+        bodyEndIndex - 1,
+      );
       const deleteEndLine = oldOffset + oldLength;
       const deleteEndIdx = deleteEndLine < lineDocIndices.length
         ? lineDocIndices[deleteEndLine]
@@ -554,47 +557,98 @@ function buildLineDocIndices(
   const result: number[] = [];
   let mdOffset = sectionMdStart;
 
-  // Build a quick lookup: for each indexMap entry, track which line
-  // boundary it's closest to.
   for (let i = 0; i < lines.length; i++) {
-    let docIndex = sectionDocEnd; // fallback
-
-    // Check for an exact or near-exact indexMap entry for this line.
-    // "Near" means within a few characters — accounts for markdown
-    // syntax chars like "# ", "- ", etc.
-    let bestEntry: IndexMapEntry | null = null;
-    let bestDist = Infinity;
-
-    for (const entry of indexMap) {
-      const dist = Math.abs(entry.mdOffset - mdOffset);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestEntry = entry;
-      }
-    }
-
-    if (bestEntry) {
-      if (bestDist <= 5) {
-        // Close enough — use the entry's doc index directly
-        docIndex = bestEntry.docIndex;
-      } else {
-        // Far from any entry — interpolate from the closest preceding entry
-        let preceding: IndexMapEntry | null = null;
-        for (const entry of indexMap) {
-          if (entry.mdOffset <= mdOffset) preceding = entry;
-          else break;
-        }
-        if (preceding) {
-          docIndex = preceding.docIndex + (mdOffset - preceding.mdOffset);
-        }
-      }
-    }
-
+    const docIndex = interpolateDocIndex(mdOffset, indexMap, sectionDocEnd);
     result.push(docIndex);
     mdOffset += lines[i].length + 1; // +1 for '\n'
   }
 
   return result;
+}
+
+/**
+ * Map a markdown character offset to a Google Doc index using the index map.
+ *
+ * If the offset is near (within 5 chars) an index map entry, use its doc
+ * index directly. Otherwise, linearly interpolate between the two
+ * bracketing entries. This accounts for the fact that markdown formatting
+ * chars (# , **, - [ ] , link syntax, etc.) don't exist in the doc, so a
+ * 1:1 offset assumption accumulates drift over long documents.
+ *
+ * @param mdOffset - The markdown character offset to look up.
+ * @param indexMap - Sorted array of {mdOffset, docIndex} entries.
+ * @param fallback - Value to return when no interpolation is possible.
+ */
+export function interpolateDocIndex(
+  mdOffset: number,
+  indexMap: IndexMapEntry[],
+  fallback: number,
+): number {
+  if (indexMap.length === 0) return fallback;
+
+  // Find the closest entry
+  let bestEntry: IndexMapEntry | null = null;
+  let bestDist = Infinity;
+  for (const entry of indexMap) {
+    const dist = Math.abs(entry.mdOffset - mdOffset);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestEntry = entry;
+    }
+  }
+
+  // Near-exact match — use directly
+  if (bestEntry && bestDist <= 5) {
+    return bestEntry.docIndex;
+  }
+
+  // Find the two bracketing entries: preceding and following
+  let preceding: IndexMapEntry | null = null;
+  let following: IndexMapEntry | null = null;
+  for (const entry of indexMap) {
+    if (entry.mdOffset <= mdOffset) {
+      preceding = entry;
+    } else {
+      following = entry;
+      break;
+    }
+  }
+
+  if (preceding && following) {
+    // Interpolate between the two entries using the actual md→doc ratio
+    const mdSpan = following.mdOffset - preceding.mdOffset;
+    const docSpan = following.docIndex - preceding.docIndex;
+    if (mdSpan > 0) {
+      const t = (mdOffset - preceding.mdOffset) / mdSpan;
+      return Math.round(preceding.docIndex + t * docSpan);
+    }
+    return preceding.docIndex;
+  }
+
+  if (preceding) {
+    // Past the last entry — extrapolate, but clamp to fallback
+    // Use the local ratio from the last two entries if available
+    const prevIdx = indexMap.indexOf(preceding);
+    if (prevIdx > 0) {
+      const prev = indexMap[prevIdx - 1];
+      const mdSpan = preceding.mdOffset - prev.mdOffset;
+      const docSpan = preceding.docIndex - prev.docIndex;
+      if (mdSpan > 0) {
+        const ratio = docSpan / mdSpan;
+        const extrapolated = preceding.docIndex + Math.round((mdOffset - preceding.mdOffset) * ratio);
+        return Math.min(extrapolated, fallback);
+      }
+    }
+    // Only one entry — clamp to fallback
+    return Math.min(preceding.docIndex + (mdOffset - preceding.mdOffset), fallback);
+  }
+
+  if (following) {
+    // Before the first entry — extrapolate backward
+    return Math.max(1, following.docIndex - (following.mdOffset - mdOffset));
+  }
+
+  return fallback;
 }
 
 function getBodyEndIndex(document: docs_v1.Schema$Document): number {
