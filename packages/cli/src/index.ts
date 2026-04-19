@@ -6,13 +6,14 @@ import { registerEditCommand } from './commands/edit.js';
 import { registerInsertCommand } from './commands/insert.js';
 import { registerCommentCommand } from './commands/comment.js';
 import { registerServeCommand } from './commands/serve.js';
+import { BUILD_VERSION } from './version.js';
 
 const program = new Command();
 
 program
   .name('codocs')
   .description('Interact with Google Docs from the command line')
-  .version('0.1.0');
+  .version(BUILD_VERSION);
 
 registerAuthCommands(program);
 registerReadCommand(program);

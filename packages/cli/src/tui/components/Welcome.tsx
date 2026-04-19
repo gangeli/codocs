@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { CodocsSession } from '@codocs/db';
+import { BUILD_VERSION } from '../../version.js';
 
 export type WelcomeChoice =
   | { type: 'resume'; sessionId: string; docIds: string[]; agentType: string }
@@ -264,10 +265,11 @@ export function Welcome({ onChoice, cwd, recentSessions = [] }: WelcomeProps) {
             <Text dimColor>{shortenPath(cwd)}</Text>
           </Box>
 
-          <Box marginTop={1}>
+          <Box marginTop={1} width={58} justifyContent="space-between">
             <Text dimColor>
               {'\u2191\u2193'} select  {'\u00B7'}  enter confirm  {'\u00B7'}  q quit
             </Text>
+            <Text dimColor>v{BUILD_VERSION}</Text>
           </Box>
         </>
       )}
