@@ -114,6 +114,24 @@ function pickFarewell(): string {
   return FAREWELLS[Math.floor(Math.random() * FAREWELLS.length)]!;
 }
 
+function printAuthRequired(): void {
+  const dim = '\x1b[2m';
+  const bold = '\x1b[1m';
+  const cyan = '\x1b[36m';
+  const red = '\x1b[31m';
+  const reset = '\x1b[0m';
+
+  process.stderr.write(
+    `\n` +
+    `  ${red}${bold}Not authenticated${reset}\n` +
+    `\n` +
+    `  ${dim}No OAuth tokens found. Sign in to connect your Google account:${reset}\n` +
+    `\n` +
+    `    ${cyan}codocs auth login${reset}\n` +
+    `\n`,
+  );
+}
+
 function formatCommentEvent(event: CommentEvent): string {
   const parts: string[] = [];
   const time = event.eventTime
@@ -543,7 +561,7 @@ export function registerServeCommand(program: Command) {
             // Create new doc from content — show progress in TUI
             const config = readConfig();
             const tokens = readTokens();
-            if (!tokens) { console.error('No tokens found. Run `codocs auth login` first.'); process.exit(1); }
+            if (!tokens) { printAuthRequired(); process.exit(1); }
             const client = new CodocsClient({
               oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
             });
@@ -582,7 +600,7 @@ export function registerServeCommand(program: Command) {
         // ── Auth & config ─────────────────────────────────────────
         const config = readConfig();
         const tokens = readTokens();
-        if (!tokens) { console.error('No tokens found. Run `codocs auth login` first.'); process.exit(1); }
+        if (!tokens) { printAuthRequired(); process.exit(1); }
         if (!config.gcp_project_id || !config.pubsub_topic) {
           console.error('GCP Pub/Sub not configured. Run `codocs auth login` to set up.');
           process.exit(1);
@@ -926,20 +944,22 @@ export function registerServeCommand(program: Command) {
 
         // Graceful shutdown
         if (useTui) {
-          // Wait for TUI to fully unmount, then show resume info
-          try { await inkInstance!.waitUntilExit(); } catch { /* exit may reject during shutdown */ }
-          // Clear screen and show styled exit message
-          process.stdout.write('\x1b[2J\x1b[H');
-          const farewell = pickFarewell();
-          process.stdout.write(`\x1b[2m~ ${farewell} ~\x1b[0m\n\n`);
-          if (sessionInfo) {
-            process.stdout.write(
-              `To resume this session, run:\n` +
-              `  \x1b[36mcodocs \x1b[0m${sessionInfo.docArgs}\n` +
-              `  \x1b[36mcodocs \x1b[0m--resume ${sessionInfo.id}\n\n`,
-            );
+          try {
+            await inkInstance!.waitUntilExit();
+          } catch { /* exit may reject during shutdown */ } finally {
+            // Clear screen and show styled exit message
+            process.stderr.write('\x1b[2J\x1b[H');
+            const farewell = pickFarewell();
+            process.stderr.write(`\x1b[2m~ ${farewell} ~\x1b[0m\n\n`);
+            if (sessionInfo) {
+              process.stderr.write(
+                `To resume this session, run either:\n` +
+                `  \x1b[36mcodocs\x1b[0m ${sessionInfo.docArgs}\n` +
+                `  \x1b[36mcodocs\x1b[0m --resume ${sessionInfo.id}\n\n`,
+              );
+            }
+            process.exit(0);
           }
-          process.exit(0);
         } else {
           process.on('SIGINT', shutdown);
           process.on('SIGTERM', shutdown);
