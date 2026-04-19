@@ -1,7 +1,7 @@
 import React from 'react';
 import type { Command } from 'commander';
 import { createInterface } from 'node:readline/promises';
-import { render } from 'ink';
+import { render, type Instance as InkInstance } from 'ink';
 import {
   CodocsClient,
   createAuth,
@@ -589,6 +589,7 @@ export function registerServeCommand(program: Command) {
         let renewalTimer: ReturnType<typeof setInterval> | null = null;
         let orchestrator: AgentOrchestrator | null = null;
         let sessionInfo: { id: string; docArgs: string } | null = null;
+        let inkInstance: InkInstance | null = null;
 
         const shutdown = async () => {
           // Kill any active agent processes first
@@ -611,12 +612,14 @@ export function registerServeCommand(program: Command) {
           if (renewalTimer) clearInterval(renewalTimer);
           if (listener) await listener.close();
           db.close();
-          if (sessionInfo) {
-            process.stdout.write(
-              `\nTo resume this session, run:\n  codocs ${sessionInfo.docArgs}\n  codocs --resume ${sessionInfo.id}\n\n`,
-            );
+          if (!useTui) {
+            if (sessionInfo) {
+              console.log(
+                `\nTo resume this session, run:\n  codocs ${sessionInfo.docArgs}\n  codocs --resume ${sessionInfo.id}\n`,
+              );
+            }
+            process.exit(0);
           }
-          process.exit(0);
         };
 
         // ── Agent runner (needed early for TUI capabilities) ──
@@ -647,7 +650,7 @@ export function registerServeCommand(program: Command) {
           // Restore persisted settings (merge with defaults)
           initialState.settings = settingsStore.loadAll(cwd, initialState.settings);
 
-          render(React.createElement(App, {
+          inkInstance = render(React.createElement(App, {
             initialState,
             onShutdown: shutdown,
             getActiveAgents: () => orchestrator?.getActiveAgents() ?? [],
@@ -898,8 +901,17 @@ export function registerServeCommand(program: Command) {
           }
         }, RENEWAL_INTERVAL_MS);
 
-        // Graceful shutdown for non-TUI mode
-        if (!useTui) {
+        // Graceful shutdown
+        if (useTui) {
+          // Wait for TUI to fully unmount, then show resume info
+          await inkInstance!.waitUntilExit();
+          if (sessionInfo) {
+            console.log(
+              `\nTo resume this session, run:\n  codocs ${sessionInfo.docArgs}\n  codocs --resume ${sessionInfo.id}\n`,
+            );
+          }
+          process.exit(0);
+        } else {
           process.on('SIGINT', shutdown);
           process.on('SIGTERM', shutdown);
         }
