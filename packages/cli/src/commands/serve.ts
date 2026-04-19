@@ -127,7 +127,7 @@ function printAuthRequired(): void {
     `\n` +
     `  ${dim}No OAuth tokens found. Sign in to connect your Google account:${reset}\n` +
     `\n` +
-    `    ${cyan}codocs auth login${reset}\n` +
+    `    ${cyan}codocs login${reset}\n` +
     `\n`,
   );
 }
@@ -602,7 +602,7 @@ export function registerServeCommand(program: Command) {
         const tokens = readTokens();
         if (!tokens) { printAuthRequired(); process.exit(1); }
         if (!config.gcp_project_id || !config.pubsub_topic) {
-          console.error('GCP Pub/Sub not configured. Run `codocs auth login` to set up.');
+          console.error('GCP Pub/Sub not configured. Run `codocs login` to set up.');
           process.exit(1);
         }
 

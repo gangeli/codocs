@@ -24,52 +24,60 @@ function promptYesNo(question: string): Promise<boolean> {
   });
 }
 
+const LOGIN_DESCRIPTION =
+  'Authenticate with Google (required) and GitHub (optional).\n' +
+  'Google auth enables reading and editing Google Docs.\n' +
+  'GitHub auth enables creating draft PRs for code changes via worktrees.\n' +
+  'Without GitHub, code changes are made directly on the current branch.';
+
+const loginAction = withErrorHandler(async (opts: { github?: boolean }) => {
+  if (!opts.github) {
+    // Google OAuth
+    const config = readConfig();
+    const tokens = await runOAuth2Flow(config.client_id, config.client_secret);
+    writeTokens(tokens);
+    console.error('Google authentication successful! Tokens saved.\n');
+  }
+
+  // GitHub OAuth — prompt unless --github flag was used (explicit intent)
+  const existingGh = readGitHubTokens();
+  if (existingGh && !opts.github) {
+    console.error('GitHub: Already connected.\n');
+  } else {
+    const shouldConnect = opts.github || await promptYesNo(
+      'Connect GitHub? This enables creating draft PRs for code changes (recommended).',
+    );
+
+    if (shouldConnect) {
+      const ghTokens = await runGitHubOAuthFlow();
+      writeGitHubTokens(ghTokens);
+      console.error('GitHub authentication successful! Token saved.\n');
+    } else {
+      console.error(
+        'Skipped GitHub. Code changes will be made directly on the current branch.\n' +
+        'You can connect later with: codocs login --github\n',
+      );
+    }
+  }
+});
+
 export function registerAuthCommands(program: Command) {
+  // Top-level `codocs login` alias
+  program
+    .command('login')
+    .description(LOGIN_DESCRIPTION)
+    .option('--github', 'Only run the GitHub authentication step')
+    .action(loginAction);
+
   const auth = program
     .command('auth')
     .description('Manage Google and GitHub authentication');
 
   auth
     .command('login')
-    .description(
-      'Authenticate with Google (required) and GitHub (optional).\n' +
-      'Google auth enables reading and editing Google Docs.\n' +
-      'GitHub auth enables creating draft PRs for code changes via worktrees.\n' +
-      'Without GitHub, code changes are made directly on the current branch.',
-    )
+    .description(LOGIN_DESCRIPTION)
     .option('--github', 'Only run the GitHub authentication step')
-    .action(
-      withErrorHandler(async (opts: { github?: boolean }) => {
-        if (!opts.github) {
-          // Google OAuth
-          const config = readConfig();
-          const tokens = await runOAuth2Flow(config.client_id, config.client_secret);
-          writeTokens(tokens);
-          console.error('Google authentication successful! Tokens saved.\n');
-        }
-
-        // GitHub OAuth — prompt unless --github flag was used (explicit intent)
-        const existingGh = readGitHubTokens();
-        if (existingGh && !opts.github) {
-          console.error('GitHub: Already connected.\n');
-        } else {
-          const shouldConnect = opts.github || await promptYesNo(
-            'Connect GitHub? This enables creating draft PRs for code changes (recommended).',
-          );
-
-          if (shouldConnect) {
-            const ghTokens = await runGitHubOAuthFlow();
-            writeGitHubTokens(ghTokens);
-            console.error('GitHub authentication successful! Token saved.\n');
-          } else {
-            console.error(
-              'Skipped GitHub. Code changes will be made directly on the current branch.\n' +
-              'You can connect later with: codocs auth login --github\n',
-            );
-          }
-        }
-      }),
-    );
+    .action(loginAction);
 
   auth
     .command('status')
@@ -83,7 +91,7 @@ export function registerAuthCommands(program: Command) {
         console.log('── Google ──');
         if (!tokens) {
           console.log('Status: Not authenticated');
-          console.log('Run `codocs auth login` to authenticate.');
+          console.log('Run `codocs login` to authenticate.');
         } else if (tokens.expiry_date && tokens.expiry_date < Date.now()) {
           console.log(
             'Status: Access token expired (will auto-refresh on next request)',
@@ -104,7 +112,7 @@ export function registerAuthCommands(program: Command) {
         if (!ghTokens) {
           console.log('Status: Not connected');
           console.log('Code changes will be made directly on the current branch.');
-          console.log('Run `codocs auth login --github` to enable draft PRs via worktrees.');
+          console.log('Run `codocs login --github` to enable draft PRs via worktrees.');
         } else {
           console.log('Status: Connected');
           console.log(`Scopes: ${ghTokens.scope}`);
@@ -120,7 +128,7 @@ export function registerAuthCommands(program: Command) {
       withErrorHandler(async () => {
         clearTokens();
         clearGitHubTokens();
-        console.log('All tokens cleared. Run `codocs auth login` to re-authenticate.');
+        console.log('All tokens cleared. Run `codocs login` to re-authenticate.');
       }),
     );
 }

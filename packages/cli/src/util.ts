@@ -98,7 +98,7 @@ export function createClient(): CodocsClient {
   const config = readConfig();
   const tokens = readTokens();
   if (!tokens) {
-    console.error('Not authenticated. Run `codocs auth login` first.');
+    console.error('Not authenticated. Run `codocs login` first.');
     process.exit(1);
   }
 
@@ -133,7 +133,7 @@ export function withErrorHandler(
 
       if (message.includes('401') || message.includes('invalid_grant')) {
         console.error(
-          'Authentication failed. Try `codocs auth login` to re-authenticate.',
+          'Authentication failed. Try `codocs login` to re-authenticate.',
         );
       } else if (message.includes('404') || message.includes('not found')) {
         console.error(
