@@ -388,4 +388,133 @@ describe('AgentOrchestrator queue integration', () => {
       expect(queueStore.isAgentBusy('alice')).toBe(false);
     });
   });
+
+  it('fires onIdle after all agents finish processing', async () => {
+    const { runner, calls } = createControllableRunner();
+    const client = createMockClient();
+    const onIdle = vi.fn();
+
+    const orchestrator = new AgentOrchestrator({
+      client: client as any,
+      sessionStore,
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'fallback',
+      onIdle,
+      idleDebounceMs: 50,
+    });
+
+    orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'Do it', mentions: [] } }));
+
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].resolve(makeResult());
+
+    // Wait for drain to complete + debounce
+    await vi.waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    orchestrator.cancelIdleCheck();
+  });
+
+  it('does not fire onIdle on startup when nothing has happened', async () => {
+    const { runner } = createControllableRunner();
+    const client = createMockClient();
+    const onIdle = vi.fn();
+
+    const orchestrator = new AgentOrchestrator({
+      client: client as any,
+      sessionStore,
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'fallback',
+      onIdle,
+      idleDebounceMs: 10,
+    });
+
+    // Wait a bit — onIdle should not fire on a fresh orchestrator
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onIdle).not.toHaveBeenCalled();
+    orchestrator.cancelIdleCheck();
+  });
+
+  it('does not double-fire onIdle without a new busy cycle', async () => {
+    const { runner, calls } = createControllableRunner();
+    const client = createMockClient();
+    const onIdle = vi.fn();
+
+    const orchestrator = new AgentOrchestrator({
+      client: client as any,
+      sessionStore,
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'fallback',
+      onIdle,
+      idleDebounceMs: 50,
+    });
+
+    orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'First', mentions: [] } }));
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].resolve(makeResult());
+
+    // Wait for onIdle to fire
+    await vi.waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
+
+    // Wait more — should not fire again
+    await new Promise((r) => setTimeout(r, 100));
+    expect(onIdle).toHaveBeenCalledTimes(1);
+    orchestrator.cancelIdleCheck();
+  });
+
+  it('fires onIdle again after a second busy→idle cycle', async () => {
+    const { runner, calls } = createControllableRunner();
+    const client = createMockClient();
+    const onIdle = vi.fn();
+
+    const orchestrator = new AgentOrchestrator({
+      client: client as any,
+      sessionStore,
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'fallback',
+      onIdle,
+      idleDebounceMs: 50,
+    });
+
+    // First cycle
+    orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'First', mentions: [] } }));
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].resolve(makeResult());
+    await vi.waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
+
+    // Second cycle
+    orchestrator.handleComment(makeEvent({ comment: { id: 'c2', content: 'Second', mentions: [] } }));
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].resolve(makeResult());
+    await vi.waitFor(() => expect(onIdle).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    orchestrator.cancelIdleCheck();
+  });
+
+  it('cancelIdleCheck prevents pending idle callback from firing', async () => {
+    const { runner, calls } = createControllableRunner();
+    const client = createMockClient();
+    const onIdle = vi.fn();
+
+    const orchestrator = new AgentOrchestrator({
+      client: client as any,
+      sessionStore,
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'fallback',
+      onIdle,
+      idleDebounceMs: 200,
+    });
+
+    orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'Work', mentions: [] } }));
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].resolve(makeResult());
+    await vi.waitFor(() => expect(queueStore.isAgentBusy('alice')).toBe(false));
+
+    // Cancel before debounce fires
+    orchestrator.cancelIdleCheck();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(onIdle).not.toHaveBeenCalled();
+  });
 });

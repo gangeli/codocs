@@ -27,7 +27,7 @@ import { withErrorHandler } from '../util.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 /**
  * Check if Claude Code's auto permission mode is available.
@@ -133,6 +133,94 @@ function createEventEmitter(tuiRef: TuiStateRef | null) {
       }
     }
   };
+}
+
+// ── Idle hooks ──────────────────────────────────────────────
+
+type EventEmitter = ReturnType<typeof createEventEmitter>;
+
+function handleSilenceHook(command: string, emit: EventEmitter): void {
+  emit({ time: new Date(), type: 'system', content: `Running silence hook: ${command}` });
+  try {
+    const result = spawnSync('sh', ['-c', command], { stdio: 'inherit', timeout: 300_000 });
+    if (result.status !== 0) {
+      emit({ time: new Date(), type: 'error', content: `Silence hook exited with code ${result.status}` });
+    } else {
+      emit({ time: new Date(), type: 'system', content: 'Silence hook completed' });
+    }
+  } catch (err: any) {
+    emit({ time: new Date(), type: 'error', content: `Silence hook failed: ${err.message}` });
+  }
+}
+
+function handleMetaRestart(
+  sessionId: string,
+  ctx: {
+    orchestrator: AgentOrchestrator;
+    renewalTimer: ReturnType<typeof setInterval> | null;
+    listener: CommentListenerHandle | null;
+    db: { close: () => void };
+    emit: EventEmitter;
+  },
+): void {
+  ctx.emit({ time: new Date(), type: 'system', content: 'All agents idle — meta rebuild starting...' });
+
+  (async () => {
+    // 1. Graceful shutdown (without process.exit)
+    try {
+      ctx.orchestrator.cancelIdleCheck();
+      if (ctx.renewalTimer) clearInterval(ctx.renewalTimer);
+      if (ctx.listener) await ctx.listener.close();
+      ctx.db.close();
+    } catch (err: any) {
+      console.error(`[meta] Shutdown error (continuing): ${err.message}`);
+    }
+
+    // 2. Rebuild
+    console.error('[meta] Running make...');
+    const makeResult = spawnSync('make', [], { stdio: 'inherit', timeout: 120_000 });
+    if (makeResult.status !== 0) {
+      console.error(`[meta] Build failed with exit code ${makeResult.status}. Exiting.`);
+      process.exit(1);
+    }
+
+    // 3. Re-exec with --resume
+    console.error('[meta] Build succeeded, restarting...');
+    const restartArgs = buildRestartArgs(process.argv.slice(2), sessionId);
+    const child = spawn(process.execPath, [process.argv[1], ...restartArgs], {
+      stdio: 'inherit',
+      detached: true,
+    });
+    child.unref();
+    process.exit(0);
+  })();
+}
+
+/**
+ * Build restart args: take the original args, strip any existing --resume,
+ * and add --resume <sessionId>. Preserves all other flags including --meta.
+ */
+function buildRestartArgs(originalArgs: string[], sessionId: string): string[] {
+  const args: string[] = [];
+  let skipNext = false;
+
+  for (let i = 0; i < originalArgs.length; i++) {
+    if (skipNext) { skipNext = false; continue; }
+
+    if (originalArgs[i] === '--resume') {
+      // Check if next arg is a value (not another flag)
+      if (i + 1 < originalArgs.length && !originalArgs[i + 1].startsWith('--')) {
+        skipNext = true;
+      }
+      continue;
+    }
+    if (originalArgs[i].startsWith('--resume=')) continue;
+
+    args.push(originalArgs[i]);
+  }
+
+  args.push('--resume', sessionId);
+  return args;
 }
 
 /**
@@ -354,6 +442,8 @@ export function registerServeCommand(program: Command) {
     .option('--fallback-agent <name>', 'Default agent for unattributed text (auto-generated if omitted)')
     .option('--no-bot-replies', 'Disable bot identity for comment replies (reply as yourself instead)')
     .option('--resume [id]', 'Resume a previous session (optionally by ID)')
+    .option('--silence-hook <command>', 'Shell command to run when all agents are idle')
+    .option('--meta', 'Auto-rebuild and restart when idle (for self-development)')
     .action(
       withErrorHandler(async (docIds: string[], opts: {
         debug?: boolean;
@@ -363,6 +453,8 @@ export function registerServeCommand(program: Command) {
         fallbackAgent?: string;
         botReplies?: boolean;
         resume?: string | boolean;
+        silenceHook?: string;
+        meta?: boolean;
       }) => {
         const debugMode = opts.debug ?? false;
         const useTui = opts.tui !== false;
@@ -754,6 +846,11 @@ export function registerServeCommand(program: Command) {
             }
             emit({ time: new Date(), type: 'error', content: `Agent error: ${error}` });
           },
+          onIdle: opts.meta
+            ? () => handleMetaRestart(codocsSession.id, { orchestrator: orchestrator!, renewalTimer, listener, db, emit })
+            : opts.silenceHook
+              ? () => handleSilenceHook(opts.silenceHook!, emit)
+              : undefined,
           debug,
         });
 

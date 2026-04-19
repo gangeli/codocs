@@ -82,6 +82,10 @@ export interface OrchestratorConfig {
   chatTabStore?: ChatTabStore;
   /** Whether chat tab forking is enabled. Called per-invocation. Defaults to false. */
   chatEnabled?: boolean | (() => boolean);
+  /** Called when the system transitions from busy to idle (all drain loops complete, no pending work). */
+  onIdle?: () => void;
+  /** Debounce interval in ms before firing onIdle (default: 3000). */
+  idleDebounceMs?: number;
   /** Optional logger. */
   debug?: (msg: string) => void;
 }
@@ -108,11 +112,18 @@ export class AgentOrchestrator {
   private chatOrchestrator?: ChatOrchestrator;
   private chatTabManager?: ChatTabManager;
   private getChatEnabled: () => boolean;
+  private onIdle: (() => void) | undefined;
 
   /** Agents currently being drained. Prevents double-drain. */
   private processingAgents = new Set<string>();
   /** Active drain promises, keyed by agent name. */
   private drainPromises = new Map<string, Promise<void>>();
+  /** Whether onIdle has already fired since the last busy state. */
+  private idleFired = true;
+  /** Debounce timer for idle detection. */
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Idle debounce interval in ms. */
+  private idleDebounceMs: number;
 
   constructor(config: OrchestratorConfig) {
     this.client = config.client;
@@ -124,6 +135,8 @@ export class AgentOrchestrator {
     this.onAgentAssigned = config.onAgentAssigned ?? (() => {});
     this.onCommentProcessed = config.onCommentProcessed ?? (() => {});
     this.onCommentFailed = config.onCommentFailed ?? (() => {});
+    this.onIdle = config.onIdle;
+    this.idleDebounceMs = config.idleDebounceMs ?? 3000;
     this.debug = config.debug ?? (() => {});
 
     const pm = config.permissionMode;
@@ -233,6 +246,7 @@ export class AgentOrchestrator {
 
     // Step 4: If the agent is idle, start draining
     if (!this.processingAgents.has(agentName)) {
+      this.idleFired = false;
       const drainPromise = this.drainQueue(agentName).catch((err) => {
         this.debug(`Queue drain error for ${agentName}: ${err}`);
       });
@@ -250,6 +264,39 @@ export class AgentOrchestrator {
    */
   async waitForIdle(): Promise<void> {
     await Promise.all(this.drainPromises.values());
+  }
+
+  /**
+   * Cancel any pending idle check timer. Use during shutdown to prevent
+   * stale timer fires.
+   */
+  cancelIdleCheck(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    this.idleFired = true;
+  }
+
+  /**
+   * Check if the system just transitioned to idle (all drain loops done,
+   * no pending work). Uses a debounce to avoid thrashing on rapid comment
+   * sequences.
+   */
+  private checkIdle(): void {
+    if (this.idleFired) return;
+    if (this.processingAgents.size > 0 || this.drainPromises.size > 0) return;
+
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+
+    this.idleTimer = setTimeout(() => {
+      // Re-check after debounce — a new comment may have arrived
+      if (this.processingAgents.size > 0 || this.drainPromises.size > 0 || this.idleFired) return;
+      if (this.queueStore.pendingAgents().length > 0) return;
+      this.idleFired = true;
+      this.debug('System idle — firing onIdle callback');
+      this.onIdle?.();
+    }, this.idleDebounceMs);
   }
 
   /**
@@ -277,6 +324,7 @@ export class AgentOrchestrator {
     } finally {
       this.processingAgents.delete(agentName);
       this.drainPromises.delete(agentName);
+      this.checkIdle();
     }
   }
 
@@ -289,6 +337,7 @@ export class AgentOrchestrator {
 
     const agents = this.queueStore.pendingAgents();
     for (const agentName of agents) {
+      this.idleFired = false;
       this.drainQueue(agentName).catch((err) => {
         this.debug(`Recovery drain error for ${agentName}: ${err}`);
       });
