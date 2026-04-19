@@ -39,24 +39,34 @@ interface ErrorResponse {
   error_description?: string;
 }
 
-async function requestDeviceCode(clientId: string): Promise<DeviceCodeResponse> {
-  const res = await fetch('https://github.com/login/device/code', {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      client_id: clientId,
-      scope: SCOPES,
-    }),
-  });
+async function requestDeviceCode(clientId: string, retries = 3): Promise<DeviceCodeResponse> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const res = await fetch('https://github.com/login/device/code', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: clientId,
+        scope: SCOPES,
+      }),
+    });
 
-  if (!res.ok) {
-    throw new Error(`GitHub device code request failed: ${res.status} ${res.statusText}`);
+    if (res.status === 502 && attempt < retries - 1) {
+      const delays = [2000, 10000, 30000];
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      continue;
+    }
+
+    if (!res.ok) {
+      throw new Error(`GitHub device code request failed: ${res.status} ${res.statusText}`);
+    }
+
+    return res.json() as Promise<DeviceCodeResponse>;
   }
 
-  return res.json() as Promise<DeviceCodeResponse>;
+  throw new Error('GitHub device code request failed after retries');
 }
 
 async function pollForToken(
