@@ -905,10 +905,17 @@ export function registerServeCommand(program: Command) {
         if (useTui) {
           // Wait for TUI to fully unmount, then show resume info
           await inkInstance!.waitUntilExit();
+          // Clear screen and show styled exit message
+          process.stdout.write('\x1b[2J\x1b[H');
           if (sessionInfo) {
-            console.log(
-              `\nTo resume this session, run:\n  codocs ${sessionInfo.docArgs}\n  codocs --resume ${sessionInfo.id}\n`,
+            process.stdout.write(
+              `\x1b[1mGoodbye!\x1b[0m\n\n` +
+              `To resume this session, run:\n` +
+              `  \x1b[36mcodocs \x1b[0m${sessionInfo.docArgs}\n` +
+              `  \x1b[36mcodocs \x1b[0m--resume ${sessionInfo.id}\n\n`,
             );
+          } else {
+            process.stdout.write(`\x1b[1mGoodbye!\x1b[0m\n\n`);
           }
           process.exit(0);
         } else {
