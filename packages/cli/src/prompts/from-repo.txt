@@ -1,5 +1,46 @@
-Thoroughly explore the code and architecture in this repository and write a design document in Markdown. The design doc should focus primarily on features, capabilities, and user journeys; the techncial details as much as possible should be tied to a user-facing feature. That said, make sure the doc includes all the details you'd expect in a conventional design doc, and core components that cross feature boundaries or are not tied to any particular feature should be described in their own coherent sections.
+Reverse-engineer a living spec of what this codebase currently does, and write it to `.codocs/design-doc.md` in the current directory. Do not stream to stdout. Do not describe what you would write — actually write the file.
 
-Write the document to `.codocs/design-doc.md` in the current directory. Do not output the document to stdout. Do not describe what you would write — actually write it to the file.
+This document will be uploaded to Google Docs as the source of truth for the project. Collaborators will leave inline comments on specific sentences and sections to critique the architecture and drive further work. Optimize the shape of the doc for that use.
 
-This document will be uploaded to Google Docs and used as the "source of truth" about this project. People will comment on and critique both the overall architecture and the details of the design. Make sure your design is thorough, but also make sure that it's easy to understand at a glance what's happening, both overall and for each subsection of the document. Do not write unnecessary content.
+## What to cover
+
+Be exhaustive about the big rocks; be selective about implementation detail.
+
+- Every user-facing feature or capability must appear somewhere.
+- Every cross-cutting component (something multiple features depend on, or infrastructure not tied to one feature) gets its own section.
+- External integrations (APIs, services, auth providers, databases) get called out explicitly.
+- Implementation detail is included only when it's load-bearing for understanding how the pieces fit together. Skip line-by-line walkthroughs.
+
+Start by reading `README.md`, any `CLAUDE.md`, and the top-level package manifests (`package.json`, `Cargo.toml`, `pyproject.toml`, etc.) — those carry ground truth you shouldn't re-derive from source. Then explore the code.
+
+## Structure
+
+Use this skeleton. Omit sections that genuinely don't apply (e.g., "User journeys" for a pure library), but don't invent alternatives.
+
+1. **Overview** — one paragraph: what this project is and who uses it.
+2. **User journeys** — the main end-to-end flows a user or caller goes through. One subsection per journey.
+3. **Features** — exhaustive list, grouped into coherent buckets. Each feature gets a short subsection.
+4. **Cross-cutting components** — subsystems that multiple features rely on or that don't belong to any single feature.
+5. **External integrations and data** — third-party services, APIs, persistent stores, auth, deployment targets.
+6. **Open questions / known gaps** — places where the code is ambiguous, incomplete, disabled-by-default, or where tests and code disagree.
+
+## Faithfulness rules
+
+This doc is ground truth. Commenters will trust it.
+
+- Describe what the code **does**, not what it might have been designed to do. Use present tense.
+- Do not invent rationale. If the code doesn't say why, don't speculate about "chosen for performance" or "to ensure consistency."
+- If tests and code disagree, describe what the code does and flag the divergence in the Open Questions section.
+- If a feature exists behind a disabled flag or is unreachable from any entry point, note it as such rather than presenting it as shipped.
+- Reference files by path (e.g., `packages/foo/src/bar.ts`) when it helps a reader find the code. Don't cite line numbers — they rot.
+
+## Shape for commenting
+
+- Keep sections short: 1–3 paragraphs. A commenter can't meaningfully critique a two-page section.
+- Prefer atomic claims: one assertion per sentence or paragraph, so someone can comment on exactly the thing they disagree with.
+- Use consistent H2/H3 hierarchy so the Google Docs outline sidebar becomes a usable table of contents.
+- Avoid formatting that renders poorly or is hostile to inline commenting: long code blocks (>10 lines), deeply nested lists (>2 levels), HTML, ASCII diagrams. Short inline code spans and small tables are fine.
+
+## Target
+
+A reader should come away with a complete picture of what the software does in a 15-minute skim. Every feature mentioned; no feature buried in prose. If you find yourself writing something that doesn't help a reader understand the system or doesn't give a commenter something to react to, cut it.
