@@ -19,6 +19,10 @@ import { markdownToDocsRequests, markdownToDocsRequestsAsync, type AbsoluteHeadi
 import { docsToMarkdown } from '../converter/docs-to-md.js';
 import { buildHeadingIdMap, resolveHeadingLinkRequests } from '../converter/heading-links.js';
 import {
+  buildNewSectionInsertRequests,
+  type DiffResult,
+} from '../harness/diff.js';
+import {
   createAttributionRequests,
   extractAttributions,
   deleteNamedRangeRequest,
@@ -309,6 +313,33 @@ export class CodocsClient {
 
     await this.docsApi.batchUpdate(docId, requests);
     await this.resolveHeadingLinks(docId, headingLinks);
+  }
+
+  /**
+   * Apply a {@link DiffResult} to a document. The initial request batch is
+   * applied against the doc as it was when the diff was computed; each
+   * deferred new-section insert is then applied in its own batchUpdate
+   * after re-fetching the doc, so its insertion offsets use a fresh
+   * bodyEndIndex. Heading-target links from every batch are resolved in
+   * a single post-pass.
+   */
+  async applyDocDiff(docId: string, diffResult: DiffResult): Promise<void> {
+    const allHeadingLinks: AbsoluteHeadingLinkRef[] = [...diffResult.headingLinks];
+
+    if (diffResult.requests.length > 0) {
+      await this.docsApi.batchUpdate(docId, diffResult.requests);
+    }
+
+    for (const insert of diffResult.newSectionInserts) {
+      const doc = await this.docsApi.getDocument(docId);
+      const bodyEnd = getBodyEndIndex(doc.body);
+      const { requests, headingLinks } = buildNewSectionInsertRequests(insert, bodyEnd);
+      if (requests.length === 0) continue;
+      await this.docsApi.batchUpdate(docId, requests);
+      allHeadingLinks.push(...headingLinks);
+    }
+
+    await this.resolveHeadingLinks(docId, allHeadingLinks);
   }
 
   /**

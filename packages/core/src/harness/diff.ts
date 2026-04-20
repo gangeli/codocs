@@ -38,12 +38,30 @@ export interface MergeResult {
 export interface DiffResult {
   /** Whether any changes were detected. */
   hasChanges: boolean;
-  /** Google Docs API batchUpdate requests to apply the changes. */
+  /**
+   * In-place modifications (deletes, edits to existing sections) to apply in
+   * a single batchUpdate against the document passed to computeDocDiff.
+   */
   requests: docs_v1.Schema$Request[];
   /** Number of conflicts that were resolved (via callback). */
   conflictsResolved: number;
-  /** Heading-target links that need a second-pass updateTextStyle after the batch is applied. */
+  /** Heading-target links produced by the initial `requests` batch. */
   headingLinks: AbsoluteHeadingLinkRef[];
+  /**
+   * Sections that did not exist in the current doc and must be appended.
+   * Each one has to be turned into requests *after* the initial batch is
+   * applied and the doc is re-fetched, so its insertion offsets pick up a
+   * fresh `bodyEndIndex`. See {@link buildNewSectionInsertRequests}.
+   */
+  newSectionInserts: NewSectionInsert[];
+}
+
+/** Description of a brand-new section to append to the end of the body. */
+export interface NewSectionInsert {
+  /** Markdown content of the section (including its heading line). */
+  content: string;
+  /** Agent name, for attribution ranges. */
+  agentName: string;
 }
 
 // Heading regex: line starting with 1-6 `#` followed by a space
@@ -303,12 +321,19 @@ export async function computeDocDiff(
 
   // If nothing changed, return early
   if (mergeResult.mergedMarkdown.trim() === theirs.trim()) {
-    return { hasChanges: false, requests: [], conflictsResolved, headingLinks: [] };
+    return {
+      hasChanges: false,
+      requests: [],
+      conflictsResolved,
+      headingLinks: [],
+      newSectionInserts: [],
+    };
   }
 
   const bodyEndIndex = getBodyEndIndex(document);
   const requests: docs_v1.Schema$Request[] = [];
   const headingLinks: AbsoluteHeadingLinkRef[] = [];
+  const newSectionInserts: NewSectionInsert[] = [];
 
   // Find sections that differ between theirs and merged
   const changedSections: Array<{
@@ -359,20 +384,16 @@ export async function computeDocDiff(
 
   for (const change of changedSections) {
     if (!change.theirsSection) {
-      // New section — just insert at end
+      // New section — defer to a second-phase batch whose offsets are
+      // computed against a freshly-fetched bodyEndIndex. Stacking multiple
+      // new-section inserts into the initial batch (all using the original
+      // bodyEndIndex-1) produces out-of-range indices once earlier requests
+      // in the batch have grown the doc.
       if (change.mergedSection) {
-        const insertAt = bodyEndIndex - 1;
-        const { text, requests: insertRequests, headingLinks: insertLinks } = markdownToDocsRequests(
-          change.mergedSection.content,
-          insertAt,
-          false,
-          bodyEndIndex,
-        );
-        requests.push(...insertRequests);
-        headingLinks.push(...insertLinks);
-        if (text.length > 0) {
-          requests.push(...createAttributionRequests(agentName, insertAt, insertAt + text.length));
-        }
+        newSectionInserts.push({
+          content: change.mergedSection.content,
+          agentName,
+        });
       }
       continue;
     }
@@ -479,7 +500,33 @@ export async function computeDocDiff(
     }
   }
 
-  return { hasChanges: requests.length > 0, requests, conflictsResolved, headingLinks };
+  const hasChanges = requests.length > 0 || newSectionInserts.length > 0;
+  return { hasChanges, requests, conflictsResolved, headingLinks, newSectionInserts };
+}
+
+/**
+ * Build the batchUpdate requests for a single {@link NewSectionInsert},
+ * inserting at the end of a document whose body currently ends at
+ * `currentBodyEndIndex`. Returns both the requests and any heading-target
+ * link references that must be resolved in a post-insert pass.
+ */
+export function buildNewSectionInsertRequests(
+  insert: NewSectionInsert,
+  currentBodyEndIndex: number,
+): { requests: docs_v1.Schema$Request[]; headingLinks: AbsoluteHeadingLinkRef[] } {
+  const insertAt = Math.max(1, currentBodyEndIndex - 1);
+  const { text, requests, headingLinks } = markdownToDocsRequests(
+    insert.content,
+    insertAt,
+    false,
+    currentBodyEndIndex,
+  );
+  if (text.length > 0) {
+    requests.push(
+      ...createAttributionRequests(insert.agentName, insertAt, insertAt + text.length),
+    );
+  }
+  return { requests, headingLinks };
 }
 
 /**
@@ -656,7 +703,7 @@ export function interpolateDocIndex(
   return fallback;
 }
 
-function getBodyEndIndex(document: docs_v1.Schema$Document): number {
+export function getBodyEndIndex(document: docs_v1.Schema$Document): number {
   const body = document.body;
   if (!body?.content?.length) return 1;
   const last = body.content[body.content.length - 1];

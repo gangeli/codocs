@@ -5,6 +5,7 @@ import {
   mergeDocuments,
   computeDocDiff,
   interpolateDocIndex,
+  buildNewSectionInsertRequests,
   type MdSection,
 } from '../../src/harness/diff.js';
 import type { IndexMapEntry } from '../../src/converter/element-parser.js';
@@ -852,6 +853,128 @@ New line five.
     // (unless it's a pure delete with no replacement)
     // At minimum: no two deletes in a row without an insert between
     // (this is a loose check — the real validation is that Google Docs accepts it)
+  });
+
+  // ── New-section isolation ──────────────────────────────────────
+  //
+  // New sections (no counterpart in the current doc) are deferred into
+  // `newSectionInserts` rather than emitted into `requests`. The caller
+  // re-fetches the doc between each one so their insertion offsets use
+  // a fresh bodyEndIndex. Bundling multiple new sections into the same
+  // batch — all anchored to the original bodyEndIndex - 1 — produced
+  // "Index X must be less than the end index of the referenced segment"
+  // errors from the Docs API once earlier inserts grew the doc.
+
+  it('defers new sections into newSectionInserts instead of requests', async () => {
+    const bodyEndIndex = 50;
+    const doc = makeDocument(bodyEndIndex);
+
+    const base = `# Intro\n\nHello.\n`;
+    const ours = `# Intro
+
+Hello.
+
+# Added One
+
+First new section body.
+
+# Added Two
+
+Second new section body.
+`;
+    const theirs = base;
+
+    const indexMap = makeIndexMap([{ mdOffset: 0, docIndex: 1 }]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    expect(result.newSectionInserts.map((n) => n.content)).toEqual([
+      expect.stringContaining('# Added One'),
+      expect.stringContaining('# Added Two'),
+    ]);
+
+    // None of the initial `requests` should insertText for the new sections.
+    for (const req of result.requests) {
+      if (req.insertText?.text) {
+        expect(req.insertText.text).not.toContain('Added One');
+        expect(req.insertText.text).not.toContain('Added Two');
+      }
+    }
+
+    // Agent name is carried through for attribution.
+    for (const ns of result.newSectionInserts) {
+      expect(ns.agentName).toBe('test-agent');
+    }
+  });
+
+  it('reports hasChanges=true when only new sections are added', async () => {
+    const bodyEndIndex = 50;
+    const doc = makeDocument(bodyEndIndex);
+
+    const base = `# Intro\n\nHello.\n`;
+    const ours = base + `\n# Added\n\nBody.\n`;
+    const theirs = base;
+
+    const indexMap = makeIndexMap([{ mdOffset: 0, docIndex: 1 }]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+    expect(result.requests).toHaveLength(0);
+    expect(result.newSectionInserts).toHaveLength(1);
+  });
+});
+
+describe('buildNewSectionInsertRequests', () => {
+  it('anchors insertText at bodyEndIndex - 1 of the current doc', () => {
+    const { requests } = buildNewSectionInsertRequests(
+      { content: '# Heading\n\nBody.\n', agentName: 'a' },
+      100,
+    );
+    const firstInsert = requests.find((r) => r.insertText);
+    expect(firstInsert).toBeDefined();
+    expect(firstInsert!.insertText!.location!.index).toBe(99);
+  });
+
+  it('uses a different anchor when bodyEndIndex changes between calls', () => {
+    const insert = { content: '# X\n\nBody.\n', agentName: 'a' };
+    const first = buildNewSectionInsertRequests(insert, 100);
+    const second = buildNewSectionInsertRequests(insert, 150);
+
+    const firstIdx = first.requests.find((r) => r.insertText)!.insertText!.location!.index;
+    const secondIdx = second.requests.find((r) => r.insertText)!.insertText!.location!.index;
+
+    expect(firstIdx).toBe(99);
+    expect(secondIdx).toBe(149);
+  });
+
+  it('keeps every absolute index within the current body', () => {
+    // All insertText + style ranges must live within [1, bodyEndIndex + content_len).
+    // We assert the floor here — no index may precede the body start.
+    const { requests } = buildNewSectionInsertRequests(
+      { content: '# Heading\n\nParagraph body.\n', agentName: 'a' },
+      200,
+    );
+    for (const req of requests) {
+      if (req.insertText) {
+        expect(req.insertText.location!.index!).toBeGreaterThanOrEqual(1);
+      }
+      if (req.updateParagraphStyle) {
+        expect(req.updateParagraphStyle.range!.startIndex!).toBeGreaterThanOrEqual(1);
+      }
+      if (req.updateTextStyle) {
+        expect(req.updateTextStyle.range!.startIndex!).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it('clamps to index 1 for an empty body', () => {
+    const { requests } = buildNewSectionInsertRequests(
+      { content: '# Heading\n\nBody.\n', agentName: 'a' },
+      1,
+    );
+    const firstInsert = requests.find((r) => r.insertText);
+    expect(firstInsert!.insertText!.location!.index).toBe(1);
   });
 });
 

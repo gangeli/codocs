@@ -197,10 +197,10 @@ export class ChatOrchestrator {
         );
 
         if (diffResult.hasChanges) {
-          await this.client.batchUpdate(documentId, diffResult.requests);
-          await this.client.resolveHeadingLinks(documentId, diffResult.headingLinks);
-          editSummary = `${diffResult.requests.length} edit${diffResult.requests.length !== 1 ? 's' : ''}`;
-          this.debug(`[chat] Applied ${diffResult.requests.length} doc edits`);
+          await this.client.applyDocDiff(documentId, diffResult);
+          const opCount = diffResult.requests.length + diffResult.newSectionInserts.length;
+          editSummary = `${opCount} edit${opCount !== 1 ? 's' : ''}`;
+          this.debug(`[chat] Applied ${opCount} doc operations`);
         }
       }
     } catch (err: any) {

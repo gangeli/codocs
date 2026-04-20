@@ -547,11 +547,11 @@ export class AgentOrchestrator {
 
       // Apply changes to Google Doc
       if (diffResult.hasChanges) {
+        const opCount = diffResult.requests.length + diffResult.newSectionInserts.length;
         this.debug(
-          `Applying ${diffResult.requests.length} doc operations (${diffResult.conflictsResolved} conflicts resolved)`,
+          `Applying ${opCount} doc operations (${diffResult.conflictsResolved} conflicts resolved)`,
         );
-        await this.client.batchUpdate(documentId, diffResult.requests);
-        await this.client.resolveHeadingLinks(documentId, diffResult.headingLinks);
+        await this.client.applyDocDiff(documentId, diffResult);
       } else {
         this.debug('No changes to apply');
       }
@@ -560,8 +560,9 @@ export class AgentOrchestrator {
       const agentResponse = result.stdout.trim();
       replyContent = agentResponse
         || (diffResult.hasChanges ? 'Done \u2014 changes applied to the document.' : 'Done \u2014 no changes needed.');
+      const opCount = diffResult.requests.length + diffResult.newSectionInserts.length;
       editSummary = diffResult.hasChanges
-        ? `${diffResult.requests.length} edit${diffResult.requests.length !== 1 ? 's' : ''}${diffResult.conflictsResolved ? `, ${diffResult.conflictsResolved} conflict${diffResult.conflictsResolved !== 1 ? 's' : ''} resolved` : ''}`
+        ? `${opCount} edit${opCount !== 1 ? 's' : ''}${diffResult.conflictsResolved ? `, ${diffResult.conflictsResolved} conflict${diffResult.conflictsResolved !== 1 ? 's' : ''} resolved` : ''}`
         : 'No changes';
     } catch (err: any) {
       this.debug(`Error during processing: ${err.message ?? err}`);
