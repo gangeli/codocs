@@ -80,13 +80,25 @@ jobs:
       - run: make dist
         if: steps.version.outputs.bumped == 'true'
 
+      - name: Resolve release notes path
+        if: steps.version.outputs.bumped == 'true'
+        id: notes
+        run: |
+          NOTES_PATH="release_notes/${{ steps.version.outputs.new }}.md"
+          if [ -f "$NOTES_PATH" ]; then
+            echo "path=$NOTES_PATH" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
         if: steps.version.outputs.bumped == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.new }}
           name: v${{ steps.version.outputs.new }}
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.path == '' }}
           files: |
             dist/codocs-darwin-arm64
             dist/codocs-darwin-x64
