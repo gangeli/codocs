@@ -25,6 +25,7 @@ import {
 import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore, CodeTaskStore, CodocsSessionStore, type CodocsSession } from '@codocs/db';
 import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
+import { renderExit } from '../exit.js';
 import { buildRepairContext, runStartupChecks, runRepairUi } from '../repair/index.js';
 import { metaRestartShutdown, type MetaRestartShutdownCtx } from './meta-restart.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -101,27 +102,6 @@ async function generateDocName(
 
 /** How often to renew subscriptions (6 days, well before 7-day expiry). */
 const RENEWAL_INTERVAL_MS = 6 * 24 * 60 * 60 * 1000;
-
-const FAREWELLS = [
-  'Exiting gracefully, unlike most software.',
-  'May your merges be conflict-free.',
-  'See you on the other side of the diff.',
-  'Thanks for all the comments.',
-  'ctrl-c you later.',
-  'Process terminated. Feelings intact.',
-  "It's not a bug, it's a farewell.",
-  'Segfault avoided. Clean exit.',
-  'Your uptime was impressive.',
-  'All threads joined. All promises resolved.',
-  'No memory leaks here. Probably.',
-  'Committed to saying goodbye.',
-  'LGTM. Ship it. Go home.',
-  'This session has been garbage collected.',
-];
-
-function pickFarewell(): string {
-  return FAREWELLS[Math.floor(Math.random() * FAREWELLS.length)]!;
-}
 
 function printServerAlreadyRunning(docId: string): void {
   const dim = '\x1b[2m';
@@ -340,6 +320,10 @@ async function resolveWelcomeChoice(
       // Handled before resolveWelcomeChoice is called
       return { docId: choice.docIds[0] };
 
+    case 'quit':
+      // Handled before resolveWelcomeChoice is called
+      process.exit(0);
+
     case 'open':
       return { docId: choice.docId };
 
@@ -534,9 +518,12 @@ export function registerServeCommand(program: Command) {
           }
           tempDb.close();
           if (!session) {
-            console.error(typeof opts.resume === 'string'
-              ? `No session found with ID "${opts.resume}".`
-              : 'No previous session found for this directory.');
+            renderExit({
+              clearScreen: false,
+              error: typeof opts.resume === 'string'
+                ? `No session found with ID "${opts.resume}".`
+                : 'No previous session found for this directory.',
+            });
             process.exit(1);
           }
           docIds = session.docIds;
@@ -556,6 +543,11 @@ export function registerServeCommand(program: Command) {
           }
 
           const choice = await showWelcome(useTui, recentSessions);
+
+          if (choice.type === 'quit') {
+            renderExit();
+            process.exit(0);
+          }
 
           // Handle resume choice from Welcome screen
           if (choice.type === 'resume') {
@@ -701,13 +693,15 @@ export function registerServeCommand(program: Command) {
             });
             if (!outcome.resolved) {
               db.close();
+              const remaining = outcome.remaining.filter((i) => i.severity === 'error').length;
+              renderExit({ note: `${remaining} unresolved issue${remaining === 1 ? '' : 's'} remain — codocs can't start until they're fixed.` });
               process.exit(1);
             }
             // Something was fixed — docIds may no longer reflect reality
             // (e.g. user stripped a doc from a resumed session). Safest
             // path: exit cleanly and ask the user to re-run.
             db.close();
-            console.error('\nIssues resolved. Re-run `codocs` to continue.');
+            renderExit({ note: 'Issues resolved. Re-run `codocs` to continue.' });
             process.exit(0);
           }
         }
@@ -756,11 +750,10 @@ export function registerServeCommand(program: Command) {
             db.close();
           } catch { /* best-effort cleanup */ }
           if (!useTui) {
-            if (sessionInfo) {
-              console.log(
-                `\nTo resume this session, run:\n  codocs ${sessionInfo.docArgs}\n  codocs --resume ${sessionInfo.id}\n`,
-              );
-            }
+            renderExit({
+              clearScreen: false,
+              resume: sessionInfo ? { sessionId: sessionInfo.id, docArgs: sessionInfo.docArgs } : undefined,
+            });
             process.exit(0);
           }
         };
@@ -1095,17 +1088,7 @@ export function registerServeCommand(program: Command) {
           try {
             await inkInstance!.waitUntilExit();
           } catch { /* exit may reject during shutdown */ } finally {
-            // Clear screen and show styled exit message
-            process.stderr.write('\x1b[2J\x1b[H');
-            const farewell = pickFarewell();
-            process.stderr.write(`\x1b[2m~ ${farewell} ~\x1b[0m\n\n`);
-            if (sessionInfo) {
-              process.stderr.write(
-                `To resume this session, run either:\n` +
-                `  \x1b[36mcodocs\x1b[0m ${sessionInfo.docArgs}\n` +
-                `  \x1b[36mcodocs\x1b[0m --resume ${sessionInfo.id}\n\n`,
-              );
-            }
+            renderExit({ resume: sessionInfo ? { sessionId: sessionInfo.id, docArgs: sessionInfo.docArgs } : undefined });
             process.exit(0);
           }
         } else {

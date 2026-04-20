@@ -9,7 +9,8 @@ export type WelcomeChoice =
   | { type: 'from-repo' }
   | { type: 'import-file'; path: string }
   | { type: 'write-new' }
-  | { type: 'from-prompt'; prompt: string };
+  | { type: 'from-prompt'; prompt: string }
+  | { type: 'quit' };
 
 interface WelcomeProps {
   onChoice: (choice: WelcomeChoice) => void;
@@ -193,7 +194,7 @@ export function Welcome({ onChoice, cwd, recentSessions = [] }: WelcomeProps) {
       else if (baseSection === 1 && flat.item === 1) onChoice({ type: 'write-new' });
       else if (baseSection === 1 && flat.item === 2) setStep('enter-prompt');
     } else if (ch === 'q' || key.escape) {
-      process.exit(0);
+      onChoice({ type: 'quit' });
     }
   });
 

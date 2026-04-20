@@ -90,6 +90,13 @@ export async function runRepairUi(
         resolve(outcome(currentIssues));
         return;
       }
+      if (action.type === 'apply-fix' && action.fix.id === 'quit-program') {
+        // The "Quit" fix is just a user-quit gesture dressed as a fix —
+        // route it through the same exit path as pressing 'q'.
+        instance.unmount();
+        resolve(outcome(currentIssues));
+        return;
+      }
       if (action.type === 'rerun') {
         busy = true;
         toast = null;

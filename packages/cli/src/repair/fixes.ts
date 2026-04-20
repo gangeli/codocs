@@ -141,13 +141,18 @@ export const deleteSubscriptionFix: Fix = {
 
 // ── Exit fixes ────────────────────────────────────────────────
 
+/**
+ * Special case: the UI (runRepairUi) intercepts this fix's id before
+ * invoking apply(). The apply() body here is unreachable but kept so the
+ * Fix shape is valid if something else ever does call it.
+ */
 export const quitProgramFix: Fix = {
   id: 'quit-program',
   label: 'Quit',
   description: 'Exit the program. Re-run with a valid Google Doc ID.',
   destructive: false,
   async apply(): Promise<FixResult> {
-    process.exit(1);
+    return { ok: true, message: 'Quitting.' };
   },
 };
 
