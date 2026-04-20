@@ -10,8 +10,33 @@
 import type { docs_v1 } from 'googleapis';
 import type { Root, Content, Heading, List, ListItem, Table, TableRow, TableCell, Code, InlineCode, Link, Image, Paragraph, Blockquote } from 'mdast';
 import { headingDepthToNamedStyle, CODE_FONT_FAMILY, CODE_BLOCK_BG } from './style-map.js';
+import { slugifyHeading, extractSectionNumber, findSectionReferences } from './heading-slug.js';
 
 // ── Segment types ──────────────────────────────────────────────
+
+/** A link whose target is a heading within the same document. */
+export interface HeadingLinkRef {
+  /** Start offset relative to the text segment (0-based). */
+  startIndex: number;
+  /** End offset relative to the text segment (0-based). */
+  endIndex: number;
+  /** How the link identifies its target heading. */
+  target:
+    | { kind: 'slug'; value: string }
+    | { kind: 'section'; value: string };
+}
+
+/** Metadata about a heading emitted into a text segment, for post-insert ID lookup. */
+export interface HeadingInfo {
+  /** Start offset relative to the text segment (0-based). */
+  startIndex: number;
+  /** End offset relative to the text segment (0-based). */
+  endIndex: number;
+  /** GitHub-style slug of the heading's visible text. */
+  slug: string;
+  /** Leading section number (e.g. "3", "3.5"), if any. */
+  sectionNumber: string | null;
+}
 
 export interface TextSegment {
   type: 'text';
@@ -21,6 +46,10 @@ export interface TextSegment {
   styles: docs_v1.Schema$Request[];
   /** Bullet requests with offsets relative to segment start (0-based). */
   bullets: docs_v1.Schema$Request[];
+  /** Heading links whose target must be resolved post-insert. */
+  headingLinks: HeadingLinkRef[];
+  /** Headings emitted into this segment, for building a slug→headingId map. */
+  headings: HeadingInfo[];
 }
 
 export interface TableSegment {
@@ -55,6 +84,10 @@ interface WalkContext {
   styles: docs_v1.Schema$Request[];
   /** Bullet requests for the current segment. */
   bullets: docs_v1.Schema$Request[];
+  /** Heading links for the current segment (relative offsets). */
+  headingLinks: HeadingLinkRef[];
+  /** Headings emitted into the current segment (relative offsets). */
+  headings: HeadingInfo[];
   /** Accumulated segments. */
   segments: WalkSegment[];
   /** Active inline styles (stack). */
@@ -62,7 +95,8 @@ interface WalkContext {
   italic: boolean;
   strikethrough: boolean;
   code: boolean;
-  link: string | null;
+  /** True while walking the children of an explicit markdown link. */
+  inLink: boolean;
 }
 
 // ── Public entry point ─────────────────────────────────────────
@@ -73,12 +107,14 @@ export function walkAst(root: Root, _insertionOffset?: number): WalkResult {
     buf: '',
     styles: [],
     bullets: [],
+    headingLinks: [],
+    headings: [],
     segments: [],
     bold: false,
     italic: false,
     strikethrough: false,
     code: false,
-    link: null,
+    inLink: false,
   };
 
   walkChildren(root.children, ctx, 0, false);
@@ -98,18 +134,28 @@ export function walkAst(root: Root, _insertionOffset?: number): WalkResult {
 // ── Segment management ─────────────────────────────────────────
 
 function flushTextSegment(ctx: WalkContext) {
-  if (ctx.buf.length > 0 || ctx.styles.length > 0 || ctx.bullets.length > 0) {
+  if (
+    ctx.buf.length > 0 ||
+    ctx.styles.length > 0 ||
+    ctx.bullets.length > 0 ||
+    ctx.headingLinks.length > 0 ||
+    ctx.headings.length > 0
+  ) {
     ctx.segments.push({
       type: 'text',
       text: ctx.buf,
       styles: [...ctx.styles],
       bullets: [...ctx.bullets],
+      headingLinks: [...ctx.headingLinks],
+      headings: [...ctx.headings],
     });
   }
   ctx.buf = '';
   ctx.offset = 0;
   ctx.styles = [];
   ctx.bullets = [];
+  ctx.headingLinks = [];
+  ctx.headings = [];
 }
 
 // ── AST walking ────────────────────────────────────────────────
@@ -204,6 +250,14 @@ function walkHeading(node: Heading, ctx: WalkContext) {
   walkChildren(node.children as Content[], ctx, 0, false);
   ensureNewline(ctx);
 
+  const headingText = extractPhrasingText(node.children as Content[]);
+  ctx.headings.push({
+    startIndex: startOffset,
+    endIndex: ctx.offset,
+    slug: slugifyHeading(headingText),
+    sectionNumber: extractSectionNumber(headingText),
+  });
+
   ctx.styles.push({
     updateParagraphStyle: {
       range: {
@@ -216,6 +270,18 @@ function walkHeading(node: Heading, ctx: WalkContext) {
       fields: 'namedStyleType',
     },
   });
+}
+
+function extractPhrasingText(nodes: Content[]): string {
+  let out = '';
+  for (const node of nodes) {
+    if (node.type === 'text' || node.type === 'inlineCode') {
+      out += (node as any).value as string;
+    } else if ('children' in node) {
+      out += extractPhrasingText((node as any).children as Content[]);
+    }
+  }
+  return out;
 }
 
 function walkParagraph(
@@ -253,20 +319,33 @@ function walkLink(
   inBlockquote: boolean,
 ) {
   const start = ctx.offset;
+  const prevInLink = ctx.inLink;
+  ctx.inLink = true;
   walkChildren(node.children as Content[], ctx, listDepth, inBlockquote);
+  ctx.inLink = prevInLink;
   const end = ctx.offset;
 
-  if (end > start) {
-    ctx.styles.push({
-      updateTextStyle: {
-        range: { startIndex: start, endIndex: end },
-        textStyle: {
-          link: { url: node.url },
-        },
-        fields: 'link',
-      },
+  if (end <= start) return;
+
+  const fragment = node.url.startsWith('#') ? node.url.slice(1) : null;
+  if (fragment !== null) {
+    ctx.headingLinks.push({
+      startIndex: start,
+      endIndex: end,
+      target: { kind: 'slug', value: fragment },
     });
+    return;
   }
+
+  ctx.styles.push({
+    updateTextStyle: {
+      range: { startIndex: start, endIndex: end },
+      textStyle: {
+        link: { url: node.url },
+      },
+      fields: 'link',
+    },
+  });
 }
 
 function emitText(text: string, ctx: WalkContext) {
@@ -300,6 +379,17 @@ function emitText(text: string, ctx: WalkContext) {
         fields: fields.join(','),
       },
     });
+  }
+
+  // Auto-link "§N" section references in plain text (outside of explicit links).
+  if (!ctx.inLink) {
+    for (const ref of findSectionReferences(text)) {
+      ctx.headingLinks.push({
+        startIndex: start + ref.offset,
+        endIndex: start + ref.offset + ref.length,
+        target: { kind: 'section', value: ref.section },
+      });
+    }
   }
 }
 

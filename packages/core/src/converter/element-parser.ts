@@ -7,6 +7,7 @@
 
 import type { docs_v1 } from 'googleapis';
 import { namedStyleToHeadingDepth, isMonospaceFont } from './style-map.js';
+import { slugifyHeading, extractSectionNumber } from './heading-slug.js';
 
 interface ParseContext {
   /** The full document (for resolving inline objects, lists, etc.) */
@@ -21,6 +22,8 @@ interface ParseContext {
   mermaidSources: string[];
   /** Index into mermaidSources for the next image to restore. */
   mermaidSourceIdx: number;
+  /** Map from heading ID to metadata for rewriting heading links. */
+  headingIdMap: Map<string, { slug: string; sectionNumber: string | null }>;
 }
 
 /** An entry mapping a markdown character offset to a Google Doc index. */
@@ -81,6 +84,7 @@ function parseDocumentToMarkdownImpl(
     includeAttribution: options.includeAttribution ?? false,
     mermaidSources: options.mermaidSources ?? [],
     mermaidSourceIdx: 0,
+    headingIdMap: buildHeadingIdMetadata(document.body),
   };
 
   const body = document.body;
@@ -149,7 +153,7 @@ function parseParagraph(
 
   for (const el of elements) {
     if (el.textRun) {
-      text += formatTextRun(el.textRun);
+      text += formatTextRun(el.textRun, ctx);
     } else if (el.inlineObjectElement) {
       text += formatInlineObject(el.inlineObjectElement, ctx);
     }
@@ -216,7 +220,7 @@ function parseParagraph(
   return prefix + text;
 }
 
-function formatTextRun(textRun: docs_v1.Schema$TextRun): string {
+function formatTextRun(textRun: docs_v1.Schema$TextRun, ctx: ParseContext): string {
   let text = textRun.content ?? '';
   const style = textRun.textStyle;
 
@@ -246,12 +250,48 @@ function formatTextRun(textRun: docs_v1.Schema$TextRun): string {
     formatted = '**' + formatted + '**';
   }
 
-  // Links
-  if (style.link?.url) {
+  // Links — prefer intra-doc heading link if present, else URL.
+  if (style.link?.headingId) {
+    const meta = ctx.headingIdMap.get(style.link.headingId);
+    if (meta) {
+      // Preserve bare "§N" when the link text matches the target section
+      // number — round-trips the auto-link without adding markdown syntax.
+      const bareSection = /^§(\d+(?:\.\d+)*)$/.exec(trimmed);
+      if (bareSection && meta.sectionNumber === bareSection[1]) {
+        // fall through without wrapping — keep `§N` as plain text
+      } else {
+        formatted = '[' + formatted + '](#' + meta.slug + ')';
+      }
+    }
+  } else if (style.link?.url) {
     formatted = '[' + formatted + '](' + style.link.url + ')';
   }
 
   return leadingSpace + formatted + trailingSpace;
+}
+
+function buildHeadingIdMetadata(
+  body: docs_v1.Schema$Body | undefined,
+): Map<string, { slug: string; sectionNumber: string | null }> {
+  const out = new Map<string, { slug: string; sectionNumber: string | null }>();
+  if (!body?.content) return out;
+  for (const element of body.content) {
+    const para = element.paragraph;
+    if (!para) continue;
+    if (!namedStyleToHeadingDepth(para.paragraphStyle?.namedStyleType)) continue;
+    const headingId = para.paragraphStyle?.headingId;
+    if (!headingId) continue;
+    let text = '';
+    for (const el of para.elements ?? []) {
+      if (el.textRun?.content) text += el.textRun.content;
+    }
+    text = text.replace(/\n$/, '');
+    out.set(headingId, {
+      slug: slugifyHeading(text),
+      sectionNumber: extractSectionNumber(text),
+    });
+  }
+  return out;
 }
 
 function formatInlineObject(

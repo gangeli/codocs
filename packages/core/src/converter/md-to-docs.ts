@@ -7,17 +7,36 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import type { Root } from 'mdast';
-import { walkAst, type WalkSegment, type TextSegment, type TableSegment, type ImageSegment } from './ast-walker.js';
+import { walkAst, type WalkSegment, type TextSegment, type TableSegment, type ImageSegment, type HeadingLinkRef, type HeadingInfo } from './ast-walker.js';
 import { styleTable } from './table-style.js';
 import { renderMermaidToPng } from './mermaid-renderer.js';
 import { hashMermaidSource } from './mermaid-renderer.js';
 import type { DriveApi } from '../client/drive-api.js';
+
+/** A heading inserted at a known absolute doc index, for post-insert lookup. */
+export interface AbsoluteHeadingInfo {
+  startIndex: number;
+  endIndex: number;
+  slug: string;
+  sectionNumber: string | null;
+}
+
+/** A heading-targeted link with absolute doc indices, awaiting headingId resolution. */
+export interface AbsoluteHeadingLinkRef {
+  startIndex: number;
+  endIndex: number;
+  target: HeadingLinkRef['target'];
+}
 
 export interface MdToDocsResult {
   /** The plain text that will be inserted (for text segments only). */
   text: string;
   /** All batchUpdate requests, in the order they should be sent. */
   requests: docs_v1.Schema$Request[];
+  /** Headings inserted by this batch, at absolute doc indices. */
+  headings: AbsoluteHeadingInfo[];
+  /** Heading-target links that need a second-pass updateTextStyle with link.headingId. */
+  headingLinks: AbsoluteHeadingLinkRef[];
 }
 
 export interface MdToDocsAsyncResult extends MdToDocsResult {
@@ -70,10 +89,12 @@ export function markdownToDocsRequests(
   let docIndex = insertionIndex;
   const allStyles: docs_v1.Schema$Request[] = [];
   const allBullets: docs_v1.Schema$Request[] = [];
+  const headings: AbsoluteHeadingInfo[] = [];
+  const headingLinks: AbsoluteHeadingLinkRef[] = [];
 
   for (const segment of segments) {
     if (segment.type === 'text') {
-      docIndex = processTextSegment(segment, docIndex, requests, allStyles, allBullets);
+      docIndex = processTextSegment(segment, docIndex, requests, allStyles, allBullets, headings, headingLinks);
       fullText += segment.text;
     } else if (segment.type === 'table') {
       docIndex = processTableSegment(segment, docIndex, requests, allStyles);
@@ -101,7 +122,7 @@ export function markdownToDocsRequests(
   // 4. Apply bullet formatting
   requests.push(...allBullets);
 
-  return { text: fullText, requests };
+  return { text: fullText, requests, headings, headingLinks };
 }
 
 // ── Async variant (with image support) ────────────────────────
@@ -139,6 +160,8 @@ export async function markdownToDocsRequestsAsync(
   let docIndex = insertionIndex;
   const allStyles: docs_v1.Schema$Request[] = [];
   const allBullets: docs_v1.Schema$Request[] = [];
+  const headings: AbsoluteHeadingInfo[] = [];
+  const headingLinks: AbsoluteHeadingLinkRef[] = [];
 
   // Collect image segments to render and upload in parallel
   const imageSegments: Array<{ segment: ImageSegment; order: number }> = [];
@@ -179,7 +202,7 @@ export async function markdownToDocsRequestsAsync(
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
     if (segment.type === 'text') {
-      docIndex = processTextSegment(segment, docIndex, requests, allStyles, allBullets);
+      docIndex = processTextSegment(segment, docIndex, requests, allStyles, allBullets, headings, headingLinks);
       fullText += segment.text;
     } else if (segment.type === 'table') {
       docIndex = processTableSegment(segment, docIndex, requests, allStyles);
@@ -225,7 +248,15 @@ export async function markdownToDocsRequestsAsync(
   requests.push(...textStyles.sort(byStartDesc));
   requests.push(...allBullets);
 
-  return { text: fullText, requests, tempDriveFileIds, mermaidHashes, imageCount: imageResults.size };
+  return {
+    text: fullText,
+    requests,
+    headings,
+    headingLinks,
+    tempDriveFileIds,
+    mermaidHashes,
+    imageCount: imageResults.size,
+  };
 }
 
 // ── Text segment processing ────────────────────────────────────
@@ -236,6 +267,8 @@ function processTextSegment(
   requests: docs_v1.Schema$Request[],
   allStyles: docs_v1.Schema$Request[],
   allBullets: docs_v1.Schema$Request[],
+  headings: AbsoluteHeadingInfo[],
+  headingLinks: AbsoluteHeadingLinkRef[],
 ): number {
   if (segment.text.length === 0) return docIndex;
 
@@ -255,6 +288,23 @@ function processTextSegment(
   for (const bullet of segment.bullets) {
     adjustRequestIndex(bullet, docIndex);
     allBullets.push(bullet);
+  }
+
+  for (const h of segment.headings) {
+    headings.push({
+      startIndex: h.startIndex + docIndex,
+      endIndex: h.endIndex + docIndex,
+      slug: h.slug,
+      sectionNumber: h.sectionNumber,
+    });
+  }
+
+  for (const link of segment.headingLinks) {
+    headingLinks.push({
+      startIndex: link.startIndex + docIndex,
+      endIndex: link.endIndex + docIndex,
+      target: link.target,
+    });
   }
 
   return docIndex + segment.text.length;

@@ -198,6 +198,7 @@ export class ChatOrchestrator {
 
         if (diffResult.hasChanges) {
           await this.client.batchUpdate(documentId, diffResult.requests);
+          await this.client.resolveHeadingLinks(documentId, diffResult.headingLinks);
           editSummary = `${diffResult.requests.length} edit${diffResult.requests.length !== 1 ? 's' : ''}`;
           this.debug(`[chat] Applied ${diffResult.requests.length} doc edits`);
         }

@@ -67,4 +67,65 @@ describe('docsToMarkdown', () => {
     const md = docsToMarkdown(doc, { agentFilter: 'unknown-agent' });
     expect(md.trim()).toBe('');
   });
+
+  describe('heading links', () => {
+    function buildDoc() {
+      return {
+        documentId: 'heading-links',
+        title: 'Heading Links',
+        body: {
+          content: [
+            {
+              paragraph: {
+                paragraphStyle: { namedStyleType: 'HEADING_1', headingId: 'h.top' },
+                elements: [{ textRun: { content: 'Overview\n' } }],
+              },
+            },
+            {
+              paragraph: {
+                paragraphStyle: { namedStyleType: 'HEADING_2', headingId: 'h.features' },
+                elements: [{ textRun: { content: '3. Features\n' } }],
+              },
+            },
+            {
+              paragraph: {
+                paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+                elements: [
+                  { textRun: { content: 'See ' } },
+                  {
+                    textRun: {
+                      content: 'the features',
+                      textStyle: { link: { headingId: 'h.features' } },
+                    },
+                  },
+                  { textRun: { content: ' and ' } },
+                  {
+                    textRun: {
+                      content: '§3',
+                      textStyle: { link: { headingId: 'h.features' } },
+                    },
+                  },
+                  { textRun: { content: '.\n' } },
+                ],
+              },
+            },
+          ],
+        },
+        namedRanges: {},
+        lists: {},
+        inlineObjects: {},
+      };
+    }
+
+    it('rewrites heading link to markdown anchor', () => {
+      const md = docsToMarkdown(buildDoc());
+      expect(md).toContain('[the features](#3-features)');
+    });
+
+    it('keeps bare §N as plain text when target section matches', () => {
+      const md = docsToMarkdown(buildDoc());
+      expect(md).toContain('and §3.');
+      expect(md).not.toContain('[§3]');
+    });
+  });
 });

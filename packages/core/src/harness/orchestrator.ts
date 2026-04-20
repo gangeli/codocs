@@ -551,6 +551,7 @@ export class AgentOrchestrator {
           `Applying ${diffResult.requests.length} doc operations (${diffResult.conflictsResolved} conflicts resolved)`,
         );
         await this.client.batchUpdate(documentId, diffResult.requests);
+        await this.client.resolveHeadingLinks(documentId, diffResult.headingLinks);
       } else {
         this.debug('No changes to apply');
       }

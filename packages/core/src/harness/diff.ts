@@ -9,7 +9,7 @@
 import { merge as diff3Merge, diffPatch } from 'node-diff3';
 import type { docs_v1 } from 'googleapis';
 import type { IndexMapEntry } from '../converter/element-parser.js';
-import { markdownToDocsRequests } from '../converter/md-to-docs.js';
+import { markdownToDocsRequests, type AbsoluteHeadingLinkRef } from '../converter/md-to-docs.js';
 import { createAttributionRequests } from '../attribution/named-ranges.js';
 
 /** A section of a markdown document, delimited by headings. */
@@ -42,6 +42,8 @@ export interface DiffResult {
   requests: docs_v1.Schema$Request[];
   /** Number of conflicts that were resolved (via callback). */
   conflictsResolved: number;
+  /** Heading-target links that need a second-pass updateTextStyle after the batch is applied. */
+  headingLinks: AbsoluteHeadingLinkRef[];
 }
 
 // Heading regex: line starting with 1-6 `#` followed by a space
@@ -301,11 +303,12 @@ export async function computeDocDiff(
 
   // If nothing changed, return early
   if (mergeResult.mergedMarkdown.trim() === theirs.trim()) {
-    return { hasChanges: false, requests: [], conflictsResolved };
+    return { hasChanges: false, requests: [], conflictsResolved, headingLinks: [] };
   }
 
   const bodyEndIndex = getBodyEndIndex(document);
   const requests: docs_v1.Schema$Request[] = [];
+  const headingLinks: AbsoluteHeadingLinkRef[] = [];
 
   // Find sections that differ between theirs and merged
   const changedSections: Array<{
@@ -359,13 +362,14 @@ export async function computeDocDiff(
       // New section — just insert at end
       if (change.mergedSection) {
         const insertAt = bodyEndIndex - 1;
-        const { text, requests: insertRequests } = markdownToDocsRequests(
+        const { text, requests: insertRequests, headingLinks: insertLinks } = markdownToDocsRequests(
           change.mergedSection.content,
           insertAt,
           false,
           bodyEndIndex,
         );
         requests.push(...insertRequests);
+        headingLinks.push(...insertLinks);
         if (text.length > 0) {
           requests.push(...createAttributionRequests(agentName, insertAt, insertAt + text.length));
         }
@@ -459,13 +463,14 @@ export async function computeDocDiff(
           actualInsertAt = insertAt + 1;
         }
 
-        const { text, requests: insertRequests } = markdownToDocsRequests(
+        const { text, requests: insertRequests, headingLinks: insertLinks } = markdownToDocsRequests(
           newContent,
           actualInsertAt,
           false,
           bodyEndIndex,
         );
         requests.push(...insertRequests);
+        headingLinks.push(...insertLinks);
 
         if (text.length > 0) {
           requests.push(...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length));
@@ -474,7 +479,7 @@ export async function computeDocDiff(
     }
   }
 
-  return { hasChanges: requests.length > 0, requests, conflictsResolved };
+  return { hasChanges: requests.length > 0, requests, conflictsResolved, headingLinks };
 }
 
 /**

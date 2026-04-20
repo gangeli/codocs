@@ -342,4 +342,58 @@ describe('markdownToDocsRequests', () => {
     expect(textInserts.length).toBeGreaterThanOrEqual(2); // "Before\n" + cell inserts + "After"
     expect(tableInserts).toHaveLength(1);
   });
+
+  describe('heading links', () => {
+    it('collects slug, section number, and range for each heading', () => {
+      const md = '# Overview\n\n## 3. Features & user journeys\n\nBody.';
+      const { headings } = markdownToDocsRequests(md);
+      expect(headings).toHaveLength(2);
+      expect(headings[0].slug).toBe('overview');
+      expect(headings[0].sectionNumber).toBeNull();
+      expect(headings[1].slug).toBe('3-features--user-journeys');
+      expect(headings[1].sectionNumber).toBe('3');
+    });
+
+    it('defers a markdown fragment link as a heading-slug target', () => {
+      const md = '# Features\n\nSee [the features](#features) for detail.';
+      const { requests, headingLinks } = markdownToDocsRequests(md);
+      expect(headingLinks).toHaveLength(1);
+      expect(headingLinks[0].target).toEqual({ kind: 'slug', value: 'features' });
+      // No URL-based link style should be emitted for the fragment.
+      const urlLink = requests.find((r) => r.updateTextStyle?.textStyle?.link?.url);
+      expect(urlLink).toBeUndefined();
+    });
+
+    it('preserves external URL links as style requests', () => {
+      const md = '[docs](https://example.com)';
+      const { requests, headingLinks } = markdownToDocsRequests(md);
+      expect(headingLinks).toHaveLength(0);
+      const urlLink = requests.find(
+        (r) => r.updateTextStyle?.textStyle?.link?.url === 'https://example.com',
+      );
+      expect(urlLink).toBeDefined();
+    });
+
+    it('auto-detects §N section references in plain text', () => {
+      const md = 'See §3 and §4.2 for details.';
+      const { headingLinks } = markdownToDocsRequests(md);
+      expect(headingLinks).toHaveLength(2);
+      expect(headingLinks[0].target).toEqual({ kind: 'section', value: '3' });
+      expect(headingLinks[1].target).toEqual({ kind: 'section', value: '4.2' });
+    });
+
+    it('does not auto-link §N inside an existing link', () => {
+      const md = 'See [§3 overview](https://example.com).';
+      const { headingLinks } = markdownToDocsRequests(md);
+      expect(headingLinks).toHaveLength(0);
+    });
+
+    it('adjusts heading-link offsets to absolute doc indices', () => {
+      const { headingLinks } = markdownToDocsRequests('See §5 now.', 50);
+      expect(headingLinks).toHaveLength(1);
+      // "§5" starts at "See " (4 chars) into the text, at insertion offset 50
+      expect(headingLinks[0].startIndex).toBe(54);
+      expect(headingLinks[0].endIndex).toBe(56);
+    });
+  });
 });

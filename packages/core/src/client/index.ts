@@ -15,8 +15,9 @@ import { AGENT_RANGE_PREFIX } from '../types.js';
 import { createAuth } from '../auth/index.js';
 import { DocsApi } from './docs-api.js';
 import { DriveApi } from './drive-api.js';
-import { markdownToDocsRequests, markdownToDocsRequestsAsync } from '../converter/md-to-docs.js';
+import { markdownToDocsRequests, markdownToDocsRequestsAsync, type AbsoluteHeadingLinkRef } from '../converter/md-to-docs.js';
 import { docsToMarkdown } from '../converter/docs-to-md.js';
+import { buildHeadingIdMap, resolveHeadingLinkRequests } from '../converter/heading-links.js';
 import {
   createAttributionRequests,
   extractAttributions,
@@ -152,11 +153,12 @@ export class CodocsClient {
           try { await this.driveApi.deleteFile(fileId); } catch { /* best-effort */ }
         }
       }
+      await this.resolveHeadingLinksForTab(docId, tabId, result.headingLinks);
       return;
     }
 
     const { markdownToDocsRequests } = await import('../converter/md-to-docs.js');
-    const { text, requests } = markdownToDocsRequests(
+    const { text, requests, headingLinks } = markdownToDocsRequests(
       markdown,
       insertionIndex,
       clearFirst,
@@ -175,6 +177,7 @@ export class CodocsClient {
     }
 
     await this.docsApi.batchUpdateTab(docId, tabId, requests);
+    await this.resolveHeadingLinksForTab(docId, tabId, headingLinks);
   }
 
   /**
@@ -262,6 +265,8 @@ export class CodocsClient {
         }
       }
 
+      await this.resolveHeadingLinks(docId, result.headingLinks);
+
       // Store mermaid mappings in DB for round-trip restoration.
       // The Docs API has no way to set image description/title, so we
       // rely on positional matching: mermaid sources stored in the DB
@@ -283,7 +288,7 @@ export class CodocsClient {
     }
 
     // Sync path (no mermaid blocks)
-    const { text, requests } = markdownToDocsRequests(
+    const { text, requests, headingLinks } = markdownToDocsRequests(
       markdown,
       insertionIndex,
       clearFirst,
@@ -303,6 +308,40 @@ export class CodocsClient {
     }
 
     await this.docsApi.batchUpdate(docId, requests);
+    await this.resolveHeadingLinks(docId, headingLinks);
+  }
+
+  /**
+   * After markdown has been inserted, apply `link.headingId` to the ranges
+   * of any `#slug` or `§N` heading references that were recorded during
+   * conversion. No-op if no pending heading links.
+   */
+  async resolveHeadingLinks(
+    docId: string,
+    links: AbsoluteHeadingLinkRef[],
+  ): Promise<void> {
+    if (links.length === 0) return;
+    const doc = await this.docsApi.getDocument(docId);
+    const idMap = buildHeadingIdMap(doc.body);
+    const requests = resolveHeadingLinkRequests(links, idMap);
+    if (requests.length === 0) return;
+    await this.docsApi.batchUpdate(docId, requests);
+  }
+
+  /** Tab-scoped variant of {@link resolveHeadingLinks}. */
+  private async resolveHeadingLinksForTab(
+    docId: string,
+    tabId: string,
+    links: AbsoluteHeadingLinkRef[],
+  ): Promise<void> {
+    if (links.length === 0) return;
+    const doc = await this.docsApi.getDocumentWithTabs(docId);
+    const { getTabBody } = await import('../converter/docs-to-md.js');
+    const body = getTabBody(doc, tabId);
+    const idMap = buildHeadingIdMap(body);
+    const requests = resolveHeadingLinkRequests(links, idMap);
+    if (requests.length === 0) return;
+    await this.docsApi.batchUpdateTab(docId, tabId, requests);
   }
 
   /**
