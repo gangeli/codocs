@@ -6,7 +6,6 @@
 
 import { existsSync } from 'node:fs';
 import { listSubscriptions } from '@codocs/core';
-import { loadServiceAccountKey } from '../auth/service-account.js';
 import type { Check, Issue, RepairContext } from './types.js';
 import {
   deleteSessionFix,
@@ -295,24 +294,6 @@ export const expiredSubscriptions: Check = {
       }
     }
     return issues;
-  },
-};
-
-// ── Service account (info only) ────────────────────────────────
-
-export const serviceAccountKeyPresent: Check = {
-  id: 'service-account-missing',
-  description: 'Service account key is provisioned',
-  scope: 'health',
-  async run(): Promise<Issue[]> {
-    if (loadServiceAccountKey()) return [];
-    return [{
-      code: 'service-account-missing',
-      severity: 'info',
-      title: 'Service account key not provisioned',
-      detail: "Without a service account, bot replies come from your own account. Run `make infra` to provision one if you'd rather replies appear as 'Codocs'.",
-      fixes: [],
-    }];
   },
 };
 

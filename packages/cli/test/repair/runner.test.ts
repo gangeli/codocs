@@ -43,12 +43,11 @@ describe('repair/runner', () => {
     expect(issues.filter((i) => i.severity === 'error')).toEqual([]);
   });
 
-  it('runHealthChecks includes info-level service-account warning', async () => {
+  it('runHealthChecks runs without throwing on a clean system', async () => {
     const ctx = makeCtx(db);
     const issues = await runHealthChecks(ctx);
-    // service-account-missing is info-severity when no key is provisioned
-    const info = issues.filter((i) => i.severity === 'info');
-    expect(info.length).toBeGreaterThanOrEqual(0);
+    // No error-severity issues on a clean in-memory DB.
+    expect(issues.filter((i) => i.severity === 'error')).toEqual([]);
   });
 
   it('applyFix wraps thrown errors', async () => {

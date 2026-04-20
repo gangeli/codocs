@@ -21,7 +21,7 @@ export interface ClassifyOptions {
    * Reply IDs codocs has posted itself. If the last reply on the thread
    * matches, it is classified as a bot reply regardless of author. Required
    * to break reply loops when codocs posts replies as the user's own OAuth
-   * identity (no service account configured).
+   * identity — which is the default flow unless --service-account is set.
    */
   ownReplyIds?: { has(id: string): boolean };
 }

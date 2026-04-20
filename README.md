@@ -53,7 +53,7 @@ Start the agent harness — listens for comments and dispatches agents.
 | `--agent-type <type>` | Agent runner (default: `claude`) |
 | `--db-path <path>` | SQLite database location |
 | `--fallback-agent <name>` | Default agent for unattributed text |
-| `--no-bot-replies` | Reply as yourself instead of bot identity |
+| `--service-account [path]` | Post replies from a service-account identity instead of your own. Optional path; defaults to `~/.local/share/codocs/service-account.json` (provisioned by `make infra`). Without this flag, replies come from your OAuth identity with a `🤖` prefix. |
 
 ### `codocs auth`
 

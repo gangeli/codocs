@@ -498,7 +498,7 @@ export function registerServeCommand(program: Command) {
     .option('--agent-type <type>', 'Agent runner type (e.g., claude)', 'claude')
     .option('--db-path <path>', 'SQLite database path')
     .option('--fallback-agent <name>', 'Default agent for unattributed text (auto-generated if omitted)')
-    .option('--no-bot-replies', 'Disable bot identity for comment replies (reply as yourself instead)')
+    .option('--service-account [path]', 'Post replies from a service account instead of your own identity. Optional path; defaults to ~/.local/share/codocs/service-account.json')
     .option('--resume [id]', 'Resume a previous session (optionally by ID)')
     .option('--silence-hook <command>', 'Shell command to run when all agents are idle')
     .option('--meta', 'Auto-rebuild and restart when idle (for self-development)')
@@ -509,7 +509,7 @@ export function registerServeCommand(program: Command) {
         agentType?: string;
         dbPath?: string;
         fallbackAgent?: string;
-        botReplies?: boolean;
+        serviceAccount?: string | boolean;
         resume?: string | boolean;
         silenceHook?: string;
         meta?: boolean;
@@ -897,39 +897,55 @@ export function registerServeCommand(program: Command) {
           }
         } catch { /* keep truncated ID fallback */ }
 
-        // Use a service account for comment replies so they appear from
-        // the Codocs bot identity rather than the user's account.
-        // Key provisioned by `make infra` (Terraform) at ~/.local/share/codocs/service-account.json
-        // Disable with --no-bot-replies to reply as yourself.
+        // Reply identity:
+        //   • Default — replies come from the user's own OAuth identity with
+        //     a bot-indicator prefix prepended to the content, so the user
+        //     can tell codocs's replies from their own.
+        //   • Opt-in via --service-account [path] — replies come from a
+        //     service-account identity (e.g. one provisioned by `make infra`).
+        //     The doc is auto-shared with the SA at startup and unshared on
+        //     shutdown so the SA does not accumulate permissions.
         //
         // The replyTracker is always on: it records the IDs of replies codocs
         // posts and lets the listener skip the resulting self-triggered
-        // events. Critical when no service account is configured (replies
-        // look identical to the user's own human replies).
+        // events. Critical when replying as the user's own OAuth identity
+        // (replies look identical to the user's own human replies).
         const replyTracker = new ReplyTracker();
         let replyClient: CodocsClient | undefined;
         let botEmail: string | null = null;
-        if (opts.botReplies !== false) {
-          const { loadServiceAccountKey, getBotEmail } = await import('../auth/service-account.js');
-          const saKey = loadServiceAccountKey();
+        let botReplyPrefix = '\u{1F916} '; // default: 🤖 prefix on user-identity replies
+        if (opts.serviceAccount) {
+          const { loadServiceAccountKey, getBotEmail, defaultServiceAccountKeyPath } =
+            await import('../auth/service-account.js');
+          const keyPath = typeof opts.serviceAccount === 'string'
+            ? opts.serviceAccount
+            : defaultServiceAccountKeyPath();
+          const saKey = loadServiceAccountKey(keyPath);
           if (saKey) {
-            botEmail = getBotEmail();
-            debug(`Using Codocs bot for replies (${botEmail!})`);
+            botEmail = getBotEmail(saKey);
+            debug(`Using service-account identity for replies (${botEmail ?? keyPath})`);
             replyClient = new CodocsClient({ serviceAccountKey: saKey });
+            botReplyPrefix = ''; // SA identity is its own indicator
 
             // Auto-share each doc with the bot so it has commenter access.
             // Uses the user's OAuth2 client (which owns/has access to the doc).
-            for (const docId of normalizedDocIds) {
-              try {
-                await client.ensureShared(docId, botEmail!, 'commenter');
-                debug(`Shared ${docId} with ${botEmail}`);
-              } catch (err: any) {
-                debug(`Failed to share ${docId} with bot: ${err.message}`);
+            if (botEmail) {
+              for (const docId of normalizedDocIds) {
+                try {
+                  await client.ensureShared(docId, botEmail, 'commenter');
+                  debug(`Shared ${docId} with ${botEmail}`);
+                } catch (err: any) {
+                  debug(`Failed to share ${docId} with bot: ${err.message}`);
+                }
               }
+              emit({ time: new Date(), type: 'system', content: `Bot replies as ${botEmail}` });
             }
-            emit({ time: new Date(), type: 'system', content: `Bot replies as ${botEmail}` });
           } else {
-            debug('No service account key found (run `make infra` to provision). Replies will come from your account.');
+            console.error(
+              `--service-account: no readable key at ${keyPath}. ` +
+              `Run \`make infra\` to provision one, or pass an explicit path.`,
+            );
+            process.exit(1);
           }
         }
 
@@ -937,6 +953,7 @@ export function registerServeCommand(program: Command) {
           client,
           replyClient,
           replyTracker,
+          botReplyPrefix,
           sessionStore,
           queueStore,
           agentRunner,

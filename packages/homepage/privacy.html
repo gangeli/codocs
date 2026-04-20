@@ -132,7 +132,7 @@
       <li>GitHub tokens, if configured, are saved to <code>~/.local/share/codocs/github-auth.json</code> with the same restricted permissions</li>
       <li>Session metadata (agent names, document IDs, processing queues) is stored in a local SQLite database at <code>~/.local/share/codocs/sessions.db</code>. This data never leaves your machine.</li>
       <li>Configuration is stored at <code>~/.config/codocs/config.json</code></li>
-      <li>If you configure a service account for bot replies, the service account key file is stored at <code>~/.local/share/codocs/service-account.json</code></li>
+      <li>By default, Codocs posts comment replies from your own Google identity with a bot-indicator prefix (so you can tell its replies apart from yours). If you opt in to a separate service-account identity via <code>--service-account &lt;path&gt;</code>, the key file stays at the path you point to (typically <code>~/.local/share/codocs/service-account.json</code>)</li>
     </ul>
     <p>
       Codocs never stores your Google or GitHub password. Authentication is handled

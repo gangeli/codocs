@@ -72,6 +72,15 @@ export interface OrchestratorConfig {
    * where author-based filtering can't distinguish codocs from the user.
    */
   replyTracker?: ReplyTracker;
+  /**
+   * Prefix prepended to each content reply so the user can tell codocs's
+   * replies apart from their own. Applied only to the final content reply,
+   * not to transient indicators like the thinking emoji. Typically set to
+   * "🤖 " when replying via the user's OAuth identity, and empty when
+   * replyClient is a separate service account (whose name is already a
+   * sufficient indicator).
+   */
+  botReplyPrefix?: string;
   /** Called when an agent is assigned to handle a comment, before processing starts. */
   onAgentAssigned?: (agentName: string, task: string) => void;
   /** Called when a comment has been fully processed (agent ran, reply posted). */
@@ -108,6 +117,7 @@ export class AgentOrchestrator {
   private client: CodocsClient;
   private replyClient: CodocsClient;
   private replyTracker?: ReplyTracker;
+  private botReplyPrefix: string;
   private sessionStore: SessionStore;
   private queueStore: QueueStore;
   private agentRunner: AgentRunner;
@@ -159,6 +169,7 @@ export class AgentOrchestrator {
     this.client = config.client;
     this.replyClient = config.replyClient ?? config.client;
     this.replyTracker = config.replyTracker;
+    this.botReplyPrefix = config.botReplyPrefix ?? '';
     this.sessionStore = config.sessionStore;
     this.queueStore = config.queueStore;
     this.agentRunner = config.agentRunner;
@@ -230,6 +241,16 @@ export class AgentOrchestrator {
     const id = await this.replyClient.replyToComment(documentId, commentId, content);
     this.replyTracker?.add(id);
     return id;
+  }
+
+  /**
+   * Post a final content reply, prepending the bot-reply prefix so the user
+   * can tell codocs's replies apart from their own when replying via the
+   * user's own OAuth identity. For transient indicators like the thinking
+   * emoji, call {@link postReply} directly instead.
+   */
+  private async postContentReply(documentId: string, commentId: string, content: string): Promise<string> {
+    return this.postReply(documentId, commentId, this.botReplyPrefix + content);
   }
 
   /** Return currently active agent processes. */
@@ -765,7 +786,7 @@ export class AgentOrchestrator {
       }
       if (replyContent) {
         try {
-          await this.postReply(documentId, commentId, replyContent);
+          await this.postContentReply(documentId, commentId, replyContent);
           this.debug(`Posted final reply`);
         } catch (replyErr: any) {
           this.debug(`Failed to post final reply: ${replyErr.message ?? replyErr}`);
@@ -773,7 +794,7 @@ export class AgentOrchestrator {
       }
     } else if (commentId && replyContent) {
       try {
-        await this.postReply(documentId, commentId, replyContent);
+        await this.postContentReply(documentId, commentId, replyContent);
         this.debug(`Reply created (no thinking reply to update)`);
       } catch (err: any) {
         this.debug(`Reply failed: ${err.message ?? err}`);
@@ -1052,7 +1073,7 @@ export class AgentOrchestrator {
     const replyContent = `Continuing in the "Chat: ${title}" tab \u2192`;
     if (comment.id) {
       try {
-        await this.postReply(documentId, comment.id, replyContent);
+        await this.postContentReply(documentId, comment.id, replyContent);
       } catch (err) {
         this.debug(`[forkToChat] Failed to post redirect reply: ${err}`);
       }

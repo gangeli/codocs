@@ -18,7 +18,6 @@ import {
   oldCompletedQueueItems,
   staleCodeTasks,
   expiredSubscriptions,
-  serviceAccountKeyPresent,
 } from './checks.js';
 
 export const ALL_CHECKS: Check[] = [
@@ -32,7 +31,6 @@ export const ALL_CHECKS: Check[] = [
   oldCompletedQueueItems,
   staleCodeTasks,
   expiredSubscriptions,
-  serviceAccountKeyPresent,
 ];
 
 export async function runStartupChecks(ctx: RepairContext): Promise<Issue[]> {
