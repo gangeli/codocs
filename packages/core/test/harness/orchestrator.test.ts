@@ -87,6 +87,7 @@ function createMockRunner(callLog: CallLog[], stdout = 'Agent response text'): A
     killAll: () => [],
     getCapabilities: () => ({
       supportsSessionResume: false,
+      supportsSessionFork: false,
       models: [],
       harnessSettings: [],
       supportsPermissionMode: false,
@@ -208,7 +209,7 @@ describe('AgentOrchestrator E2E', () => {
       run: vi.fn(async () => { throw new Error('agent crashed'); }),
       getActiveProcesses: () => [],
       killAll: () => [],
-      getCapabilities: () => ({ supportsSessionResume: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
+      getCapabilities: () => ({ supportsSessionResume: false, supportsSessionFork: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
     };
 
     const orchestrator = new AgentOrchestrator({
@@ -327,7 +328,7 @@ describe('AgentOrchestrator E2E', () => {
       }),
       getActiveProcesses: () => [],
       killAll: () => [],
-      getCapabilities: () => ({ supportsSessionResume: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
+      getCapabilities: () => ({ supportsSessionResume: false, supportsSessionFork: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
     };
 
     const orchestrator = new AgentOrchestrator({
@@ -504,6 +505,95 @@ describe('AgentOrchestrator E2E', () => {
     expect(agentCalls).toHaveLength(1);
   });
 
+  // Regression: while a previous comment is still processing, a newly queued
+  // comment should still get a thinking-emoji reply so the user sees the
+  // system has picked it up. Previously the emoji was only posted when the
+  // agent actually started the item, leaving queued items visually unackd.
+  it('posts a thinking emoji for a comment that is queued behind another', async () => {
+    const client = createMockClient(callLog);
+    let replyCounter = 0;
+    const replyClient = {
+      replyToComment: vi.fn(async (docId: string, commentId: string, content: string) => {
+        callLog.push({ method: 'reply:replyToComment', args: [docId, commentId, content] });
+        return `reply-${++replyCounter}`;
+      }),
+      deleteReply: vi.fn(async (docId: string, commentId: string, replyId: string) => {
+        callLog.push({ method: 'reply:deleteReply', args: [docId, commentId, replyId] });
+      }),
+      updateReply: vi.fn(async () => {}),
+    } as unknown as CodocsClient;
+
+    // Gate the agent run on an external promise so the first comment stays
+    // "in flight" while we fire the second.
+    let releaseFirst!: () => void;
+    const firstRunStarted = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let runCallCount = 0;
+    const runner: AgentRunner = {
+      name: 'mock',
+      run: vi.fn(async (_prompt: string, sessionId: string | null) => {
+        runCallCount++;
+        callLog.push({ method: 'agentRun', args: [sessionId ? 'resume' : 'new'] });
+        if (runCallCount === 1) {
+          // Hold the first agent until the test releases it
+          await firstRunStarted;
+        }
+        return { sessionId: sessionId ?? 'sess-1', exitCode: 0, stdout: 'ok', stderr: '' };
+      }),
+      getActiveProcesses: () => [],
+      killAll: () => [],
+      getCapabilities: () => ({ supportsSessionResume: false, supportsSessionFork: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
+    };
+
+    const orchestrator = new AgentOrchestrator({
+      client,
+      replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    // Fire the first comment — it will block inside the agent runner.
+    const first = makeCommentEvent();
+    first.comment.id = 'comment-first';
+    await orchestrator.handleComment(first);
+
+    // Fire the second comment while the first is still running.
+    const second = makeCommentEvent();
+    second.comment.id = 'comment-second';
+    await orchestrator.handleComment(second);
+
+    // Give the event loop a chance to post the second thinking emoji.
+    await drain(50);
+
+    // Both comments should have received a thinking emoji by now, even
+    // though only the first has started running.
+    const thinkingReplies = callLog.filter(
+      (c) => c.method === 'reply:replyToComment' && c.args[2] === '\u{1F914}',
+    );
+    const thinkingCommentIds = thinkingReplies.map((c) => c.args[1]);
+    expect(thinkingCommentIds).toContain('comment-first');
+    expect(thinkingCommentIds).toContain('comment-second');
+
+    // Now let the first run finish and drain the queue fully.
+    releaseFirst();
+    await orchestrator.waitForIdle();
+
+    // Each comment's thinking emoji should eventually be replaced by a
+    // final reply — no stray thinking emojis left behind.
+    const allReplyIdsPosted = callLog
+      .filter((c) => c.method === 'reply:replyToComment' && c.args[2] === '\u{1F914}')
+      .map((_c, i) => `reply-${i + 1}`);
+    const deletedReplyIds = callLog
+      .filter((c) => c.method === 'reply:deleteReply')
+      .map((c) => c.args[2]);
+    for (const id of allReplyIdsPosted) {
+      expect(deletedReplyIds).toContain(id);
+    }
+  });
+
   // Regression: without a service account, codocs replies using the user's
   // own OAuth credentials, making its replies indistinguishable from the
   // user's by author. The ReplyTracker records the IDs of codocs's replies
@@ -560,5 +650,322 @@ describe('AgentOrchestrator E2E', () => {
       ownReplyIds: replyTracker,
     });
     expect(origin.type).toBe('bot');
+  });
+});
+
+/**
+ * Gated fork-capable mock runner: every call blocks on an externally-released
+ * promise so tests can deterministically observe "N runs are in flight before
+ * any completes". The returned child session ID encodes whether the call was
+ * a fork (fork-of-<parent>-<n>), a resume (<parent>), or fresh (new-<n>).
+ */
+interface ForkRunCall {
+  sessionId: string | null;
+  forkSession: boolean;
+  child: string;
+  prompt: string;
+}
+interface ForkRunner {
+  runner: AgentRunner;
+  calls: ForkRunCall[];
+  releaseAll: () => void;
+  releaseOne: () => void;
+  inFlight: () => number;
+}
+function createForkMockRunner(opts?: { supportsSessionFork?: boolean }): ForkRunner {
+  const supportsSessionFork = opts?.supportsSessionFork ?? true;
+  const calls: ForkRunCall[] = [];
+  const gates: Array<(exitCode?: number) => void> = [];
+  let counter = 0;
+  const runner: AgentRunner = {
+    name: 'mock-fork',
+    run: vi.fn(async (prompt, sessionId, runOpts) => {
+      const idx = counter++;
+      const forking = !!(runOpts as any)?.forkSession && !!sessionId;
+      const child = forking
+        ? `fork-${sessionId}-${idx}`
+        : sessionId ?? `new-${idx}`;
+      calls.push({
+        sessionId,
+        forkSession: !!(runOpts as any)?.forkSession,
+        child,
+        prompt,
+      });
+      const exitCode = await new Promise<number>((r) => gates.push((code) => r(code ?? 0)));
+      return { sessionId: child, exitCode, stdout: 'ok', stderr: '' };
+    }),
+    getActiveProcesses: () => [],
+    killAll: () => [],
+    getCapabilities: () => ({
+      supportsSessionResume: true,
+      supportsSessionFork,
+      models: [],
+      harnessSettings: [],
+      supportsPermissionMode: false,
+    }),
+  };
+  return {
+    runner,
+    calls,
+    releaseAll: () => { while (gates.length) gates.shift()!(); },
+    releaseOne: () => { gates.shift()?.(); },
+    inFlight: () => gates.length,
+  };
+}
+
+/** Yield the event loop so scheduled promises and timers can run. */
+async function settle(ms = 50) {
+  await new Promise<void>((r) => setTimeout(r, ms));
+}
+
+describe('AgentOrchestrator fork-per-comment', () => {
+  let callLog: CallLog[];
+  let db: Database;
+  let queueStore: QueueStore;
+
+  beforeEach(async () => {
+    callLog = [];
+    db = await openDatabase(':memory:');
+    queueStore = new QueueStore(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('runs two new-thread comments for the same agent concurrently', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const fr = createForkMockRunner();
+
+    const orchestrator = new AgentOrchestrator({
+      client,
+      replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: fr.runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    const a = makeCommentEvent();
+    a.comment.id = 'thread-a';
+    const b = makeCommentEvent();
+    b.comment.id = 'thread-b';
+
+    await orchestrator.handleComment(a);
+    await orchestrator.handleComment(b);
+    await settle();
+
+    // Both agent runs should be in flight simultaneously.
+    expect(fr.inFlight()).toBe(2);
+    expect(fr.calls.length).toBe(2);
+
+    fr.releaseAll();
+    await orchestrator.waitForIdle();
+  });
+
+  it('forks from the base session for a brand-new thread, resumes for follow-ups', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const fr = createForkMockRunner();
+    const sessionStore = createMockSessionStore();
+    // Pre-seed a base session the orchestrator should fork from.
+    sessionStore.upsertSession('test-agent', 'doc-123:base', 'root');
+
+    const orchestrator = new AgentOrchestrator({
+      client,
+      replyClient,
+      sessionStore,
+      queueStore,
+      agentRunner: fr.runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    // First comment on a brand-new thread should fork from base.
+    const first = makeCommentEvent();
+    first.comment.id = 'thread-a';
+    await orchestrator.handleComment(first);
+    await settle();
+    expect(fr.calls[0]).toMatchObject({ sessionId: 'root', forkSession: true });
+    fr.releaseOne();
+    await orchestrator.waitForIdle();
+
+    // The thread now has its own session (the fork child), so the follow-up
+    // should resume the thread, not re-fork from the base.
+    const followUp = makeCommentEvent();
+    followUp.comment.id = 'thread-a';
+    await orchestrator.handleComment(followUp);
+    await settle();
+    const followUpCall = fr.calls[1];
+    expect(followUpCall.sessionId).toBe(fr.calls[0].child); // thread chain
+    expect(followUpCall.forkSession).toBe(false);
+    fr.releaseOne();
+    await orchestrator.waitForIdle();
+  });
+
+  it('advances base on successful edits; preserves it on no-op runs', async () => {
+    const sessionStore = createMockSessionStore();
+    sessionStore.upsertSession('test-agent', 'doc-123:base', 'root');
+
+    // Run 1: agent produces no changes (default runner stdout is unchanged
+    // from the starting file, so computeDocDiff reports hasChanges=false).
+    {
+      const client = createMockClient([]);
+      const replyClient = createMockReplyClient([]);
+      const fr = createForkMockRunner();
+      const orchestrator = new AgentOrchestrator({
+        client, replyClient, sessionStore, queueStore,
+        agentRunner: fr.runner, fallbackAgent: 'test-agent',
+      });
+      await orchestrator.handleComment(makeCommentEvent());
+      await settle();
+      fr.releaseAll();
+      await orchestrator.waitForIdle();
+
+      // No batchUpdate was invoked (nothing changed on disk).
+      // Base should still be the original root.
+      expect(sessionStore.getSession('test-agent', 'doc-123:base')?.sessionId).toBe('root');
+    }
+  });
+
+  it('does not overwrite base when a fork fails; retries fresh without a parent', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const sessionStore = createMockSessionStore();
+    sessionStore.upsertSession('test-agent', 'doc-123:base', 'root');
+
+    // Runner: first call fails (exit 1), second call succeeds (retry).
+    const calls: Array<{ sessionId: string | null; forkSession: boolean }> = [];
+    let runCount = 0;
+    const runner: AgentRunner = {
+      name: 'mock-fork',
+      run: vi.fn(async (_p, sessionId, runOpts) => {
+        calls.push({ sessionId, forkSession: !!(runOpts as any)?.forkSession });
+        runCount++;
+        const exit = runCount === 1 ? 1 : 0;
+        return { sessionId: sessionId ?? `new-${runCount}`, exitCode: exit, stdout: 'ok', stderr: '' };
+      }),
+      getActiveProcesses: () => [],
+      killAll: () => [],
+      getCapabilities: () => ({
+        supportsSessionResume: true, supportsSessionFork: true,
+        models: [], harnessSettings: [], supportsPermissionMode: false,
+      }),
+    };
+
+    const orchestrator = new AgentOrchestrator({
+      client, replyClient, sessionStore, queueStore,
+      agentRunner: runner, fallbackAgent: 'test-agent',
+    });
+
+    await orchestrator.handleComment(makeCommentEvent());
+    await orchestrator.waitForIdle();
+
+    // First call tried to fork from root; second (retry) ran fresh.
+    expect(calls[0]).toEqual({ sessionId: 'root', forkSession: true });
+    expect(calls[1]).toEqual({ sessionId: null, forkSession: false });
+
+    // Base was NOT overwritten by the failed fork child.
+    expect(sessionStore.getSession('test-agent', 'doc-123:base')?.sessionId).toBe('root');
+  });
+
+  it('non-fork runner (supportsSessionFork: false) still serializes per agent', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const fr = createForkMockRunner({ supportsSessionFork: false });
+
+    const orchestrator = new AgentOrchestrator({
+      client, replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: fr.runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    const a = makeCommentEvent();
+    a.comment.id = 'thread-a';
+    const b = makeCommentEvent();
+    b.comment.id = 'thread-b';
+
+    await orchestrator.handleComment(a);
+    await orchestrator.handleComment(b);
+    await settle();
+
+    // Legacy queue: only the first agent call should be in flight.
+    expect(fr.inFlight()).toBe(1);
+    expect(fr.calls.length).toBe(1);
+
+    fr.releaseOne();
+    await settle();
+    // After the first resolves, the second drains.
+    expect(fr.inFlight()).toBe(1);
+    expect(fr.calls.length).toBe(2);
+
+    fr.releaseOne();
+    await orchestrator.waitForIdle();
+  });
+
+  it('waitForIdle waits for every in-flight fork, not just the first', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const fr = createForkMockRunner();
+
+    const orchestrator = new AgentOrchestrator({
+      client, replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: fr.runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    for (let i = 0; i < 5; i++) {
+      const e = makeCommentEvent();
+      e.comment.id = `thread-${i}`;
+      await orchestrator.handleComment(e);
+    }
+    await settle();
+    expect(fr.inFlight()).toBe(5);
+
+    let done = false;
+    const idle = orchestrator.waitForIdle().then(() => { done = true; });
+
+    // Release 4 of 5 — waitForIdle must still be pending.
+    for (let i = 0; i < 4; i++) fr.releaseOne();
+    await settle();
+    expect(done).toBe(false);
+
+    // Release the last one — waitForIdle resolves.
+    fr.releaseOne();
+    await idle;
+    expect(done).toBe(true);
+  });
+
+  it('recoverQueue fork-spawns every pending item concurrently', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const fr = createForkMockRunner();
+    const sessionStore = createMockSessionStore();
+
+    // Pre-seed 3 pending rows, same agent, distinct thread IDs.
+    for (let i = 0; i < 3; i++) {
+      const e = makeCommentEvent();
+      e.comment.id = `thread-recover-${i}`;
+      queueStore.enqueue('test-agent', 'doc-123', e);
+    }
+
+    const orchestrator = new AgentOrchestrator({
+      client, replyClient, sessionStore, queueStore,
+      agentRunner: fr.runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    await orchestrator.recoverQueue();
+    await settle();
+
+    // All three recovered items should be running concurrently.
+    expect(fr.inFlight()).toBe(3);
+
+    fr.releaseAll();
+    await orchestrator.waitForIdle();
   });
 });

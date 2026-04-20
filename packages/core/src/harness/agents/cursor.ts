@@ -72,6 +72,7 @@ export class CursorRunner implements AgentRunner {
   getCapabilities(): RunnerCapabilities {
     return {
       supportsSessionResume: true,
+      supportsSessionFork: false,
       models: [
         { label: 'auto', value: '' },
         { label: 'gpt-4o', value: 'gpt-4o' },

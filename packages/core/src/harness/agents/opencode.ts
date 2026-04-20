@@ -60,6 +60,7 @@ export class OpenCodeRunner implements AgentRunner {
   getCapabilities(): RunnerCapabilities {
     return {
       supportsSessionResume: false,
+      supportsSessionFork: false,
       models: [
         { label: 'default', value: '' },
         { label: 'llama-4-scout', value: 'llama-4-scout-17b-16e-instruct' },

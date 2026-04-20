@@ -26,7 +26,10 @@ export class ClaudeRunner implements AgentRunner {
     sessionId: string | null,
     opts?: AgentRunOptions,
   ): Promise<AgentRunResult> {
-    const effectiveSessionId = sessionId ?? randomUUID();
+    // When forking, we need a fresh child session ID distinct from the parent
+    // so concurrent forks don't collide on the same JSONL file.
+    const forking = !!sessionId && !!opts?.forkSession;
+    const effectiveSessionId = forking ? randomUUID() : (sessionId ?? randomUUID());
 
     const args = ['-p', prompt, '--session-id', effectiveSessionId];
 
@@ -55,7 +58,9 @@ export class ClaudeRunner implements AgentRunner {
       args.push('--model', opts.model);
     }
 
-    if (sessionId) {
+    if (forking) {
+      args.push('--resume', sessionId!, '--fork-session');
+    } else if (sessionId) {
       args.push('--resume');
     }
 
@@ -78,6 +83,7 @@ export class ClaudeRunner implements AgentRunner {
   getCapabilities(): RunnerCapabilities {
     return {
       supportsSessionResume: true,
+      supportsSessionFork: true,
       models: [
         { label: 'default', value: '' },
         { label: 'haiku', value: 'haiku' },

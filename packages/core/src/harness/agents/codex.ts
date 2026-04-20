@@ -73,6 +73,7 @@ export class CodexRunner implements AgentRunner {
   getCapabilities(): RunnerCapabilities {
     return {
       supportsSessionResume: false,
+      supportsSessionFork: false,
       models: [
         { label: 'default', value: '' },
         { label: 'o3-mini', value: 'o3-mini' },

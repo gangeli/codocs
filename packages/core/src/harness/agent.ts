@@ -25,6 +25,14 @@ export interface AgentRunOptions {
   model?: string;
   /** Harness-specific settings (e.g., codex approval mode, opencode provider). */
   harnessSettings?: Record<string, string>;
+  /**
+   * Branch a new session from `sessionId` instead of resuming it in place.
+   * Requires a runner with `supportsSessionFork: true` and a non-null
+   * `sessionId`; ignored otherwise. The returned `sessionId` is the newly
+   * forked child — the parent is left untouched and can be forked again
+   * concurrently.
+   */
+  forkSession?: boolean;
 }
 
 export interface AgentRunResult {
@@ -67,6 +75,13 @@ export interface HarnessSetting {
 export interface RunnerCapabilities {
   /** Whether this runner supports resuming sessions. */
   supportsSessionResume: boolean;
+  /**
+   * Whether this runner can branch a new session from an existing session ID
+   * concurrently without mutating the parent. Enables fork-per-comment
+   * concurrency in the orchestrator; when false, the orchestrator falls back
+   * to per-agent serialization.
+   */
+  supportsSessionFork: boolean;
   /** Model choices for the settings panel. */
   models: HarnessSettingOption[];
   /** Harness-specific settings beyond model selection. */

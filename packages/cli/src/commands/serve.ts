@@ -864,11 +864,24 @@ export function registerServeCommand(program: Command) {
         const codeTaskStore = new CodeTaskStore(db);
 
         // Resolve fallback agent name: use explicit flag, or generate a
-        // cute two-word name per document (persisted so resumes keep the name).
+        // cute two-word name (persisted so resumes keep the name).
+        //
+        // When the doc has zero attributions, give each comment thread its
+        // own agent so unrelated threads run in parallel. Replies on the
+        // same thread share comment.id and so retain the same agent. Once
+        // the doc accumulates attribution spans we fall back to a single
+        // per-doc name for "the rest" — the assumption being that those
+        // sections share an implicit owner.
         const fallbackAgent = opts.fallbackAgent
           ? opts.fallbackAgent
-          : (documentId: string) =>
-              agentNameStore.getOrCreate(documentId, 'fallback', generateAgentName);
+          : (documentId: string, commentId?: string, hasAttributions?: boolean) => {
+              if (commentId && !hasAttributions) {
+                return agentNameStore.getOrCreate(
+                  documentId, `comment:${commentId}`, generateAgentName,
+                );
+              }
+              return agentNameStore.getOrCreate(documentId, 'fallback', generateAgentName);
+            };
 
         const client = new CodocsClient({
           oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },

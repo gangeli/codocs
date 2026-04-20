@@ -76,7 +76,7 @@ function createControllableRunner() {
     }),
     getActiveProcesses: () => [],
     killAll: () => [],
-    getCapabilities: () => ({ supportsSessionResume: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
+    getCapabilities: () => ({ supportsSessionResume: false, supportsSessionFork: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
   };
 
   return { runner, calls };
@@ -212,6 +212,32 @@ describe('AgentOrchestrator queue integration', () => {
     }));
 
     // Both should be running in parallel
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+
+    calls[0].resolve(makeResult());
+    calls[1].resolve(makeResult());
+  });
+
+  it('runs unattributed comments in parallel via per-comment fallback names', async () => {
+    const { runner, calls } = createControllableRunner();
+    const client = createMockClient();
+
+    // Fresh doc: no attributions on any comment
+    client.getAttributions.mockResolvedValue([]);
+
+    // Function fallback: each comment.id gets its own agent name
+    const orchestrator = new AgentOrchestrator({
+      client: client as any,
+      sessionStore,
+      queueStore,
+      agentRunner: runner,
+      fallbackAgent: (_doc, commentId) => `agent-${commentId}`,
+    });
+
+    orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'First', mentions: [] } }));
+    orchestrator.handleComment(makeEvent({ comment: { id: 'c2', content: 'Second', mentions: [] } }));
+
+    // Both should be running concurrently — no queue serialization
     await vi.waitFor(() => expect(calls).toHaveLength(2));
 
     calls[0].resolve(makeResult());

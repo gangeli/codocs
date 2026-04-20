@@ -32,6 +32,26 @@ export class QueueStore {
     return result[0].values[0][0] as number;
   }
 
+  /**
+   * Claim a specific pending row by id (pending -> processing). Returns the
+   * row, or null if the id doesn't exist or isn't pending. Used by the
+   * fork-per-comment path, which already knows the row it wants to claim.
+   */
+  markProcessing(id: number): QueueItem | null {
+    // sql.js is single-threaded; SELECT + UPDATE is atomic within one call.
+    const rows = this.db.exec(
+      "SELECT id FROM agent_queue WHERE id = ? AND status = 'pending'",
+      [id],
+    );
+    if (rows.length === 0 || rows[0].values.length === 0) return null;
+
+    this.db.run(
+      "UPDATE agent_queue SET status = 'processing', started_at = datetime('now') WHERE id = ?",
+      [id],
+    );
+    return this.getById(id);
+  }
+
   /** Claim the next pending item for the agent (pending -> processing). */
   dequeue(agentName: string): QueueItem | null {
     // sql.js is single-threaded, so SELECT + UPDATE is atomic.

@@ -51,8 +51,14 @@ export interface OrchestratorConfig {
    * Default agent name when no attributions overlap the comment.
    * Can be a fixed string or a function that resolves per document
    * (useful for auto-generated names stored in a DB).
+   *
+   * The resolver receives `commentId` and `hasAttributions` so callers
+   * can vary the strategy — e.g. on a doc with zero attributions, give
+   * each comment its own agent so unrelated threads run in parallel.
    */
-  fallbackAgent: string | ((documentId: string) => string);
+  fallbackAgent:
+    | string
+    | ((documentId: string, commentId?: string, hasAttributions?: boolean) => string);
   /**
    * Optional separate client for replying to comments (e.g., a service account).
    * When provided, comment replies will appear from this identity instead of
@@ -105,7 +111,9 @@ export class AgentOrchestrator {
   private sessionStore: SessionStore;
   private queueStore: QueueStore;
   private agentRunner: AgentRunner;
-  private fallbackAgent: string | ((documentId: string) => string);
+  private fallbackAgent:
+    | string
+    | ((documentId: string, commentId?: string, hasAttributions?: boolean) => string);
   private onAgentAssigned: (agentName: string, task: string) => void;
   private onCommentProcessed: (result: { agentName: string; replyPreview: string; editSummary: string }) => void;
   private onCommentFailed: (agentName: string, error: string) => void;
@@ -123,10 +131,23 @@ export class AgentOrchestrator {
   private getChatEnabled: () => boolean;
   private onIdle: (() => void) | undefined;
 
-  /** Agents currently being drained. Prevents double-drain. */
+  /**
+   * Whether to run comments as concurrent session forks (true when the
+   * configured runner supports it) vs. the legacy per-agent serial queue.
+   */
+  private forkMode: boolean;
+  /** Agents currently being drained. Prevents double-drain. Legacy path only. */
   private processingAgents = new Set<string>();
-  /** Active drain promises, keyed by agent name. */
+  /** Active drain promises, keyed by agent name. Legacy path only. */
   private drainPromises = new Map<string, Promise<void>>();
+  /**
+   * In-flight fork-per-comment promises, keyed by agent name (multi-value).
+   * A new entry is added when handleComment spawns a fork; the entry is
+   * removed in the promise's finally handler.
+   */
+  private activePromises = new Map<string, Set<Promise<void>>>();
+  /** Thinking-reply IDs posted at enqueue time, keyed by queue item id. */
+  private pendingThinkingReplies = new Map<number, string>();
   /** Whether onIdle has already fired since the last busy state. */
   private idleFired = true;
   /** Debounce timer for idle detection. */
@@ -141,6 +162,7 @@ export class AgentOrchestrator {
     this.sessionStore = config.sessionStore;
     this.queueStore = config.queueStore;
     this.agentRunner = config.agentRunner;
+    this.forkMode = config.agentRunner.getCapabilities().supportsSessionFork === true;
     this.fallbackAgent = config.fallbackAgent;
     this.onAgentAssigned = config.onAgentAssigned ?? (() => {});
     this.onCommentProcessed = config.onCommentProcessed ?? (() => {});
@@ -190,9 +212,13 @@ export class AgentOrchestrator {
   }
 
   /** Resolve the fallback agent name for a given document. */
-  private resolveFallbackAgent(documentId: string): string {
+  private resolveFallbackAgent(
+    documentId: string,
+    commentId: string | undefined,
+    hasAttributions: boolean,
+  ): string {
     return typeof this.fallbackAgent === 'function'
-      ? this.fallbackAgent(documentId)
+      ? this.fallbackAgent(documentId, commentId, hasAttributions)
       : this.fallbackAgent;
   }
 
@@ -251,21 +277,64 @@ export class AgentOrchestrator {
       }
     }
 
+    // Step 0b: Verify the user (not the bot) still has access to this doc.
+    // Prevents the bot from acting — or even posting a "thinking" reply —
+    // on docs the user has lost access to.
+    if (this.replyClient !== this.client) {
+      const userHasAccess = await this.client.canAccess(documentId);
+      if (!userHasAccess) {
+        this.debug(`[handleComment] User no longer has access to ${documentId}, skipping`);
+        return { agentName: '', replyPreview: '', editSummary: 'Skipped — user lost access' };
+      }
+    }
+
     // Step 1: Fetch document and attributions to assign the agent
     const document = await this.client.getDocument(documentId);
     const attributions = await this.client.getAttributions(documentId);
 
     // Step 2: Assign agent
     const agentName = assignAgent(quotedText, attributions, document, {
-      fallbackAgent: this.resolveFallbackAgent(documentId),
+      fallbackAgent: this.resolveFallbackAgent(
+        documentId,
+        comment.id,
+        attributions.length > 0,
+      ),
     });
     this.debug(`Assigned to agent: ${agentName}`);
 
     // Step 3: Enqueue
-    this.queueStore.enqueue(agentName, documentId, event);
+    const queueItemId = this.queueStore.enqueue(agentName, documentId, event);
     this.debug(`Enqueued comment for ${agentName} (pending: ${this.queueStore.pendingCount(agentName)})`);
 
-    // Step 4: If the agent is idle, start draining
+    // Step 3b: Post the thinking reply eagerly so the user sees the comment
+    // was picked up even if it's waiting in line behind another task.
+    if (comment.id) {
+      try {
+        const thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F914}');
+        this.pendingThinkingReplies.set(queueItemId, thinkingReplyId);
+        this.debug(`Posted thinking reply at enqueue (queue item ${queueItemId})`);
+      } catch (err) {
+        this.debug(`Failed to post thinking reply at enqueue: ${err}`);
+      }
+    }
+
+    // Step 4: Dispatch.
+    //
+    // Fork-mode (Claude): spawn the item concurrently — no per-agent
+    // serialization. Each new thread forks the agent's base session; thread
+    // follow-ups resume linearly. See processComment for session resolution.
+    //
+    // Legacy mode (cursor/codex/opencode): keep the per-agent drain loop,
+    // since those runners can't safely concurrently resume a session.
+    if (this.forkMode) {
+      this.idleFired = false;
+      const claimed = this.queueStore.markProcessing(queueItemId);
+      if (claimed) {
+        this.spawnFork(claimed, agentName);
+      }
+      return { agentName, replyPreview: '', editSummary: '' };
+    }
+
     if (!this.processingAgents.has(agentName)) {
       this.idleFired = false;
       const drainPromise = this.drainQueue(agentName).catch((err) => {
@@ -280,11 +349,59 @@ export class AgentOrchestrator {
   }
 
   /**
-   * Wait for all active drain loops to complete.
-   * Useful for tests and graceful shutdown.
+   * Spawn a fork-mode processing promise for a queue row. `item` is already
+   * in `processing` state — live dispatch calls `markProcessing` before
+   * handing off, and recovery dispatch uses `dequeue`. Tracks the promise in
+   * `activePromises` so waitForIdle and checkIdle account for it.
+   */
+  private spawnFork(item: { id: number; commentEvent: unknown }, agentName: string): void {
+    let set = this.activePromises.get(agentName);
+    if (!set) {
+      set = new Set();
+      this.activePromises.set(agentName, set);
+    }
+    const thinkingReplyId = this.pendingThinkingReplies.get(item.id) ?? null;
+    this.pendingThinkingReplies.delete(item.id);
+
+    const promise: Promise<void> = Promise.resolve()
+      .then(async () => {
+        try {
+          const result = await this.processComment(
+            item.commentEvent as CommentEvent,
+            agentName,
+            thinkingReplyId,
+          );
+          this.queueStore.markCompleted(item.id);
+          this.onCommentProcessed({ agentName, ...result });
+        } catch (err: any) {
+          this.debug(`Failed to process queue item ${item.id}: ${err.message ?? err}`);
+          this.queueStore.markFailed(item.id, String(err));
+          this.onCommentFailed(agentName, err.message ?? String(err));
+        }
+      })
+      .finally(() => {
+        const s = this.activePromises.get(agentName);
+        if (s) {
+          s.delete(promise);
+          if (s.size === 0) this.activePromises.delete(agentName);
+        }
+        this.checkIdle();
+      });
+    set.add(promise);
+  }
+
+  /**
+   * Wait for all active drain loops and fork promises to complete.
+   * Useful for tests and graceful shutdown. Loops until both tracking
+   * maps are empty, since a new fork can be scheduled during the await.
    */
   async waitForIdle(): Promise<void> {
-    await Promise.all(this.drainPromises.values());
+    while (this.drainPromises.size > 0 || this.activePromises.size > 0) {
+      const all: Promise<any>[] = [...this.drainPromises.values()];
+      for (const set of this.activePromises.values()) all.push(...set);
+      if (all.length === 0) break;
+      await Promise.allSettled(all);
+    }
   }
 
   /**
@@ -306,13 +423,22 @@ export class AgentOrchestrator {
    */
   private checkIdle(): void {
     if (this.idleFired) return;
-    if (this.processingAgents.size > 0 || this.drainPromises.size > 0) return;
+    if (
+      this.processingAgents.size > 0
+      || this.drainPromises.size > 0
+      || this.activePromises.size > 0
+    ) return;
 
     if (this.idleTimer) clearTimeout(this.idleTimer);
 
     this.idleTimer = setTimeout(() => {
       // Re-check after debounce — a new comment may have arrived
-      if (this.processingAgents.size > 0 || this.drainPromises.size > 0 || this.idleFired) return;
+      if (
+        this.processingAgents.size > 0
+        || this.drainPromises.size > 0
+        || this.activePromises.size > 0
+        || this.idleFired
+      ) return;
       if (this.queueStore.pendingAgents().length > 0) return;
       this.idleFired = true;
       this.debug('System idle — firing onIdle callback');
@@ -332,8 +458,15 @@ export class AgentOrchestrator {
         const item = this.queueStore.dequeue(agentName);
         if (!item) break;
 
+        const thinkingReplyId = this.pendingThinkingReplies.get(item.id) ?? null;
+        this.pendingThinkingReplies.delete(item.id);
+
         try {
-          const result = await this.processComment(item.commentEvent as CommentEvent, agentName);
+          const result = await this.processComment(
+            item.commentEvent as CommentEvent,
+            agentName,
+            thinkingReplyId,
+          );
           this.queueStore.markCompleted(item.id);
           this.onCommentProcessed({ agentName, ...result });
         } catch (err: any) {
@@ -359,9 +492,18 @@ export class AgentOrchestrator {
     const agents = this.queueStore.pendingAgents();
     for (const agentName of agents) {
       this.idleFired = false;
-      this.drainQueue(agentName).catch((err) => {
-        this.debug(`Recovery drain error for ${agentName}: ${err}`);
-      });
+
+      if (this.forkMode) {
+        // Fork mode: claim every pending row and fork-spawn it concurrently.
+        let item;
+        while ((item = this.queueStore.dequeue(agentName))) {
+          this.spawnFork(item, agentName);
+        }
+      } else {
+        this.drainQueue(agentName).catch((err) => {
+          this.debug(`Recovery drain error for ${agentName}: ${err}`);
+        });
+      }
     }
   }
 
@@ -373,7 +515,11 @@ export class AgentOrchestrator {
    * to classify the comment. Code modification requests are routed to
    * processCodeComment; doc/informational requests use the existing flow.
    */
-  private async processComment(event: CommentEvent, agentName: string): Promise<{ replyPreview: string; editSummary: string }> {
+  private async processComment(
+    event: CommentEvent,
+    agentName: string,
+    preExistingThinkingReplyId: string | null = null,
+  ): Promise<{ replyPreview: string; editSummary: string }> {
     const { documentId, comment } = event;
     const quotedText = comment.quotedText ?? '';
     const commentText = comment.content ?? '';
@@ -381,29 +527,21 @@ export class AgentOrchestrator {
     this.debug(`[processComment] Starting for ${agentName}: "${commentText.slice(0, 40)}"`);
     this.onAgentAssigned(agentName, commentText.slice(0, 60));
 
-    // Verify the user (not the bot) still has access to this document.
-    // Prevents the bot from acting on docs the user has lost access to.
-    if (this.replyClient !== this.client) {
-      const userHasAccess = await this.client.canAccess(documentId);
-      if (!userHasAccess) {
-        this.debug(`[processComment] User no longer has access to ${documentId}, skipping`);
-        return { replyPreview: '', editSummary: 'Skipped — user lost access' };
-      }
-    }
-
     // Check for an existing code task on this thread (follow-up detection)
     const codeMode = this.getCodeMode();
     if (codeMode !== 'off' && comment.id && this.codeTaskStore) {
       const existingTask = this.codeTaskStore.getByComment(documentId, comment.id);
       if (existingTask) {
         this.debug(`[processComment] Follow-up on existing code task (PR #${existingTask.prNumber}), routing to code mode`);
-        return this.processCodeComment(event, agentName, existingTask);
+        return this.processCodeComment(event, agentName, existingTask, undefined, preExistingThinkingReplyId);
       }
     }
 
-    // Post a thinking reply so the user knows the agent picked it up
-    let thinkingReplyId: string | null = null;
-    if (comment.id) {
+    // Use the thinking reply posted at enqueue time, or post one now as a
+    // fallback (e.g., the enqueue-time post failed, or the caller didn't
+    // pre-post one).
+    let thinkingReplyId: string | null = preExistingThinkingReplyId;
+    if (!thinkingReplyId && comment.id) {
       try {
         thinkingReplyId = await this.postReply(
           documentId,
@@ -443,13 +581,27 @@ export class AgentOrchestrator {
       });
 
       this.debug(`[processComment] Prompt built, looking up session`);
-      // Look up or create session
+      // Session resolution:
+      //   • Follow-up on an existing thread → resume the thread's session.
+      //   • Brand-new thread → fork from the agent's base session for this
+      //     document (fork-mode runners only); else start fresh.
       const sessionKey = comment.id ? `${documentId}:${comment.id}` : documentId;
-      let session = this.sessionStore.getSession(agentName, sessionKey);
-      const existingSessionId = session?.sessionId ?? null;
+      const baseKey = `${documentId}:base`;
+      const threadSession = this.sessionStore.getSession(agentName, sessionKey);
+      let parentSessionId: string | null = threadSession?.sessionId ?? null;
+      let forkSession = false;
+
+      if (!parentSessionId && this.forkMode) {
+        const base = this.sessionStore.getSession(agentName, baseKey);
+        if (base?.sessionId) {
+          parentSessionId = base.sessionId;
+          forkSession = true;
+        }
+      }
+
       this.debug(
-        existingSessionId
-          ? `Resuming session: ${existingSessionId}`
+        parentSessionId
+          ? `${forkSession ? 'Forking' : 'Resuming'} session: ${parentSessionId}`
           : 'Creating new session',
       );
 
@@ -460,21 +612,28 @@ export class AgentOrchestrator {
         permissionMode: this.getPermissionMode(),
         model: this.getModel(),
         harnessSettings: this.getHarnessSettings(),
+        forkSession,
       };
-      this.debug(`[processComment] Running agent (session: ${existingSessionId ?? 'new'})`);
-      let result = await this.agentRunner.run(prompt, existingSessionId, runOpts);
+      this.debug(`[processComment] Running agent (session: ${parentSessionId ?? 'new'}${forkSession ? ', fork' : ''})`);
+      let result = await this.agentRunner.run(prompt, parentSessionId, runOpts);
       this.debug(`[processComment] Agent finished (exit: ${result.exitCode}, stdout: ${result.stdout.length} chars)`);
 
-      // Handle session resume failure — retry with fresh session
-      if (result.exitCode !== 0 && existingSessionId) {
+      // On failure with a parent session, retry fresh.
+      //   • Resume path: the thread session is broken — delete it.
+      //   • Fork path: the parent (base or another fork source) is untouched
+      //     by design; keep it intact and just retry.
+      if (result.exitCode !== 0 && parentSessionId) {
         this.debug(
-          `Session resume failed (exit ${result.exitCode}), retrying with fresh session`,
+          `Session ${forkSession ? 'fork' : 'resume'} failed (exit ${result.exitCode}), retrying with fresh session`,
         );
-        this.sessionStore.deleteSession(agentName, sessionKey);
-        result = await this.agentRunner.run(prompt, null, runOpts);
+        if (!forkSession) {
+          this.sessionStore.deleteSession(agentName, sessionKey);
+        }
+        result = await this.agentRunner.run(prompt, null, { ...runOpts, forkSession: false });
       }
 
-      // Store session mapping
+      // Store the thread's session chain. The child session ID advances the
+      // thread forward so the next follow-up resumes from here.
       this.sessionStore.upsertSession(agentName, sessionKey, result.sessionId);
 
       // If classification was requested, check if this should be routed to code mode
@@ -551,6 +710,12 @@ export class AgentOrchestrator {
           `Applying ${diffResult.requests.length} doc operations (${diffResult.conflictsResolved} conflicts resolved)`,
         );
         await this.client.batchUpdate(documentId, diffResult.requests);
+        // Advance the agent's base session for this doc. Last-writer-wins on
+        // concurrent fork races; the divergent branches live on in their
+        // respective thread sessions.
+        if (this.forkMode) {
+          this.sessionStore.upsertSession(agentName, baseKey, result.sessionId);
+        }
       } else {
         this.debug('No changes to apply');
       }
@@ -625,15 +790,16 @@ export class AgentOrchestrator {
     agentName: string,
     existingTask?: { id: number; branchName: string; worktreePath: string; prNumber: number | null; prUrl: string | null; baseBranch: string } | null,
     codeDescription?: string,
+    preExistingThinkingReplyId: string | null = null,
   ): Promise<{ replyPreview: string; editSummary: string }> {
     const { documentId, comment } = event;
     const commentText = comment.content ?? '';
     const quotedText = comment.quotedText ?? '';
     const codeMode = this.getCodeMode();
 
-    // Post thinking reply
-    let thinkingReplyId: string | null = null;
-    if (comment.id) {
+    // Reuse the thinking reply from enqueue time if available.
+    let thinkingReplyId: string | null = preExistingThinkingReplyId;
+    if (!thinkingReplyId && comment.id) {
       try {
         thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F914}');
       } catch (err) {
@@ -716,8 +882,17 @@ export class AgentOrchestrator {
       });
 
       const sessionKey = comment.id ? `${documentId}:${comment.id}:code` : `${documentId}:code`;
-      let session = this.sessionStore.getSession(agentName, sessionKey);
-      const existingSessionId = session?.sessionId ?? null;
+      const baseKey = `${documentId}:base:code`;
+      const threadSession = this.sessionStore.getSession(agentName, sessionKey);
+      let parentSessionId: string | null = threadSession?.sessionId ?? null;
+      let forkSession = false;
+      if (!parentSessionId && this.forkMode) {
+        const base = this.sessionStore.getSession(agentName, baseKey);
+        if (base?.sessionId) {
+          parentSessionId = base.sessionId;
+          forkSession = true;
+        }
+      }
 
       const runOpts = {
         workingDirectory: worktreePath,
@@ -725,15 +900,18 @@ export class AgentOrchestrator {
         permissionMode: this.getPermissionMode(),
         model: this.getModel(),
         harnessSettings: this.getHarnessSettings(),
+        forkSession,
       };
 
       this.debug(`[processCodeComment] Running agent in ${worktreePath}`);
-      let result = await this.agentRunner.run(prompt, existingSessionId, runOpts);
+      let result = await this.agentRunner.run(prompt, parentSessionId, runOpts);
 
-      if (result.exitCode !== 0 && existingSessionId) {
-        this.debug(`Session resume failed, retrying with fresh session`);
-        this.sessionStore.deleteSession(agentName, sessionKey);
-        result = await this.agentRunner.run(prompt, null, runOpts);
+      if (result.exitCode !== 0 && parentSessionId) {
+        this.debug(`Session ${forkSession ? 'fork' : 'resume'} failed, retrying with fresh session`);
+        if (!forkSession) {
+          this.sessionStore.deleteSession(agentName, sessionKey);
+        }
+        result = await this.agentRunner.run(prompt, null, { ...runOpts, forkSession: false });
       }
 
       this.sessionStore.upsertSession(agentName, sessionKey, result.sessionId);
@@ -747,6 +925,9 @@ export class AgentOrchestrator {
 
         if (sha) {
           this.debug(`[processCodeComment] Committed: ${sha}`);
+          if (this.forkMode) {
+            this.sessionStore.upsertSession(agentName, baseKey, result.sessionId);
+          }
 
           // Push the branch
           await pushBranch(worktreePath, branchName);
@@ -808,6 +989,9 @@ export class AgentOrchestrator {
         // Direct mode: no commit/PR management
         replyContent = agentResponse || 'Done.';
         editSummary = 'Direct code changes';
+        if (this.forkMode && result.exitCode === 0) {
+          this.sessionStore.upsertSession(agentName, baseKey, result.sessionId);
+        }
       }
     } catch (err: any) {
       this.debug(`[processCodeComment] Error: ${err.message ?? err}`);

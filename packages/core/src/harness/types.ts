@@ -40,6 +40,8 @@ export interface QueueStore {
   enqueue(agentName: string, documentId: string, event: unknown): number;
   /** Claim the next pending item for the agent (pending -> processing). */
   dequeue(agentName: string): QueueItem | null;
+  /** Claim a specific pending row by id (pending -> processing). */
+  markProcessing(id: number): QueueItem | null;
   /** Peek at the next pending item without claiming it. */
   peek(agentName: string): QueueItem | null;
   /** Mark an item as completed. */
