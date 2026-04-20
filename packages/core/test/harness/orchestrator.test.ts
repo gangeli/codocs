@@ -138,14 +138,26 @@ describe('AgentOrchestrator E2E', () => {
   let callLog: CallLog[];
   let db: Database;
   let queueStore: QueueStore;
+  // Track every orchestrator so we can cancel their idle-debounce timers
+  // before db.close(). Otherwise the 3s setTimeout scheduled by
+  // checkIdle() fires across test boundaries and hits a closed sql.js db.
+  let orchestrators: AgentOrchestrator[];
+
+  function createOrchestrator(config: ConstructorParameters<typeof AgentOrchestrator>[0]): AgentOrchestrator {
+    const o = new AgentOrchestrator(config);
+    orchestrators.push(o);
+    return o;
+  }
 
   beforeEach(async () => {
     callLog = [];
+    orchestrators = [];
     db = await openDatabase(':memory:');
     queueStore = new QueueStore(db);
   });
 
   afterEach(() => {
+    for (const o of orchestrators) o.cancelIdleCheck();
     db.close();
   });
 
@@ -154,7 +166,7 @@ describe('AgentOrchestrator E2E', () => {
     const replyClient = createMockReplyClient(callLog);
     const runner = createMockRunner(callLog, 'Here is my response');
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -212,7 +224,7 @@ describe('AgentOrchestrator E2E', () => {
       getCapabilities: () => ({ supportsSessionResume: false, supportsSessionFork: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
     };
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -247,7 +259,7 @@ describe('AgentOrchestrator E2E', () => {
     } as unknown as CodocsClient;
 
     const runner = createMockRunner(callLog, 'My response');
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -270,7 +282,7 @@ describe('AgentOrchestrator E2E', () => {
     const replyClient = createMockReplyClient(callLog);
     const runner = createMockRunner(callLog);
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -296,7 +308,7 @@ describe('AgentOrchestrator E2E', () => {
     const replyClient = createMockReplyClient(callLog);
     const runner = createMockRunner(callLog, ''); // empty stdout
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -331,7 +343,7 @@ describe('AgentOrchestrator E2E', () => {
       getCapabilities: () => ({ supportsSessionResume: false, supportsSessionFork: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
     };
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -365,7 +377,7 @@ describe('AgentOrchestrator E2E', () => {
     const runner = createMockRunner(callLog, 'response');
     const sessionStore = createMockSessionStore();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore,
@@ -394,7 +406,7 @@ describe('AgentOrchestrator E2E', () => {
     const replyClient = createMockReplyClient(callLog);
     const runner = createMockRunner(callLog);
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -418,7 +430,7 @@ describe('AgentOrchestrator E2E', () => {
     const runner = createMockRunner(callLog);
 
     let currentModel: string | undefined = 'haiku';
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -440,7 +452,7 @@ describe('AgentOrchestrator E2E', () => {
     const replyClient = createMockReplyClient(callLog);
     const runner = createMockRunner(callLog);
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -461,7 +473,7 @@ describe('AgentOrchestrator E2E', () => {
     const replyClient = createMockReplyClient(callLog);
     const runner = createMockRunner(callLog);
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -486,7 +498,7 @@ describe('AgentOrchestrator E2E', () => {
     const runner = createMockRunner(callLog, 'response');
 
     // No separate replyClient — client is used for both
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       sessionStore: createMockSessionStore(),
       queueStore,
@@ -546,7 +558,7 @@ describe('AgentOrchestrator E2E', () => {
       getCapabilities: () => ({ supportsSessionResume: false, supportsSessionFork: false, models: [], harnessSettings: [], supportsPermissionMode: false }),
     };
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -616,7 +628,7 @@ describe('AgentOrchestrator E2E', () => {
     const runner = createMockRunner(callLog, 'Fixed.');
     const replyTracker = new ReplyTracker();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       replyTracker,
@@ -722,14 +734,23 @@ describe('AgentOrchestrator fork-per-comment', () => {
   let callLog: CallLog[];
   let db: Database;
   let queueStore: QueueStore;
+  let orchestrators: AgentOrchestrator[];
+
+  function createOrchestrator(config: ConstructorParameters<typeof AgentOrchestrator>[0]): AgentOrchestrator {
+    const o = new AgentOrchestrator(config);
+    orchestrators.push(o);
+    return o;
+  }
 
   beforeEach(async () => {
     callLog = [];
+    orchestrators = [];
     db = await openDatabase(':memory:');
     queueStore = new QueueStore(db);
   });
 
   afterEach(() => {
+    for (const o of orchestrators) o.cancelIdleCheck();
     db.close();
   });
 
@@ -738,7 +759,7 @@ describe('AgentOrchestrator fork-per-comment', () => {
     const replyClient = createMockReplyClient(callLog);
     const fr = createForkMockRunner();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore: createMockSessionStore(),
@@ -772,7 +793,7 @@ describe('AgentOrchestrator fork-per-comment', () => {
     // Pre-seed a base session the orchestrator should fork from.
     sessionStore.upsertSession('test-agent', 'doc-123:base', 'root');
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client,
       replyClient,
       sessionStore,
@@ -813,7 +834,7 @@ describe('AgentOrchestrator fork-per-comment', () => {
       const client = createMockClient([]);
       const replyClient = createMockReplyClient([]);
       const fr = createForkMockRunner();
-      const orchestrator = new AgentOrchestrator({
+      const orchestrator = createOrchestrator({
         client, replyClient, sessionStore, queueStore,
         agentRunner: fr.runner, fallbackAgent: 'test-agent',
       });
@@ -853,7 +874,7 @@ describe('AgentOrchestrator fork-per-comment', () => {
       }),
     };
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client, replyClient, sessionStore, queueStore,
       agentRunner: runner, fallbackAgent: 'test-agent',
     });
@@ -874,7 +895,7 @@ describe('AgentOrchestrator fork-per-comment', () => {
     const replyClient = createMockReplyClient(callLog);
     const fr = createForkMockRunner({ supportsSessionFork: false });
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client, replyClient,
       sessionStore: createMockSessionStore(),
       queueStore,
@@ -910,7 +931,7 @@ describe('AgentOrchestrator fork-per-comment', () => {
     const replyClient = createMockReplyClient(callLog);
     const fr = createForkMockRunner();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client, replyClient,
       sessionStore: createMockSessionStore(),
       queueStore,
@@ -953,7 +974,7 @@ describe('AgentOrchestrator fork-per-comment', () => {
       queueStore.enqueue('test-agent', 'doc-123', e);
     }
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client, replyClient, sessionStore, queueStore,
       agentRunner: fr.runner,
       fallbackAgent: 'test-agent',

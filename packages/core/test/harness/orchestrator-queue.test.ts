@@ -7,6 +7,28 @@ import { AgentOrchestrator } from '../../src/harness/orchestrator.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
+/**
+ * Hand-rolled replacement for vitest's `vi.waitFor`, which bun's test
+ * runner doesn't implement. Polls until `fn` stops throwing (an `expect`
+ * failure throws) or the timeout elapses.
+ */
+async function waitFor(fn: () => void | Promise<void>, opts?: { timeout?: number; interval?: number }): Promise<void> {
+  const timeout = opts?.timeout ?? 1000;
+  const interval = opts?.interval ?? 10;
+  const start = Date.now();
+  let lastErr: unknown;
+  while (Date.now() - start < timeout) {
+    try {
+      await fn();
+      return;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, interval));
+    }
+  }
+  throw lastErr ?? new Error('waitFor timed out');
+}
+
 function makeEvent(overrides?: Partial<CommentEvent>): CommentEvent {
   return {
     eventType: 'google.workspace.documents.comment.v1.created',
@@ -107,14 +129,23 @@ describe('AgentOrchestrator queue integration', () => {
   let db: Database;
   let sessionStore: SessionStore;
   let queueStore: QueueStore;
+  let orchestrators: AgentOrchestrator[];
+
+  function createOrchestrator(config: ConstructorParameters<typeof AgentOrchestrator>[0]): AgentOrchestrator {
+    const o = new AgentOrchestrator(config);
+    orchestrators.push(o);
+    return o;
+  }
 
   beforeEach(async () => {
+    orchestrators = [];
     db = await openDatabase(':memory:');
     sessionStore = new SessionStore(db);
     queueStore = new QueueStore(db);
   });
 
   afterEach(() => {
+    for (const o of orchestrators) o.cancelIdleCheck();
     db.close();
   });
 
@@ -122,7 +153,7 @@ describe('AgentOrchestrator queue integration', () => {
     const { runner, calls } = createControllableRunner();
     const client = createMockClient();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -133,7 +164,7 @@ describe('AgentOrchestrator queue integration', () => {
     const handlePromise = orchestrator.handleComment(makeEvent());
 
     // Wait for the agent to be called
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     calls[0].resolve(makeResult());
 
     const result = await handlePromise;
@@ -145,7 +176,7 @@ describe('AgentOrchestrator queue integration', () => {
     const { runner, calls } = createControllableRunner();
     const client = createMockClient();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -158,7 +189,7 @@ describe('AgentOrchestrator queue integration', () => {
     const p2 = orchestrator.handleComment(makeEvent({ comment: { id: 'c2', content: 'Second', mentions: [] } }));
 
     // Only the first should be running
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0].prompt).toContain('First');
 
     // Second should report as queued
@@ -170,12 +201,12 @@ describe('AgentOrchestrator queue integration', () => {
     await p1;
 
     // Now the second should start
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
     expect(calls[1].prompt).toContain('Second');
     calls[1].resolve(makeResult());
 
     // Queue should be drained
-    await vi.waitFor(() => expect(queueStore.pendingCount('alice')).toBe(0));
+    await waitFor(() => expect(queueStore.pendingCount('alice')).toBe(0));
     expect(queueStore.isAgentBusy('alice')).toBe(false);
   });
 
@@ -194,7 +225,7 @@ describe('AgentOrchestrator queue integration', () => {
       }];
     });
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -212,7 +243,7 @@ describe('AgentOrchestrator queue integration', () => {
     }));
 
     // Both should be running in parallel
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
 
     calls[0].resolve(makeResult());
     calls[1].resolve(makeResult());
@@ -226,7 +257,7 @@ describe('AgentOrchestrator queue integration', () => {
     client.getAttributions.mockResolvedValue([]);
 
     // Function fallback: each comment.id gets its own agent name
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -238,7 +269,7 @@ describe('AgentOrchestrator queue integration', () => {
     orchestrator.handleComment(makeEvent({ comment: { id: 'c2', content: 'Second', mentions: [] } }));
 
     // Both should be running concurrently — no queue serialization
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
 
     calls[0].resolve(makeResult());
     calls[1].resolve(makeResult());
@@ -256,7 +287,7 @@ describe('AgentOrchestrator queue integration', () => {
       return makeDoc('Hello World Updated');
     });
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -268,23 +299,23 @@ describe('AgentOrchestrator queue integration', () => {
     orchestrator.handleComment(makeEvent({ comment: { id: 'c2', content: 'Second', mentions: [] } }));
 
     // First comment starts
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     calls[0].resolve(makeResult());
 
     // Second comment starts — it should fetch the document again
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
     calls[1].resolve(makeResult());
 
     // getDocument should have been called for both comments independently
     // (at least 2 calls for first comment's processing + at least 1 for second)
-    await vi.waitFor(() => expect(client.getDocument.mock.calls.length).toBeGreaterThanOrEqual(3));
+    await waitFor(() => expect(client.getDocument.mock.calls.length).toBeGreaterThanOrEqual(3));
   });
 
   it('session carries over within a comment thread', async () => {
     const { runner, calls } = createControllableRunner();
     const client = createMockClient();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -299,7 +330,7 @@ describe('AgentOrchestrator queue integration', () => {
       comment: { id: 'thread-1', content: 'First message', mentions: [] },
     }));
 
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     // First call has no session (new thread)
     expect(calls[0].sessionId).toBeNull();
     calls[0].resolve(makeResult({ sessionId }));
@@ -313,7 +344,7 @@ describe('AgentOrchestrator queue integration', () => {
       ],
     }));
 
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
     // Second call should resume the session from the first
     expect(calls[1].sessionId).toBe(sessionId);
     calls[1].resolve(makeResult({ sessionId }));
@@ -323,7 +354,7 @@ describe('AgentOrchestrator queue integration', () => {
     const { runner, calls } = createControllableRunner();
     const client = createMockClient();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -334,16 +365,16 @@ describe('AgentOrchestrator queue integration', () => {
     orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'Will fail', mentions: [] } }));
     orchestrator.handleComment(makeEvent({ comment: { id: 'c2', content: 'Will succeed', mentions: [] } }));
 
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     // First agent call fails
     calls[0].reject(new Error('Agent crashed'));
 
     // Second should still start
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
     calls[1].resolve(makeResult());
 
     // Wait for drain to complete
-    await vi.waitFor(() => expect(queueStore.isAgentBusy('alice')).toBe(false));
+    await waitFor(() => expect(queueStore.isAgentBusy('alice')).toBe(false));
 
     // Check that the failed item is marked in the DB
     const rows = db.exec("SELECT status, error FROM agent_queue WHERE id = 1");
@@ -355,7 +386,7 @@ describe('AgentOrchestrator queue integration', () => {
     const { runner, calls } = createControllableRunner();
     const client = createMockClient();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -372,10 +403,10 @@ describe('AgentOrchestrator queue integration', () => {
     expect(result2.agentName).toBe('alice');
 
     // Clean up
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     calls[0].resolve(makeResult());
     await p1;
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
     calls[1].resolve(makeResult());
   });
 
@@ -391,7 +422,7 @@ describe('AgentOrchestrator queue integration', () => {
     expect(queueStore.isAgentBusy('alice')).toBe(true);
     expect(queueStore.pendingCount('alice')).toBe(1);
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -403,13 +434,13 @@ describe('AgentOrchestrator queue integration', () => {
     await orchestrator.recoverQueue();
 
     // Both items should now be processing sequentially
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     calls[0].resolve(makeResult());
 
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
     calls[1].resolve(makeResult());
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(queueStore.pendingCount('alice')).toBe(0);
       expect(queueStore.isAgentBusy('alice')).toBe(false);
     });
@@ -420,7 +451,7 @@ describe('AgentOrchestrator queue integration', () => {
     const client = createMockClient();
     const onIdle = vi.fn();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -432,11 +463,11 @@ describe('AgentOrchestrator queue integration', () => {
 
     orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'Do it', mentions: [] } }));
 
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     calls[0].resolve(makeResult());
 
     // Wait for drain to complete + debounce
-    await vi.waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    await waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
     orchestrator.cancelIdleCheck();
   });
 
@@ -445,7 +476,7 @@ describe('AgentOrchestrator queue integration', () => {
     const client = createMockClient();
     const onIdle = vi.fn();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -466,7 +497,7 @@ describe('AgentOrchestrator queue integration', () => {
     const client = createMockClient();
     const onIdle = vi.fn();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -477,11 +508,11 @@ describe('AgentOrchestrator queue integration', () => {
     });
 
     orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'First', mentions: [] } }));
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     calls[0].resolve(makeResult());
 
     // Wait for onIdle to fire
-    await vi.waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    await waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
 
     // Wait more — should not fire again
     await new Promise((r) => setTimeout(r, 100));
@@ -494,7 +525,7 @@ describe('AgentOrchestrator queue integration', () => {
     const client = createMockClient();
     const onIdle = vi.fn();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -506,15 +537,15 @@ describe('AgentOrchestrator queue integration', () => {
 
     // First cycle
     orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'First', mentions: [] } }));
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     calls[0].resolve(makeResult());
-    await vi.waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    await waitFor(() => expect(onIdle).toHaveBeenCalledTimes(1), { timeout: 1000 });
 
     // Second cycle
     orchestrator.handleComment(makeEvent({ comment: { id: 'c2', content: 'Second', mentions: [] } }));
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(calls).toHaveLength(2));
     calls[1].resolve(makeResult());
-    await vi.waitFor(() => expect(onIdle).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    await waitFor(() => expect(onIdle).toHaveBeenCalledTimes(2), { timeout: 1000 });
     orchestrator.cancelIdleCheck();
   });
 
@@ -523,7 +554,7 @@ describe('AgentOrchestrator queue integration', () => {
     const client = createMockClient();
     const onIdle = vi.fn();
 
-    const orchestrator = new AgentOrchestrator({
+    const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
       queueStore,
@@ -534,9 +565,9 @@ describe('AgentOrchestrator queue integration', () => {
     });
 
     orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'Work', mentions: [] } }));
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await waitFor(() => expect(calls).toHaveLength(1));
     calls[0].resolve(makeResult());
-    await vi.waitFor(() => expect(queueStore.isAgentBusy('alice')).toBe(false));
+    await waitFor(() => expect(queueStore.isAgentBusy('alice')).toBe(false));
 
     // Cancel before debounce fires
     orchestrator.cancelIdleCheck();
