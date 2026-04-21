@@ -271,7 +271,15 @@ export async function markdownToDocsRequestsAsync(
   requests.push(...paraStyles.sort(byStartDesc));
   requests.push(...otherStyles.sort(byStartDesc));
   requests.push(...textStyles.sort(byStartDesc));
-  requests.push(...allBullets);
+
+  // Bullets highest-index first — see sync path for the rationale
+  // (createParagraphBullets strips leading tabs, which shifts later indices).
+  const bulletsReversed = [...allBullets].sort(
+    (a, b) =>
+      (b.createParagraphBullets?.range?.startIndex ?? 0) -
+      (a.createParagraphBullets?.range?.startIndex ?? 0),
+  );
+  requests.push(...bulletsReversed);
 
   return {
     text: fullText,
