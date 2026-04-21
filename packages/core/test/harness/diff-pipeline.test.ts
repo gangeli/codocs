@@ -714,6 +714,96 @@ describe('applyRequests (test helper)', () => {
   });
 });
 
+describe('pipeline: agent edit → applied doc (bullet list edits)', () => {
+  it('appends a bullet next to an existing bulleted paragraph without creating a new list', async () => {
+    // Build a doc whose paragraphs are bullets — the .bullet field on
+    // each paragraph signals to the diff engine that the surrounding
+    // context is a list. Matches the shape of e2e test B9: apple /
+    // banana / cherry are all in the same list; the agent appends
+    // "- date" and expects it to join that list, not start a new one.
+    const listId = 'L1';
+    const body: docs_v1.Schema$StructuralElement[] = [];
+    let pos = 1;
+    const makeBullet = (text: string) => {
+      const content = text + '\n';
+      body.push({
+        startIndex: pos,
+        endIndex: pos + content.length,
+        paragraph: {
+          elements: [
+            { startIndex: pos, endIndex: pos + content.length, textRun: { content, textStyle: {} } },
+          ],
+          paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+          bullet: { listId, nestingLevel: 0 },
+        },
+      });
+      pos += content.length;
+    };
+    makeBullet('apple');
+    makeBullet('banana');
+    makeBullet('cherry');
+    const document: docs_v1.Schema$Document = {
+      documentId: 'fake',
+      title: 'fake',
+      body: { content: body },
+      namedRanges: {},
+      lists: {
+        [listId]: {
+          listProperties: {
+            nestingLevels: [
+              { glyphType: 'GLYPH_TYPE_UNSPECIFIED', glyphSymbol: '●' },
+            ],
+          },
+        },
+      },
+      inlineObjects: {},
+    };
+    const { markdown: base, indexMap } = docsToMarkdownWithMapping(document);
+    const ours = base.replace('- cherry', '- cherry\n- date');
+
+    const diff = await computeDocDiff(base, ours, base, document, indexMap, 'test-agent');
+
+    // The new bullet must be inserted adjacent to cherry. Critically,
+    // the diff must NOT emit a createParagraphBullets for the new item
+    // — that would start a fresh list with its own listId and render
+    // as a separate block. Instead the paragraph-split should let the
+    // new paragraph inherit cherry's listId.
+    const bulletCreates = diff.requests.filter((r) => r.createParagraphBullets);
+    expect(bulletCreates).toEqual([]);
+
+    // And the new content must be inserted somewhere: either as a
+    // standalone insertText of "date" or as part of a larger text
+    // insert that happens to contain "date".
+    const insertedText = diff.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('|');
+    expect(insertedText).toContain('date');
+
+    // The inserted paragraph must also NOT be reset to NORMAL_TEXT:
+    // updateParagraphStyle with namedStyleType cascades through the
+    // paragraph's entire style template, which in Docs overrides the
+    // inherited list formatting even though `bullet` sits on a
+    // separate field. Drop that request too, and the split-inherited
+    // listId survives unchanged.
+    const paraStyleUpdates = diff.requests.filter((r) => r.updateParagraphStyle);
+    expect(paraStyleUpdates).toEqual([]);
+
+    // The insert must land at cherry's terminating '\n'. Layout:
+    //   apple   [1, 7)    (apple\n, 6 chars)
+    //   banana  [7, 14)   (banana\n, 7 chars)
+    //   cherry  [14, 21)  (cherry\n, 7 chars) — '\n' at index 20
+    // So insertPosition = cherry.endIndex - 1 = 20 with text "\ndate".
+    // That places the new \n inside cherry's paragraph, making the
+    // split-right paragraph inherit cherry's listId. Inserting at
+    // cherry.endIndex (21) would split the following paragraph instead.
+    const textInserts = diff.requests.filter((r) => r.insertText);
+    expect(textInserts.length).toBe(1);
+    expect(textInserts[0].insertText!.location!.index).toBe(20);
+    expect(textInserts[0].insertText!.text).toBe('\ndate');
+  });
+});
+
 describe('pipeline: agent edit → applied doc (table edits)', () => {
   // These tests inspect the emitted request shapes directly instead of
   // applying them via applyRequests: the simulator doesn't know how to

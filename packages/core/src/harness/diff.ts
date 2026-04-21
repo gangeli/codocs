@@ -490,7 +490,7 @@ export async function computeDocDiff(
           false,
           bodyEndIndex,
         );
-        appendWithBulletClear(requests, insertRequests, document, actualInsertAt, text.length);
+        appendWithBulletClear(requests, insertRequests, document, actualInsertAt, text.length, insertAt);
         if (text.length > 0) {
           requests.push(
             ...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length),
@@ -682,6 +682,48 @@ export async function computeDocDiff(
       if (newContent.length > 0) {
         const insertAt = Math.min(deleteStartIdx, bodyEndIndex - 1);
         const isPureInsert = oldLength === 0 && insertAt > 1;
+
+        // List-append fast path: when a pure-insert hunk contains only
+        // bullet list items AND a bullet paragraph precedes the insert
+        // (possibly with empty separator paragraphs in between), splice
+        // the new items into that bullet paragraph's trailing \n. The
+        // split creates new paragraphs that inherit the preceding
+        // bullet's listId, so the appended items join the existing
+        // list instead of starting a fresh one with their own bulletPreset.
+        //
+        // Going through the generic separator/markdownToDocsRequests path
+        // doesn't work here: that flow's createParagraphBullets always
+        // allocates a new listId, and any intermediate non-bullet
+        // paragraph (like the blank line between a list and a table)
+        // would absorb the split and the new items would inherit its
+        // non-bullet state.
+        const precedingBulletEnd = isPureInsert
+          ? findPrecedingBulletEndIndex(document, insertAt)
+          : null;
+        if (precedingBulletEnd !== null && isAllBulletContent(newContent)) {
+          const items = newContent
+            .split('\n')
+            .filter((l) => l.trim() !== '')
+            .map(stripBulletMarker);
+          const combined = '\n' + items.join('\n');
+          const insertPosition = precedingBulletEnd - 1;
+          requests.push({
+            insertText: {
+              location: { index: insertPosition },
+              text: combined,
+            },
+          });
+          // Attribution covers the inserted text only (not the leading
+          // \n that lives inside the preceding bullet paragraph).
+          requests.push(
+            ...createAttributionRequests(
+              agentName,
+              insertPosition + 1,
+              insertPosition + combined.length,
+            ),
+          );
+          continue;
+        }
         // "Append at end" applies ONLY when insertAt is at the doc's
         // terminating \n (bodyEndIndex-1). `oldOffset >= oldLines.length`
         // is not enough on its own: for a pure insert past a non-last
@@ -711,34 +753,50 @@ export async function computeDocDiff(
             ? insertAt - 1
             : insertAt;
 
+        // Compute content requests first so we know whether the
+        // content is itself a bullet list — the separator size depends
+        // on it.
         let actualInsertAt = insertAt;
-        if (isAppendAtEnd) {
-          requests.push({
-            insertText: { location: { index: insertAt }, text: '\n\n' },
-          });
-          actualInsertAt = insertAt + 2;
-        } else if (isPureInsert || needsTrailingNewline) {
-          // Mid-section separator: inserted BEFORE the content at the
-          // same index, so later content inserts push it to
-          // `actualInsertAt + text.length` once processed sequentially.
-          // For pure inserts we need both a separator after the new
-          // paragraph AND a blank-line separator before the following
-          // content, so emit "\n\n" here.
-          requests.push({
-            insertText: {
-              location: { index: separatorAt },
-              text: isPureInsert ? '\n\n' : '\n',
-            },
-          });
-        }
-
+        if (isAppendAtEnd) actualInsertAt = insertAt + 2;
         const { text, requests: insertRequests } = markdownToDocsRequests(
           newContent,
           actualInsertAt,
           false,
           bodyEndIndex,
         );
-        appendWithBulletClear(requests, insertRequests, document, actualInsertAt, text.length);
+
+        const contentIsBullet = insertRequests.some((r) => r.createParagraphBullets);
+        const adjacentIsBullet = isBulletParagraphAt(document, separatorAt);
+
+        if (isAppendAtEnd) {
+          requests.push({
+            insertText: { location: { index: insertAt }, text: '\n\n' },
+          });
+        } else if (isPureInsert || needsTrailingNewline) {
+          // Mid-section separator: inserted BEFORE the content at the
+          // same index, so later content inserts push it to
+          // `actualInsertAt + text.length` once processed sequentially.
+          // Pure inserts normally need a blank-line separator (\n\n)
+          // between the new paragraph and the following content.
+          //
+          // Exception: when we're appending a bullet item next to an
+          // existing bulleted paragraph, the blank-line separator
+          // breaks the list continuity (an intermediate empty
+          // paragraph drops out of the list, so the new item lands
+          // after it with its own listId). A single \n keeps the new
+          // paragraph as the direct sibling of the neighbouring
+          // bullet, inheriting the listId.
+          const wantsBlankSeparator =
+            isPureInsert && !(contentIsBullet && adjacentIsBullet);
+          requests.push({
+            insertText: {
+              location: { index: separatorAt },
+              text: wantsBlankSeparator ? '\n\n' : '\n',
+            },
+          });
+        }
+
+        appendWithBulletClear(requests, insertRequests, document, actualInsertAt, text.length, separatorAt);
 
         if (text.length > 0) {
           requests.push(...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length));
@@ -1001,6 +1059,88 @@ function docHasAnyBullet(document: docs_v1.Schema$Document): boolean {
 }
 
 /**
+ * True iff `index` falls inside a bullet-formatted paragraph in the
+ * original doc. Used to decide whether inserted content that will
+ * inherit the split paragraph's bullet (via our separator-\n split)
+ * should keep that inheritance.
+ */
+function isBulletParagraphAt(
+  document: docs_v1.Schema$Document,
+  index: number,
+): boolean {
+  for (const elem of document.body?.content ?? []) {
+    if (!elem.paragraph?.bullet) continue;
+    if (elem.startIndex == null || elem.endIndex == null) continue;
+    if (index >= elem.startIndex && index <= elem.endIndex) return true;
+  }
+  return false;
+}
+
+/**
+ * Return the endIndex of the closest bullet-formatted paragraph that
+ * ends at or before `index`, as long as every element between that
+ * bullet and `index` is either an empty paragraph or the paragraph
+ * we're about to edit (i.e. there's no non-empty, non-bullet content
+ * in the way). A valid candidate means appending a new bullet item
+ * there by inserting a `\n` at the bullet's terminating \n will land
+ * the new paragraph inside the same list.
+ *
+ * The walk stops at the first non-empty non-bullet paragraph or any
+ * non-paragraph structural element (table, section break) before
+ * `index` — inserting through those would create a new paragraph in
+ * the wrong spot or at an invalid index.
+ */
+function findPrecedingBulletEndIndex(
+  document: docs_v1.Schema$Document,
+  index: number,
+): number | null {
+  let lastBulletEnd: number | null = null;
+  for (const elem of document.body?.content ?? []) {
+    if (elem.startIndex == null || elem.endIndex == null) continue;
+    if (elem.startIndex >= index) break;
+    if (elem.paragraph?.bullet) {
+      lastBulletEnd = elem.endIndex;
+      continue;
+    }
+    if (elem.paragraph) {
+      const text = (elem.paragraph.elements ?? [])
+        .map((x) => x.textRun?.content ?? '')
+        .join('');
+      if (text.trim() !== '') lastBulletEnd = null;
+      continue;
+    }
+    // Table / section break — not skippable for list-append purposes.
+    lastBulletEnd = null;
+  }
+  return lastBulletEnd;
+}
+
+/** True iff every non-empty line of `markdown` looks like a bullet
+ *  list item (`-`, `*`, `+`, or `N.`). Used to decide whether a
+ *  pure-insert hunk can take the list-append fast path. */
+function isAllBulletContent(markdown: string): boolean {
+  const lines = markdown.split('\n');
+  let sawBullet = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (t === '') continue;
+    if (/^(?:[-*+]|\d+\.)\s/.test(t)) {
+      sawBullet = true;
+      continue;
+    }
+    return false;
+  }
+  return sawBullet;
+}
+
+/** Strip the leading list marker (`-`, `*`, `+`, or `N.`) and its
+ *  following whitespace from a markdown bullet line, returning just
+ *  the cell text. */
+function stripBulletMarker(line: string): string {
+  return line.replace(/^\s*(?:[-*+]|\d+\.)\s+/, '');
+}
+
+/**
  * Append the requests produced by markdownToDocsRequests to the batch,
  * interleaving a deleteParagraphBullets request between paragraph
  * styles and bullet creates when the insertion could inherit bullet
@@ -1008,6 +1148,19 @@ function docHasAnyBullet(document: docs_v1.Schema$Document): boolean {
  * paragraph-style updates land and BEFORE the bullet creates, so any
  * inherited bullet is stripped before the new content's own bullet (if
  * any) is re-applied.
+ *
+ * Special case: when the inserted content is itself a bullet list AND
+ * the separator lands inside a bullet paragraph, we skip BOTH the
+ * clear and our own create — and also the updateParagraphStyle that
+ * walkParagraph emits for the list item's content. Our
+ * createParagraphBullets would otherwise start a NEW list (the
+ * bulletPreset API has no way to reference an existing listId), and
+ * the updateParagraphStyle (even with fields: 'namedStyleType') also
+ * drops the paragraph out of the list in practice. The separator
+ * split leaves the new paragraph already in the neighbour's list —
+ * exactly what the user wrote ("append bullet to the existing list"),
+ * so letting that inheritance stand makes the appended item join the
+ * run instead of starting a fresh one.
  */
 function appendWithBulletClear(
   out: docs_v1.Schema$Request[],
@@ -1015,9 +1168,20 @@ function appendWithBulletClear(
   document: docs_v1.Schema$Document,
   actualInsertAt: number,
   textLength: number,
+  separatorAt: number,
 ): void {
   if (textLength === 0 || !docHasAnyBullet(document)) {
     out.push(...insertRequests);
+    return;
+  }
+  const contentIsBullet = insertRequests.some((r) => r.createParagraphBullets);
+  const adjacentIsBullet = isBulletParagraphAt(document, separatorAt);
+  if (contentIsBullet && adjacentIsBullet) {
+    out.push(
+      ...insertRequests.filter(
+        (r) => !r.createParagraphBullets && !r.updateParagraphStyle,
+      ),
+    );
     return;
   }
   const bullets = insertRequests.filter((r) => r.createParagraphBullets);
