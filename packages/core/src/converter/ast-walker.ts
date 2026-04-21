@@ -130,29 +130,32 @@ function flushTextSegment(ctx: WalkContext) {
   ctx.bullets = [];
 }
 
-// When Docs receives multiple createParagraphBullets requests with the same
-// preset on adjacent paragraphs, it coalesces them into a single list and
-// ignores per-paragraph leading tabs in the later requests — flattening the
-// whole list to level 0. Merging adjacent same-preset ranges into one
-// request lets the API interpret each paragraph's tabs independently, which
-// is what produces the nesting levels.
+// Docs handles multi-preset list runs poorly: adjacent
+// createParagraphBullets requests coalesce into ONE list and the last
+// request's preset wins across all paragraphs, while the merged list also
+// absorbs the next non-bulleted paragraph (so a heading right after the
+// list gets a stray bullet). It also ignores per-paragraph tabs after the
+// first request — flattening nesting to level 0.
 //
-// Also trims each final range's endIndex by 1 to exclude the paragraph's
-// trailing \n. Docs appears to treat endIndex as inclusive for
-// createParagraphBullets: a range ending exactly at the next paragraph's
-// start pulls that next paragraph into the list (visible as a heading
-// after a list suddenly gaining a bullet).
+// Workaround: merge every contiguous run of bullet requests into a single
+// request using the outermost (first) preset. This gives a clean nested
+// list where each paragraph's leading tabs pick up the correct level, at
+// the cost of mixed markdown (numbered-inside-unordered) rendering with a
+// single preset. The trailing endIndex is trimmed by 1 to exclude the
+// paragraph's final \n — without that trim, Docs pulls the next paragraph
+// into the list.
 function consolidateBullets(bullets: docs_v1.Schema$Request[]): docs_v1.Schema$Request[] {
   const merged: docs_v1.Schema$Request[] = [];
   for (const req of bullets) {
     const cur = req.createParagraphBullets;
     const prev = merged[merged.length - 1]?.createParagraphBullets;
-    if (
-      prev &&
-      cur &&
-      prev.bulletPreset === cur.bulletPreset &&
-      prev.range?.endIndex === cur.range?.startIndex
-    ) {
+    // Adjacent here means prev.endIndex is within 1 of cur.startIndex
+    // (earlier passes may have already trimmed a trailing \n).
+    const adjacent =
+      prev?.range?.endIndex !== undefined &&
+      cur?.range?.startIndex !== undefined &&
+      cur.range.startIndex - prev.range.endIndex <= 1;
+    if (prev && cur && adjacent) {
       prev.range!.endIndex = cur.range!.endIndex;
     } else {
       merged.push({ createParagraphBullets: { ...cur, range: { ...cur!.range } } });

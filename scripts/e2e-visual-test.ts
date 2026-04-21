@@ -201,7 +201,7 @@ Ordered list:
 
   {
     title: 'Nested mixed list (ordered inside unordered)',
-    expect: 'Top-level bullets (disc). Nested ordered sub-items should render with decimal numbering. Deeply nested items remain readable with progressive indentation.',
+    expect: 'The whole tree should render with the OUTER preset (disc/circle/square) — Docs collapses adjacent bullet requests with different presets into one list, so inner markdown-ordered items get disc/circle styling rather than decimal numbering. Verify nesting levels are correct and that "17. Code block" below is NOT bulleted.',
     markdown: `- Project phases
   1. Research
   2. Design
