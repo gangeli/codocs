@@ -136,6 +136,12 @@ function flushTextSegment(ctx: WalkContext) {
 // whole list to level 0. Merging adjacent same-preset ranges into one
 // request lets the API interpret each paragraph's tabs independently, which
 // is what produces the nesting levels.
+//
+// Also trims each final range's endIndex by 1 to exclude the paragraph's
+// trailing \n. Docs appears to treat endIndex as inclusive for
+// createParagraphBullets: a range ending exactly at the next paragraph's
+// start pulls that next paragraph into the list (visible as a heading
+// after a list suddenly gaining a bullet).
 function consolidateBullets(bullets: docs_v1.Schema$Request[]): docs_v1.Schema$Request[] {
   const merged: docs_v1.Schema$Request[] = [];
   for (const req of bullets) {
@@ -151,6 +157,10 @@ function consolidateBullets(bullets: docs_v1.Schema$Request[]): docs_v1.Schema$R
     } else {
       merged.push({ createParagraphBullets: { ...cur, range: { ...cur!.range } } });
     }
+  }
+  for (const req of merged) {
+    const r = req.createParagraphBullets!.range!;
+    r.endIndex = Math.max(r.startIndex! + 1, r.endIndex! - 1);
   }
   return merged;
 }
