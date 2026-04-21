@@ -389,6 +389,151 @@ describe('element-parser edge cases', () => {
     expect(md).toContain('| C | D |');
   });
 
+  // ── Inline images ────────────────────────────────────────────
+
+  it('emits ![title](sourceUri) for a plain inline image', () => {
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 3,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 2,
+                inlineObjectElement: { inlineObjectId: 'kix.img1' },
+              },
+              {
+                startIndex: 2,
+                endIndex: 3,
+                textRun: { content: '\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+          },
+        },
+      ],
+      {
+        inlineObjects: {
+          'kix.img1': {
+            inlineObjectProperties: {
+              embeddedObject: {
+                title: 'logo',
+                imageProperties: {
+                  sourceUri: 'https://example.com/logo.png',
+                  contentUri: 'https://lh3.googleusercontent.com/TRANSIENT',
+                },
+              },
+            },
+          },
+        },
+      },
+    );
+
+    const md = docsToMarkdown(doc);
+    // Must use sourceUri (stable) — never contentUri (30-min tagged URL).
+    expect(md).toContain('![logo](https://example.com/logo.png)');
+    expect(md).not.toContain('googleusercontent');
+  });
+
+  it('restores a mermaid code block when the image sourceUri matches a known fileId', () => {
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 3,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 2,
+                inlineObjectElement: { inlineObjectId: 'kix.mmd1' },
+              },
+              {
+                startIndex: 2,
+                endIndex: 3,
+                textRun: { content: '\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+          },
+        },
+      ],
+      {
+        inlineObjects: {
+          'kix.mmd1': {
+            inlineObjectProperties: {
+              embeddedObject: {
+                title: 'mermaid-abc.png',
+                imageProperties: {
+                  sourceUri: 'https://drive.google.com/uc?id=FILE_X',
+                },
+              },
+            },
+          },
+        },
+      },
+    );
+
+    const md = docsToMarkdown(doc, {
+      mermaidByFileId: new Map([['FILE_X', 'graph TD; A-->B']]),
+    });
+    expect(md).toContain('```mermaid');
+    expect(md).toContain('graph TD; A-->B');
+    // Must NOT leak the intermediate Drive URL as an image.
+    expect(md).not.toContain('drive.google.com');
+  });
+
+  it('does not mis-map a non-mermaid image into the mermaid store', () => {
+    // An image whose sourceUri is a random URL (not drive.google.com) must
+    // never be restored as mermaid even when a non-empty mermaid map is
+    // supplied — this is the fix that makes mixed mermaid+image docs work.
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 3,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 2,
+                inlineObjectElement: { inlineObjectId: 'kix.real' },
+              },
+              {
+                startIndex: 2,
+                endIndex: 3,
+                textRun: { content: '\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+          },
+        },
+      ],
+      {
+        inlineObjects: {
+          'kix.real': {
+            inlineObjectProperties: {
+              embeddedObject: {
+                title: 'photo',
+                imageProperties: {
+                  sourceUri: 'https://cdn.example.com/photo.jpg',
+                },
+              },
+            },
+          },
+        },
+      },
+    );
+
+    const md = docsToMarkdown(doc, {
+      mermaidByFileId: new Map([['FILE_X', 'graph TD; A-->B']]),
+    });
+    expect(md).toContain('![photo](https://cdn.example.com/photo.jpg)');
+    expect(md).not.toContain('```mermaid');
+  });
+
   it('handles mixed content with section break filtered out', () => {
     const doc = makeDoc(
       [

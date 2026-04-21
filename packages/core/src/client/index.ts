@@ -28,6 +28,16 @@ import {
   resolveComment as resolveCommentImpl,
 } from '../comments/index.js';
 
+/**
+ * Markdown needs the async path (with the Drive API + image renderer)
+ * whenever it contains a mermaid code block or an inline image. The async
+ * path is a no-op for documents with neither, so the regex check keeps
+ * plain-text writes cheap.
+ */
+function needsAsyncPath(markdown: string): boolean {
+  return /```mermaid\b/.test(markdown) || /!\[[^\]]*\]\([^)]+\)/.test(markdown);
+}
+
 export class CodocsClient {
   private docsApi: DocsApi;
   private driveApi: DriveApi;
@@ -122,9 +132,7 @@ export class CodocsClient {
       clearFirst = bodyEndIndex > 2;
     }
 
-    const hasMermaid = /```mermaid\b/.test(markdown);
-
-    if (hasMermaid) {
+    if (needsAsyncPath(markdown)) {
       const { markdownToDocsRequestsAsync } = await import('../converter/md-to-docs.js');
       const result = await markdownToDocsRequestsAsync(
         markdown,
@@ -225,10 +233,7 @@ export class CodocsClient {
       clearFirst = bodyEndIndex > 2;
     }
 
-    // Use async path if markdown contains mermaid blocks
-    const hasMermaid = /```mermaid\b/.test(markdown);
-
-    if (hasMermaid) {
+    if (needsAsyncPath(markdown)) {
       const result = await markdownToDocsRequestsAsync(
         markdown,
         insertionIndex,
@@ -262,16 +267,16 @@ export class CodocsClient {
         }
       }
 
-      // Store mermaid mappings in DB for round-trip restoration.
-      // The Docs API has no way to set image description/title, so we
-      // rely on positional matching: mermaid sources stored in the DB
-      // are matched to inline images in document order when reading back.
-      if (opts.db && result.mermaidHashes.length > 0) {
+      // Store mermaid mappings in DB keyed by Drive fileId. On readback, the
+      // fileId is extracted from each inline object's sourceUri and looked up
+      // here — this is how we distinguish mermaid-rendered images from
+      // user-supplied ones in a document that mixes both.
+      if (opts.db && result.mermaidImages.length > 0) {
         try {
           const { MermaidStore, saveDatabase } = await import('@codocs/db');
           const store = new MermaidStore(opts.db as any);
-          for (const { source } of result.mermaidHashes) {
-            store.save(docId, source);
+          for (const { source, fileId } of result.mermaidImages) {
+            store.save(docId, source, fileId);
           }
           saveDatabase(opts.db as any);
         } catch {
@@ -313,25 +318,22 @@ export class CodocsClient {
   async readMarkdown(docId: string, opts: ReadOptions = {}): Promise<string> {
     const doc = await this.docsApi.getDocument(docId);
 
-    // Load mermaid sources from DB for restoring diagrams from images
-    let mermaidSources: string[] | undefined;
+    let mermaidByFileId: Map<string, string> | undefined;
     if (opts.db) {
       try {
         const { MermaidStore } = await import('@codocs/db');
         const store = new MermaidStore(opts.db as any);
-        const mappings = store.getAllForDocument(docId);
-        if (mappings.size > 0) {
-          mermaidSources = [...mappings.values()];
-        }
+        const mappings = store.getFileIdMap(docId);
+        if (mappings.size > 0) mermaidByFileId = mappings;
       } catch {
-        // Non-critical
+        // Non-critical — mermaid blocks fall back to ![title](url).
       }
     }
 
     return docsToMarkdown(doc, {
       agentFilter: opts.agentFilter,
       includeAttribution: opts.includeAttribution,
-      mermaidSources,
+      mermaidByFileId,
     });
   }
 

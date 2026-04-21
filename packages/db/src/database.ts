@@ -76,9 +76,13 @@ const SCHEMA = `
     document_id    TEXT NOT NULL,
     source_hash    TEXT NOT NULL,
     mermaid_source TEXT NOT NULL,
+    drive_file_id  TEXT,
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (document_id, source_hash)
   );
+
+  CREATE INDEX IF NOT EXISTS idx_mermaid_mappings_file
+    ON mermaid_mappings (document_id, drive_file_id);
 
   CREATE TABLE IF NOT EXISTS chat_tabs (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,6 +160,15 @@ export async function openDatabase(path?: string): Promise<Database> {
   }
 
   db.run(SCHEMA);
+
+  // Additive migration: drive_file_id was added after the initial release.
+  // CREATE TABLE IF NOT EXISTS leaves an existing table's columns untouched,
+  // so an ALTER is needed for older databases.
+  try {
+    db.run('ALTER TABLE mermaid_mappings ADD COLUMN drive_file_id TEXT');
+  } catch {
+    // Already added — ignore.
+  }
 
   return db;
 }

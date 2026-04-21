@@ -299,23 +299,33 @@ Paragraph after the rule.`,
   // ── Images ───────────────────────────────────────────────
 
   {
-    title: 'Image (embedded inline)',
-    expect: 'The image should be embedded inline in the document as a real image — the Anthropic favicon renders between the two paragraphs. Not an alt-text hyperlink.',
+    title: 'Image (embedded inline, small natural size)',
+    expect: 'The Wikipedia sunflower thumbnail should appear as a real inline image between the two paragraphs, at its natural 100×133 size (no scaling). It must not render as an alt-text hyperlink.',
     markdown: `Before the image.
 
-![Anthropic logo](https://www.anthropic.com/favicon.ico)
+![Sunflower](https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Sunflower_from_Silesia2.jpg/100px-Sunflower_from_Silesia2.jpg)
 
 After the image.`,
   },
 
   {
     title: 'Image (wide image scaled to page width)',
-    expect: 'The wide PNG should appear as an inline image, scaled to fit the text column (~468pt) rather than overflowing the page margins. Aspect ratio must be preserved (no squashing).',
+    expect: 'A ~1200px-wide JPEG should appear as an inline image scaled down to fit the text column (~468pt / 6.5"), not overflow the page. Aspect ratio must be preserved (no squashing).',
     markdown: `A wide image, auto-scaled to fit the page:
 
-![Wikipedia smiley](https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/SNice.svg/1200px-SNice.svg.png)
+![Sunflower wide](https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Sunflower_from_Silesia2.jpg/1200px-Sunflower_from_Silesia2.jpg)
 
 End of scaled image test.`,
+  },
+
+  {
+    title: 'Image (unsupported format silently dropped)',
+    expect: 'An `.ico` URL is not a supported Docs format (PNG/JPEG/GIF only). The image should be silently omitted — the paragraphs before/after should still render and the batch should not fail.',
+    markdown: `Before the dropped image.
+
+![Anthropic favicon](https://www.anthropic.com/favicon.ico)
+
+After the dropped image.`,
   },
 
   // ── Mixed content ────────────────────────────────────────

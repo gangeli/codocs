@@ -31,13 +31,31 @@ export interface TableSegment {
   numColumns: number;
 }
 
-export interface ImageSegment {
-  type: 'image';
-  /** Original mermaid source code. */
-  mermaidSource: string;
+export type ImageSegment =
+  | {
+      type: 'image';
+      kind: 'mermaid';
+      /** Original mermaid source code. */
+      mermaidSource: string;
+    }
+  | {
+      type: 'image';
+      kind: 'remote';
+      /** Source URL from the markdown image. */
+      url: string;
+      /** Alt text — lost on Docs insertion (API has no title field), kept for fallback. */
+      alt: string;
+    };
+
+export interface BlockquoteSegment {
+  type: 'blockquote';
+  /** Inner text of the blockquote. */
+  text: string;
+  /** Style requests with offsets relative to text start (0-based). */
+  styles: docs_v1.Schema$Request[];
 }
 
-export type WalkSegment = TextSegment | TableSegment | ImageSegment;
+export type WalkSegment = TextSegment | TableSegment | ImageSegment | BlockquoteSegment;
 
 export interface WalkResult {
   /** Ordered segments of content. */
@@ -125,6 +143,9 @@ function walkChildren(
   }
 }
 
+// When adding a new mdast node type (or changing what an existing case emits),
+// add/update a fixture in scripts/e2e-visual-test.ts — Docs-API enum values and
+// shape mismatches only surface against a real doc.
 function walkNode(
   node: Content,
   ctx: WalkContext,
@@ -175,7 +196,7 @@ function walkNode(
       walkListItem(node as ListItem, ctx, listDepth, inBlockquote);
       break;
     case 'blockquote':
-      walkChildren((node as Blockquote).children as Content[], ctx, listDepth, true);
+      walkBlockquote(node as Blockquote, ctx, listDepth);
       break;
     case 'table':
       walkTable(node as Table, ctx);
@@ -325,7 +346,7 @@ function emitCodeBlock(node: Code, ctx: WalkContext) {
   // Mermaid code blocks become ImageSegments for later rendering
   if (node.lang === 'mermaid') {
     flushTextSegment(ctx);
-    ctx.segments.push({ type: 'image', mermaidSource: node.value });
+    ctx.segments.push({ type: 'image', kind: 'mermaid', mermaidSource: node.value });
     return;
   }
 
@@ -356,22 +377,12 @@ function emitCodeBlock(node: Code, ctx: WalkContext) {
 }
 
 function emitImage(node: Image, ctx: WalkContext) {
-  // Images are complex in the Docs API (require InlineObject).
-  // For now, emit the alt text as a placeholder with a link.
-  const alt = node.alt || 'image';
-  const start = ctx.offset;
-  ctx.buf += alt;
-  ctx.offset += alt.length;
-  ensureNewline(ctx);
-
-  ctx.styles.push({
-    updateTextStyle: {
-      range: { startIndex: start, endIndex: start + alt.length },
-      textStyle: {
-        link: { url: node.url },
-      },
-      fields: 'link',
-    },
+  flushTextSegment(ctx);
+  ctx.segments.push({
+    type: 'image',
+    kind: 'remote',
+    url: node.url,
+    alt: node.alt || 'image',
   });
 }
 
@@ -385,22 +396,64 @@ function walkList(
   for (let i = 0; i < children.length; i++) {
     const item = children[i] as ListItem;
     const isCheckbox = item.checked !== null && item.checked !== undefined;
+    const isChecked = item.checked === true;
     const itemStart = ctx.offset;
 
-    // Walk the list item's content
-    walkListItem(item, ctx, listDepth + 1, inBlockquote);
-    const itemEnd = ctx.offset;
+    // createParagraphBullets derives the nesting level from leading tabs
+    // in each paragraph — emit listDepth tabs so nested items nest.
+    if (listDepth > 0) {
+      const tabs = '\t'.repeat(listDepth);
+      ctx.buf += tabs;
+      ctx.offset += tabs.length;
+    }
+
+    const contentStart = ctx.offset;
+
+    // Walk ONLY this item's own (non-list) children first. We defer nested
+    // lists so this item's bullet range stays tight to its own paragraph —
+    // overlapping ranges cause createParagraphBullets to strip the leading
+    // tabs from nested items before their own bullet request runs, which
+    // flattens the whole tree to level 0.
+    const nestedLists: List[] = [];
+    for (const child of item.children as Content[]) {
+      if (child.type === 'list') {
+        nestedLists.push(child as List);
+      } else {
+        walkNode(child, ctx, listDepth + 1, inBlockquote);
+      }
+    }
+
+    const ownEnd = ctx.offset;
+
+    // The Docs API has no way to set a native checkbox to "checked" — the
+    // visual for a checked task is strikethrough text. We mirror the same
+    // encoding here (and element-parser reads it back the same way).
+    if (isChecked && ownEnd > contentStart) {
+      ctx.styles.push({
+        updateTextStyle: {
+          range: { startIndex: contentStart, endIndex: ownEnd },
+          textStyle: { strikethrough: true },
+          fields: 'strikethrough',
+        },
+      });
+    }
 
     ctx.bullets.push({
       createParagraphBullets: {
-        range: { startIndex: itemStart, endIndex: itemEnd },
+        range: { startIndex: itemStart, endIndex: ownEnd },
         bulletPreset: isCheckbox
-          ? ('CHECKBOX' as string)
+          ? 'BULLET_CHECKBOX'
           : node.ordered
             ? 'NUMBERED_DECIMAL_NESTED'
             : 'BULLET_DISC_CIRCLE_SQUARE',
       },
     });
+
+    // Now walk any nested lists. They push their own bullet requests for
+    // their own ranges.
+    for (const nested of nestedLists) {
+      walkList(nested, ctx, listDepth + 1, inBlockquote);
+    }
   }
 }
 
@@ -410,7 +463,8 @@ function walkListItem(
   listDepth: number,
   inBlockquote: boolean,
 ) {
-  // A list item's children are typically paragraphs or nested lists
+  // Reached only when mdast gives us a stray listItem outside a list;
+  // walkList handles the normal case and never calls through here.
   for (const child of node.children as Content[]) {
     if (child.type === 'list') {
       walkList(child as List, ctx, listDepth, inBlockquote);
@@ -418,6 +472,36 @@ function walkListItem(
       walkNode(child, ctx, listDepth, inBlockquote);
     }
   }
+}
+
+function walkBlockquote(node: Blockquote, ctx: WalkContext, listDepth: number) {
+  // Render blockquotes as a 1x1 borderless table with a thick left bar. We
+  // walk the children into a fresh sub-context so the text/styles are
+  // captured in isolation, then emit a BlockquoteSegment the downstream
+  // processor can turn into a 1-cell table.
+  flushTextSegment(ctx);
+
+  const savedBuf = ctx.buf;
+  const savedOffset = ctx.offset;
+  const savedStyles = ctx.styles;
+  const savedBullets = ctx.bullets;
+
+  ctx.buf = '';
+  ctx.offset = 0;
+  ctx.styles = [];
+  ctx.bullets = [];
+
+  walkChildren(node.children as Content[], ctx, listDepth, true);
+
+  let text = ctx.buf;
+  if (text.endsWith('\n')) text = text.slice(0, -1);
+
+  ctx.segments.push({ type: 'blockquote', text, styles: ctx.styles });
+
+  ctx.buf = savedBuf;
+  ctx.offset = savedOffset;
+  ctx.styles = savedStyles;
+  ctx.bullets = savedBullets;
 }
 
 function walkTable(node: Table, ctx: WalkContext) {

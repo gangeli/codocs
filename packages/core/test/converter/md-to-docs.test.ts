@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { markdownToDocsRequests } from '../../src/converter/md-to-docs.js';
+import { describe, it, expect, vi } from 'vitest';
+import { markdownToDocsRequests, markdownToDocsRequestsAsync } from '../../src/converter/md-to-docs.js';
 
 describe('markdownToDocsRequests', () => {
   it('converts plain text', () => {
@@ -114,7 +114,7 @@ describe('markdownToDocsRequests', () => {
     ).toBe('NUMBERED_DECIMAL_NESTED');
   });
 
-  it('converts a task list (checkboxes) with CHECKBOX preset', () => {
+  it('converts a task list (checkboxes) with BULLET_CHECKBOX preset', () => {
     const md = '- [ ] unchecked item\n- [x] checked item\n- [ ] another unchecked';
     const { text, requests } = markdownToDocsRequests(md);
     expect(text).toContain('unchecked item');
@@ -122,7 +122,7 @@ describe('markdownToDocsRequests', () => {
     const bulletReqs = requests.filter((r) => r.createParagraphBullets);
     expect(bulletReqs.length).toBe(3);
     for (const req of bulletReqs) {
-      expect(req.createParagraphBullets!.bulletPreset).toBe('CHECKBOX');
+      expect(req.createParagraphBullets!.bulletPreset).toBe('BULLET_CHECKBOX');
     }
   });
 
@@ -341,5 +341,92 @@ describe('markdownToDocsRequests', () => {
     const tableInserts = requests.filter((r) => r.insertTable);
     expect(textInserts.length).toBeGreaterThanOrEqual(2); // "Before\n" + cell inserts + "After"
     expect(tableInserts).toHaveLength(1);
+  });
+
+  // ── Image embedding ──────────────────────────────────────────
+
+  it('sync path silently drops inline images (async path is required for embedding)', () => {
+    const md = 'Before.\n\n![logo](https://example.com/logo.png)\n\nAfter.';
+    const { requests } = markdownToDocsRequests(md);
+    expect(requests.find((r) => r.insertInlineImage)).toBeUndefined();
+  });
+
+  it('async path silently skips unsupported-format images (e.g. .ico) so the batch does not fail', async () => {
+    // Real Anthropic favicon is an ICO — image-size probes it successfully
+    // but Google Docs only accepts PNG/JPEG/GIF. Skip, don't break the batch.
+    const md = 'Before.\n\n![favicon](data:image/x-icon;base64,AAABAAEAEBAAAAAAAABoBQAAFgAAACgAAAAQAAAAIAAAAAEACAAAAAAAAAEAAAAAAAAAAAAAAAEAAAAAAAAAAAAA)\n\nAfter.';
+    // Use a trivially-shaped ICO header via data URL. fetch() in Node
+    // supports data: URLs so the probe runs without network.
+    const driveApi = { uploadTempImage: vi.fn() } as any;
+
+    const result = await markdownToDocsRequestsAsync(md, 1, false, undefined, {
+      driveApi,
+      documentId: 'doc-1',
+    });
+
+    expect(result.requests.find((r) => r.insertInlineImage)).toBeUndefined();
+    // Surrounding text must still be inserted.
+    const textInserts = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text!)
+      .join('');
+    expect(textInserts).toContain('Before.');
+    expect(textInserts).toContain('After.');
+  });
+
+  it('async path embeds a remote image via insertInlineImage with the original URL', async () => {
+    // Point the probe at an unreachable URL so we don't hit the network; the
+    // fallback skips sizing and still emits the insert request.
+    const md = 'Before.\n\n![logo](https://unreachable.invalid/logo.png)\n\nAfter.';
+    const driveApi = { uploadTempImage: vi.fn() } as any;
+
+    const result = await markdownToDocsRequestsAsync(md, 1, false, undefined, {
+      driveApi,
+      documentId: 'doc-1',
+    });
+
+    const img = result.requests.find((r) => r.insertInlineImage);
+    expect(img).toBeDefined();
+    expect(img!.insertInlineImage!.uri).toBe('https://unreachable.invalid/logo.png');
+    expect(driveApi.uploadTempImage).not.toHaveBeenCalled();
+    expect(result.tempDriveFileIds).toEqual([]);
+    expect(result.mermaidImages).toEqual([]);
+  });
+
+  it('async path passes the mermaid Drive fileId through so readback can disambiguate', async () => {
+    const md = '```mermaid\ngraph TD; A-->B\n```\n';
+    // Spy that captures what uploadTempImage returns. Render is mocked too so
+    // we don't depend on a real mermaid/resvg binary in unit tests.
+    const fakeDrive = {
+      uploadTempImage: vi.fn(async (_buf: Buffer, name: string) => ({
+        fileId: 'DRIVE_ID_123',
+        downloadUrl: `https://drive.google.com/uc?id=DRIVE_ID_123&name=${name}`,
+      })),
+    } as any;
+
+    const mermaidMod = await import('../../src/converter/mermaid-renderer.js');
+    const renderSpy = vi.spyOn(mermaidMod, 'renderMermaidToPng').mockResolvedValue({
+      png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      width: 800,
+      height: 400,
+    });
+
+    try {
+      const result = await markdownToDocsRequestsAsync(md, 1, false, undefined, {
+        driveApi: fakeDrive,
+        documentId: 'doc-1',
+      });
+
+      expect(result.mermaidImages).toHaveLength(1);
+      expect(result.mermaidImages[0].fileId).toBe('DRIVE_ID_123');
+      expect(result.tempDriveFileIds).toEqual(['DRIVE_ID_123']);
+
+      const img = result.requests.find((r) => r.insertInlineImage);
+      expect(img).toBeDefined();
+      expect(img!.insertInlineImage!.uri).toContain('id=DRIVE_ID_123');
+      expect(img!.insertInlineImage!.objectSize!.width!.unit).toBe('PT');
+    } finally {
+      renderSpy.mockRestore();
+    }
   });
 });

@@ -7,11 +7,15 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import type { Root } from 'mdast';
-import { walkAst, type WalkSegment, type TextSegment, type TableSegment, type ImageSegment } from './ast-walker.js';
-import { styleTable } from './table-style.js';
+import { walkAst, type WalkSegment, type TextSegment, type TableSegment, type ImageSegment, type BlockquoteSegment } from './ast-walker.js';
+import { styleTable, styleBlockquote } from './table-style.js';
 import { renderMermaidToPng } from './mermaid-renderer.js';
 import { hashMermaidSource } from './mermaid-renderer.js';
+import { probeRemoteImage } from './image-fetch.js';
 import type { DriveApi } from '../client/drive-api.js';
+
+/** Max image width in PT — matches the US Letter text column (page minus 1" margins). */
+const PAGE_WIDTH_PT = 468;
 
 export interface MdToDocsResult {
   /** The plain text that will be inserted (for text segments only). */
@@ -23,8 +27,13 @@ export interface MdToDocsResult {
 export interface MdToDocsAsyncResult extends MdToDocsResult {
   /** Drive file IDs of temp images that must be deleted after batchUpdate. */
   tempDriveFileIds: string[];
-  /** Mermaid source hashes for each image inserted, in insertion order. */
-  mermaidHashes: Array<{ hash: string; source: string }>;
+  /**
+   * Mermaid-image bookkeeping for round-trip restoration. Each entry has the
+   * Drive fileId used as the insertInlineImage uri — downstream code persists
+   * {fileId -> source} so a readback can map an inline object (whose
+   * sourceUri embeds the fileId) back to its mermaid source.
+   */
+  mermaidImages: Array<{ fileId: string; hash: string; source: string }>;
   /** Number of insertInlineImage requests in this batch (for extracting objectIds from response). */
   imageCount: number;
 }
@@ -77,6 +86,9 @@ export function markdownToDocsRequests(
       fullText += segment.text;
     } else if (segment.type === 'table') {
       docIndex = processTableSegment(segment, docIndex, requests, allStyles);
+    } else if (segment.type === 'blockquote') {
+      docIndex = processBlockquoteSegment(segment, docIndex, requests, allStyles);
+      fullText += segment.text;
     }
     // ImageSegments are silently skipped in the sync path
     // (they require async rendering + Drive upload)
@@ -107,11 +119,14 @@ export function markdownToDocsRequests(
 // ── Async variant (with image support) ────────────────────────
 
 /**
- * Async variant of markdownToDocsRequests that handles mermaid diagrams.
+ * Async variant of markdownToDocsRequests that handles mermaid diagrams
+ * and remote markdown images.
  *
  * Mermaid code blocks are rendered to PNG, uploaded to Drive as temporary
- * files, and inserted via insertInlineImage. The caller MUST delete the
- * temp files (returned in tempDriveFileIds) after batchUpdate completes.
+ * files, and inserted via insertInlineImage. Remote images (`![alt](url)`)
+ * are passed through directly — Google's backend fetches the URL at insert
+ * time. The caller MUST delete the temp Drive files (returned in
+ * `tempDriveFileIds`) after batchUpdate completes.
  */
 export async function markdownToDocsRequestsAsync(
   markdown: string,
@@ -126,7 +141,7 @@ export async function markdownToDocsRequestsAsync(
   const requests: docs_v1.Schema$Request[] = [];
   let fullText = '';
   const tempDriveFileIds: string[] = [];
-  const mermaidHashes: Array<{ hash: string; source: string }> = [];
+  const mermaidImages: Array<{ fileId: string; hash: string; source: string }> = [];
 
   if (clearFirst && endIndex && endIndex > 1) {
     requests.push({
@@ -140,42 +155,68 @@ export async function markdownToDocsRequestsAsync(
   const allStyles: docs_v1.Schema$Request[] = [];
   const allBullets: docs_v1.Schema$Request[] = [];
 
-  // Collect image segments to render and upload in parallel
-  const imageSegments: Array<{ segment: ImageSegment; order: number }> = [];
+  // When changing the image/mermaid insertion path (rendering, upload, or
+  // insertInlineImage shape), update the Mermaid/image fixtures in
+  // scripts/e2e-visual-test.ts — this code runs against live Drive + Docs APIs.
+  interface PreparedImage {
+    uri: string;
+    widthPt?: number;
+    heightPt?: number;
+  }
+  const imageResults = new Map<number, PreparedImage>();
+
   for (let i = 0; i < segments.length; i++) {
-    if (segments[i].type === 'image') {
-      imageSegments.push({ segment: segments[i] as ImageSegment, order: i });
+    const segment = segments[i];
+    if (segment.type !== 'image') continue;
+
+    if (segment.kind === 'mermaid') {
+      try {
+        const { png, width, height } = await renderMermaidToPng(segment.mermaidSource);
+        const hash = hashMermaidSource(segment.mermaidSource);
+        const { fileId, downloadUrl } = await imageCtx.driveApi.uploadTempImage(
+          png,
+          `mermaid-${hash}.png`,
+        );
+        tempDriveFileIds.push(fileId);
+        imageResults.set(i, {
+          uri: downloadUrl,
+          widthPt: PAGE_WIDTH_PT,
+          heightPt: PAGE_WIDTH_PT * (height / width),
+        });
+        mermaidImages.push({ fileId, hash, source: segment.mermaidSource });
+      } catch {
+        // Rendering or upload failed — skip this image.
+      }
+    } else {
+      // Remote image: pass URL through; measure it so we can cap at page
+      // width, and also so we can drop unsupported formats before they
+      // reach the Docs API (which would otherwise reject the whole batch).
+      const info = await probeRemoteImage(segment.url);
+      if (info && !info.supported) {
+        // ICO/SVG/WebP/BMP/… — Docs API only accepts PNG/JPEG/GIF. Skip the
+        // insert entirely; the surrounding content still goes through.
+        continue;
+      }
+      const prepared: PreparedImage = { uri: segment.url };
+      if (info) {
+        const pxToPt = 0.75; // CSS standard: 96px = 72pt
+        const naturalWidthPt = info.width * pxToPt;
+        if (naturalWidthPt > PAGE_WIDTH_PT) {
+          prepared.widthPt = PAGE_WIDTH_PT;
+          prepared.heightPt = PAGE_WIDTH_PT * (info.height / info.width);
+        } else {
+          prepared.widthPt = naturalWidthPt;
+          prepared.heightPt = info.height * pxToPt;
+        }
+      }
+      // If probing failed (unreachable from here), we still attempt the
+      // insert — Google's fetcher may have paths we don't, e.g. IP
+      // allow-lists. If Google also can't fetch, batchUpdate will error
+      // and the caller will see the failure.
+      imageResults.set(i, prepared);
     }
   }
 
-  // Render all mermaid diagrams and upload to Drive
-  const imageResults = new Map<number, { downloadUrl: string; fileId: string; widthPt: number; heightPt: number; hash: string }>();
-
-  for (const { segment, order } of imageSegments) {
-    try {
-      const { png, width, height } = await renderMermaidToPng(segment.mermaidSource);
-      const hash = hashMermaidSource(segment.mermaidSource);
-
-      const { fileId, downloadUrl } = await imageCtx.driveApi.uploadTempImage(
-        png,
-        `mermaid-${hash}.png`,
-      );
-      tempDriveFileIds.push(fileId);
-
-      // Scale to fit page width (468pt = US Letter with 1" margins)
-      const maxWidthPt = 468;
-      const aspectRatio = height / width;
-      const widthPt = maxWidthPt;
-      const heightPt = maxWidthPt * aspectRatio;
-
-      imageResults.set(order, { downloadUrl, fileId, widthPt, heightPt, hash });
-      mermaidHashes.push({ hash, source: segment.mermaidSource });
-    } catch {
-      // Rendering failed — skip this image (it will be omitted from the doc)
-    }
-  }
-
-  // Process all segments in order
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
     if (segment.type === 'text') {
@@ -183,36 +224,35 @@ export async function markdownToDocsRequestsAsync(
       fullText += segment.text;
     } else if (segment.type === 'table') {
       docIndex = processTableSegment(segment, docIndex, requests, allStyles);
+    } else if (segment.type === 'blockquote') {
+      docIndex = processBlockquoteSegment(segment, docIndex, requests, allStyles);
+      fullText += segment.text;
     } else if (segment.type === 'image') {
       const result = imageResults.get(i);
-      if (result) {
-        // insertInlineImage inserts an InlineObjectElement consuming 1 index
-        requests.push({
-          insertInlineImage: {
-            uri: result.downloadUrl,
-            location: { index: docIndex },
-            objectSize: {
-              width: { magnitude: result.widthPt, unit: 'PT' },
-              height: { magnitude: result.heightPt, unit: 'PT' },
-            },
-          },
-        });
-        // InlineObjectElement + trailing newline
-        docIndex += 1;
+      if (!result) continue;
 
-        // Insert a newline after the image to separate from following content
-        requests.push({
-          insertText: {
-            location: { index: docIndex },
-            text: '\n',
-          },
-        });
-        docIndex += 1;
+      const insertImg: docs_v1.Schema$InsertInlineImageRequest = {
+        uri: result.uri,
+        location: { index: docIndex },
+      };
+      if (result.widthPt && result.heightPt) {
+        insertImg.objectSize = {
+          width: { magnitude: result.widthPt, unit: 'PT' },
+          height: { magnitude: result.heightPt, unit: 'PT' },
+        };
       }
+      requests.push({ insertInlineImage: insertImg });
+      docIndex += 1;
+
+      // Force a paragraph break after the image so following content starts
+      // on its own line (insertInlineImage itself doesn't add one).
+      requests.push({
+        insertText: { location: { index: docIndex }, text: '\n' },
+      });
+      docIndex += 1;
     }
   }
 
-  // Apply styles (same order as sync version)
   const paraStyles = allStyles.filter((r) => r.updateParagraphStyle);
   const textStyles = allStyles.filter((r) => r.updateTextStyle);
   const otherStyles = allStyles.filter((r) => !r.updateParagraphStyle && !r.updateTextStyle);
@@ -225,7 +265,13 @@ export async function markdownToDocsRequestsAsync(
   requests.push(...textStyles.sort(byStartDesc));
   requests.push(...allBullets);
 
-  return { text: fullText, requests, tempDriveFileIds, mermaidHashes, imageCount: imageResults.size };
+  return {
+    text: fullText,
+    requests,
+    tempDriveFileIds,
+    mermaidImages,
+    imageCount: imageResults.size,
+  };
 }
 
 // ── Text segment processing ────────────────────────────────────
@@ -341,6 +387,57 @@ function processTableSegment(
   // +1 because insertTable pushes existing content right by 1
   // (the table starts at docIndex+1, not docIndex)
   return docIndex + tableSize + 1;
+}
+
+// ── Blockquote segment processing ──────────────────────────────
+
+/**
+ * Render a blockquote as a 1x1 table with all borders hidden except a
+ * thick left bar (simulating a markdown-style blockquote rule).
+ *
+ * Table index layout for R=1, C=1 (see processTableSegment for derivation):
+ *   tableStart+0: TABLE
+ *   tableStart+1: TABLE_ROW
+ *   tableStart+2: TABLE_CELL
+ *   tableStart+3: \n (cell content paragraph)
+ *   tableStart+4: \n (trailing)
+ * Cell text inserts at tableStart+3.
+ */
+function processBlockquoteSegment(
+  segment: BlockquoteSegment,
+  docIndex: number,
+  requests: docs_v1.Schema$Request[],
+  allStyles: docs_v1.Schema$Request[],
+): number {
+  requests.push({
+    insertTable: {
+      rows: 1,
+      columns: 1,
+      location: { index: docIndex },
+    },
+  });
+
+  const tableStart = docIndex + 1;
+  const cellContentIndex = tableStart + 3;
+
+  if (segment.text.length > 0) {
+    requests.push({
+      insertText: {
+        location: { index: cellContentIndex },
+        text: segment.text,
+      },
+    });
+
+    for (const style of segment.styles) {
+      adjustRequestIndex(style, cellContentIndex);
+      allStyles.push(style);
+    }
+  }
+
+  allStyles.push(...styleBlockquote(tableStart));
+
+  const tableStructureSize = 2 + 1 + 2 * 1 * 1; // = 5
+  return docIndex + tableStructureSize + segment.text.length + 1;
 }
 
 // ── Helpers ────────────────────────────────────────────────────

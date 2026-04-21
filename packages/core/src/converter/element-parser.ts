@@ -17,10 +17,12 @@ interface ParseContext {
   filterRanges: Array<{ startIndex: number; endIndex: number }> | null;
   /** Whether to emit attribution markers. */
   includeAttribution: boolean;
-  /** Mermaid sources in document order, for restoring diagrams from images. */
-  mermaidSources: string[];
-  /** Index into mermaidSources for the next image to restore. */
-  mermaidSourceIdx: number;
+  /**
+   * Map from Drive file ID → original mermaid source, used to restore
+   * mermaid diagrams from the images that replaced them on write. Lookup
+   * keys are fileIds extracted from each inline object's sourceUri.
+   */
+  mermaidByFileId: Map<string, string>;
 }
 
 /** An entry mapping a markdown character offset to a Google Doc index. */
@@ -42,8 +44,12 @@ export interface MarkdownWithMapping {
 export interface ParseOptions {
   agentFilter?: string;
   includeAttribution?: boolean;
-  /** Mermaid sources in document order, for restoring diagrams from images. */
-  mermaidSources?: string[];
+  /**
+   * Map from Drive file ID → original mermaid source. On readback an inline
+   * object whose sourceUri points at a known fileId is restored as a mermaid
+   * code block instead of `![title](url)`.
+   */
+  mermaidByFileId?: Map<string, string>;
   /** When set, read from a specific tab (document must be fetched with includeTabsContent). */
   tabId?: string;
 }
@@ -79,8 +85,7 @@ function parseDocumentToMarkdownImpl(
     namedRanges,
     filterRanges,
     includeAttribution: options.includeAttribution ?? false,
-    mermaidSources: options.mermaidSources ?? [],
-    mermaidSourceIdx: 0,
+    mermaidByFileId: options.mermaidByFileId ?? new Map(),
   };
 
   const body = document.body;
@@ -266,15 +271,35 @@ function formatInlineObject(
     inlineObject?.inlineObjectProperties?.embeddedObject;
   if (!embedded) return '';
 
-  // Restore mermaid source if we have mappings (positional matching)
-  if (ctx.mermaidSourceIdx < ctx.mermaidSources.length) {
-    const source = ctx.mermaidSources[ctx.mermaidSourceIdx++];
-    return '```mermaid\n' + source + '\n```';
+  // sourceUri is the URI originally passed to insertInlineImage — stable and
+  // safe to hand back to the user. contentUri is a 30-minute, account-tagged
+  // CDN URL and must not be persisted.
+  const sourceUri = embedded.imageProperties?.sourceUri ?? '';
+
+  // If this inline object was the rendered form of a mermaid block, its
+  // sourceUri embeds the Drive file ID we uploaded. Extract that ID and, if
+  // it's a known mermaid mapping, reconstruct the original ``` block.
+  const driveFileId = extractDriveFileId(sourceUri);
+  if (driveFileId) {
+    const source = ctx.mermaidByFileId.get(driveFileId);
+    if (source !== undefined) {
+      return '```mermaid\n' + source + '\n```';
+    }
   }
 
-  const url = embedded.imageProperties?.contentUri ?? '';
   const title = embedded.title ?? embedded.description ?? 'image';
-  return `![${title}](${url})`;
+  return `![${title}](${sourceUri})`;
+}
+
+/**
+ * Extract the Drive file ID from a URL of the shape we hand to
+ * insertInlineImage for mermaid uploads (`https://drive.google.com/uc?id=FID`).
+ * Returns null for any other URL shape.
+ */
+function extractDriveFileId(url: string): string | null {
+  if (!url) return null;
+  const match = url.match(/^https?:\/\/drive\.google\.com\/uc\?(?:[^&]*&)*id=([^&#]+)/);
+  return match ? match[1] : null;
 }
 
 function parseTable(
