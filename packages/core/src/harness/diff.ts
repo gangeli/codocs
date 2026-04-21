@@ -534,6 +534,20 @@ export async function computeDocDiff(
     );
     lineDocIndices.push(change.docEndIndex);
 
+    // Tables in the markdown don't correspond 1:1 to doc positions —
+    // each markdown row is ONE line but each cell is a separate doc
+    // paragraph, and the markdown "|---|---|" separator line has no
+    // doc representation at all. Route hunks that fall inside a table
+    // region to a structural handler that emits insertTableRow /
+    // deleteTableRow / cell-scoped text edits; hunks outside tables
+    // continue through the generic text-diff path below.
+    const tableRegions = findTableRegionsInSection(
+      oldLines,
+      sectionMdStart,
+      document,
+      indexMap,
+    );
+
     // Google Docs batchUpdate processes requests sequentially.
     // Process hunks in reverse order (highest index first) so that
     // deletes don't shift the indices of subsequent operations.
@@ -545,6 +559,26 @@ export async function computeDocDiff(
       const oldOffset = hunk.buffer1.offset;
       const oldLength = hunk.buffer1.length;
       const newContent = hunk.buffer2.chunk.join('\n');
+
+      const tableRegion = findContainingTableRegion(
+        oldOffset,
+        oldLength,
+        hunk.buffer2.chunk,
+        tableRegions,
+      );
+      if (tableRegion) {
+        emitTableHunkRequests(
+          {
+            oldOffset,
+            oldLength,
+            newChunk: hunk.buffer2.chunk,
+          },
+          tableRegion,
+          oldLines,
+          requests,
+        );
+        continue;
+      }
 
       const deleteStartIdx = Math.min(
         lineDocIndices[Math.min(oldOffset, lineDocIndices.length - 1)],
@@ -998,4 +1032,409 @@ function appendWithBulletClear(
     },
   });
   out.push(...bullets);
+}
+
+// ── Table-aware hunk handling ────────────────────────────────────
+//
+// Markdown tables don't round-trip to the Docs table structure through
+// the line-diff path: one markdown row is *one* line but each cell is a
+// separate doc paragraph, and the markdown `|---|` separator row has no
+// doc representation at all. Naively inserting or deleting text at a
+// table row's notional "doc index" either lands at the table's
+// structural startIndex (rejected as "not inside a paragraph") or spans
+// multiple cell paragraphs in a way the Docs API forbids.
+//
+// Instead, when a line-diff hunk falls inside a markdown table region
+// we classify the hunk shape and emit structural Docs requests:
+//   - Cell text edit (row count unchanged, cell content differs):
+//     delete + insert inside the cell's paragraph range.
+//   - Row addition (pure insert of `|…|` lines): `insertTableRow`
+//     pointing at the adjacent existing row, then `insertText` for
+//     each cell (reverse column order to keep indices stable).
+//   - Row deletion (pure delete of `|…|` lines): `deleteTableRow`
+//     for each row (reverse row order for the same reason).
+//
+// The markdown separator line (`| --- | --- |`) is treated as a
+// non-doc line — hunks that only touch the separator are no-ops, and
+// row indices in the doc are computed with the separator subtracted.
+//
+// Out of scope (falls through to the generic line-diff path; may fail
+// depending on the specific shape): column additions/removals, edits
+// that cross table boundaries, inline formatting inside cell edits
+// (cell text is inserted verbatim; any markdown markers in it render
+// as literal characters).
+
+/** A markdown table detected inside a section, bound to its doc-side
+ *  Schema$Table object for looking up cell paragraph indices. */
+interface TableRegion {
+  /** Inclusive: markdown line index of the header row. */
+  startLine: number;
+  /** Markdown line index of the `| --- |` separator (not a doc row). */
+  separatorLine: number;
+  /** Inclusive: markdown line index of the last data row. */
+  endLine: number;
+  /** Doc index of the table's structural element. */
+  docStartIndex: number;
+  /** Live table reference — used to look up per-cell paragraph ranges. */
+  table: docs_v1.Schema$Table;
+}
+
+/** Lines that look like a table separator: `|`, dashes/colons, `|`. */
+const TABLE_SEPARATOR_RE = /^\|[\s|:\-]+\|$/;
+
+function isTableRowLine(line: string): boolean {
+  const t = line.trim();
+  return t.startsWith('|') && t.endsWith('|') && t.length >= 2;
+}
+
+function isTableSeparatorLine(line: string): boolean {
+  return TABLE_SEPARATOR_RE.test(line.trim());
+}
+
+/** Parse a markdown table row's cells: strip the leading/trailing `|`
+ *  and split on inner `|`, trimming each cell. Empty line returns []. */
+function parseTableRowCells(line: string): string[] {
+  const t = line.trim();
+  if (!t.startsWith('|') || !t.endsWith('|') || t.length < 2) return [];
+  const inner = t.slice(1, -1);
+  return inner.split('|').map((c) => c.trim());
+}
+
+/**
+ * Walk the section's lines and detect each markdown table. Each region
+ * binds its markdown line range to the Schema$Table in the live doc
+ * (looked up by the table's structural startIndex from the indexMap).
+ * Regions without a matching doc-side table are silently dropped —
+ * callers fall back to the generic line-diff path for them.
+ */
+function findTableRegionsInSection(
+  sectionLines: string[],
+  sectionMdStart: number,
+  document: docs_v1.Schema$Document,
+  indexMap: IndexMapEntry[],
+): TableRegion[] {
+  const regions: TableRegion[] = [];
+  let mdOffset = sectionMdStart;
+  let i = 0;
+  while (i < sectionLines.length) {
+    const header = sectionLines[i];
+    const next = i + 1 < sectionLines.length ? sectionLines[i + 1] : '';
+    if (isTableRowLine(header) && isTableSeparatorLine(next)) {
+      let endLine = i + 1;
+      while (endLine + 1 < sectionLines.length && isTableRowLine(sectionLines[endLine + 1])) {
+        endLine++;
+      }
+
+      const headerMdOffset = mdOffset;
+      const docStartIndex = lookupDocIndexAt(indexMap, headerMdOffset);
+      const tableElem = docStartIndex != null ? findTableElementAt(document, docStartIndex) : null;
+      if (docStartIndex != null && tableElem) {
+        regions.push({
+          startLine: i,
+          separatorLine: i + 1,
+          endLine,
+          docStartIndex,
+          table: tableElem,
+        });
+      }
+
+      for (let k = i; k <= endLine; k++) {
+        mdOffset += sectionLines[k].length + 1;
+      }
+      i = endLine + 1;
+    } else {
+      mdOffset += sectionLines[i].length + 1;
+      i++;
+    }
+  }
+  return regions;
+}
+
+function lookupDocIndexAt(indexMap: IndexMapEntry[], mdOffset: number): number | null {
+  // indexMap entries land on structural-element mdOffsets; allow a
+  // small tolerance because heading/bullet prefix stripping shifts
+  // the offset by up to the prefix length.
+  let best: IndexMapEntry | null = null;
+  let bestDist = Infinity;
+  for (const entry of indexMap) {
+    const dist = Math.abs(entry.mdOffset - mdOffset);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = entry;
+    }
+  }
+  return best && bestDist <= 5 ? best.docIndex : null;
+}
+
+function findTableElementAt(
+  document: docs_v1.Schema$Document,
+  startIndex: number,
+): docs_v1.Schema$Table | null {
+  for (const elem of document.body?.content ?? []) {
+    if (elem.startIndex === startIndex && elem.table) {
+      return elem.table;
+    }
+  }
+  return null;
+}
+
+/**
+ * Map a markdown line index to the 0-based row index in the Docs
+ * table. Header is row 0; the `| --- |` separator has no doc row
+ * (returns null); any row after the separator is `mdLine -
+ * separatorLine` (so separatorLine+1 is row 1, +2 is row 2, …).
+ * Returns null for mdLine values outside the region.
+ */
+function mdLineToDocRow(region: TableRegion, mdLine: number): number | null {
+  if (mdLine === region.startLine) return 0;
+  if (mdLine === region.separatorLine) return null;
+  if (mdLine > region.separatorLine && mdLine <= region.endLine) {
+    return mdLine - region.separatorLine;
+  }
+  return null;
+}
+
+/** Find the row whose endIndex points to `mdLine - separatorLine = k`
+ *  in the doc — the row in which `insertTableRow below` should anchor
+ *  or `deleteTableRow` should target. Mirrors mdLineToDocRow with
+ *  bounds checking against the live table. */
+function cellParagraphRange(
+  table: docs_v1.Schema$Table,
+  row: number,
+  col: number,
+): { startIndex: number; endIndex: number } | null {
+  const r = table.tableRows?.[row];
+  if (!r) return null;
+  const c = r.tableCells?.[col];
+  if (!c) return null;
+  const firstPara = c.content?.[0];
+  if (!firstPara?.paragraph || firstPara.startIndex == null || firstPara.endIndex == null) {
+    return null;
+  }
+  return { startIndex: firstPara.startIndex, endIndex: firstPara.endIndex };
+}
+
+/**
+ * Classify a hunk's relationship to the section's table regions.
+ * Returns the region containing the hunk if the entire hunk is inside
+ * a table (including pure inserts that land at `endLine + 1`), or
+ * null if the hunk should fall through to the generic line-diff path.
+ *
+ * A hunk counts as "inside" a table only if BOTH the old lines it
+ * covers AND every new line it would emit are table rows or the
+ * separator. That keeps hunks that mix table and non-table content on
+ * the safe fallback path.
+ */
+function findContainingTableRegion(
+  oldOffset: number,
+  oldLength: number,
+  newChunk: string[],
+  regions: TableRegion[],
+): TableRegion | null {
+  for (const region of regions) {
+    const oldStart = oldOffset;
+    const oldEnd = oldOffset + oldLength; // exclusive
+    let oldInside: boolean;
+    if (oldLength === 0) {
+      // Pure insert: inside if landing anywhere from the header row up
+      // to one past the last row (appending after the table).
+      oldInside = oldStart >= region.startLine && oldStart <= region.endLine + 1;
+    } else {
+      oldInside = oldStart >= region.startLine && oldEnd - 1 <= region.endLine;
+    }
+    if (!oldInside) continue;
+
+    const allNewAreTableLike = newChunk.every(
+      (l) => isTableRowLine(l) || isTableSeparatorLine(l),
+    );
+    if (!allNewAreTableLike) return null;
+    return region;
+  }
+  return null;
+}
+
+/**
+ * Emit structural Docs requests for a hunk that falls inside a table
+ * region. The hunk's shape determines which kind of ops we emit:
+ *
+ *   - Pure insert (oldLength === 0): each new `|…|` chunk line becomes
+ *     an insertTableRow + per-cell insertText. Rows are processed in
+ *     reverse so earlier inserts don't shift later ones.
+ *   - Pure delete (newChunk empty or all empty strings): each
+ *     corresponding doc row is removed via deleteTableRow, reverse order.
+ *   - Replacement: we pair each old doc row with a new row from the
+ *     chunk (ignoring any separator lines on either side) and emit a
+ *     cell text edit for every cell whose content changed. If the new
+ *     content has more rows than the old, the extras are appended via
+ *     insertTableRow; fewer new rows triggers deleteTableRow for the
+ *     trailing old rows.
+ */
+function emitTableHunkRequests(
+  hunk: { oldOffset: number; oldLength: number; newChunk: string[] },
+  region: TableRegion,
+  oldLines: string[],
+  requests: docs_v1.Schema$Request[],
+): void {
+  const oldDocRows: Array<{ mdLine: number; docRow: number; cells: string[] }> = [];
+  for (let i = 0; i < hunk.oldLength; i++) {
+    const mdLine = hunk.oldOffset + i;
+    const docRow = mdLineToDocRow(region, mdLine);
+    if (docRow === null) continue; // skip separator
+    oldDocRows.push({ mdLine, docRow, cells: parseTableRowCells(oldLines[mdLine]) });
+  }
+
+  const newDocRows: string[][] = [];
+  for (const line of hunk.newChunk) {
+    if (isTableSeparatorLine(line) || !isTableRowLine(line)) continue;
+    newDocRows.push(parseTableRowCells(line));
+  }
+
+  // Shape: all old rows deleted, no replacement → row deletions.
+  if (newDocRows.length === 0 && oldDocRows.length > 0) {
+    for (let i = oldDocRows.length - 1; i >= 0; i--) {
+      requests.push({
+        deleteTableRow: {
+          tableCellLocation: {
+            tableStartLocation: { index: region.docStartIndex },
+            rowIndex: oldDocRows[i].docRow,
+            columnIndex: 0,
+          },
+        },
+      });
+    }
+    return;
+  }
+
+  // Shape: pure insert (no old rows covered) → row additions after the
+  // row preceding the insert point. Anchor is the last doc row before
+  // hunk.oldOffset (clamped to 0 if the insert lands on the header).
+  if (oldDocRows.length === 0 && newDocRows.length > 0) {
+    const anchorMdLine = Math.min(hunk.oldOffset - 1, region.endLine);
+    const anchorDocRow =
+      anchorMdLine < region.startLine
+        ? 0
+        : mdLineToDocRow(region, anchorMdLine) ?? 0;
+    // Insert in reverse so earlier rows aren't shifted by later ones.
+    for (let r = newDocRows.length - 1; r >= 0; r--) {
+      emitInsertTableRow(region, anchorDocRow, newDocRows[r], r, requests);
+    }
+    return;
+  }
+
+  // Shape: replacement — pair old and new rows by position. Cells that
+  // changed become text edits scoped to their cell paragraph. Extra
+  // new rows are appended; extra old rows are deleted.
+  const pairCount = Math.min(oldDocRows.length, newDocRows.length);
+  // Iterate pairs in reverse so delete+insert ops on later rows don't
+  // shift the indices of earlier rows' cell paragraphs.
+  for (let i = pairCount - 1; i >= 0; i--) {
+    emitCellEdits(region, oldDocRows[i].docRow, oldDocRows[i].cells, newDocRows[i], requests);
+  }
+  if (newDocRows.length > oldDocRows.length) {
+    const anchorDocRow = oldDocRows[oldDocRows.length - 1]?.docRow ?? 0;
+    for (let r = newDocRows.length - 1; r >= oldDocRows.length; r--) {
+      emitInsertTableRow(region, anchorDocRow, newDocRows[r], r - oldDocRows.length, requests);
+    }
+  } else if (oldDocRows.length > newDocRows.length) {
+    for (let i = oldDocRows.length - 1; i >= newDocRows.length; i--) {
+      requests.push({
+        deleteTableRow: {
+          tableCellLocation: {
+            tableStartLocation: { index: region.docStartIndex },
+            rowIndex: oldDocRows[i].docRow,
+            columnIndex: 0,
+          },
+        },
+      });
+    }
+  }
+}
+
+/**
+ * Emit a cell text edit: for each column whose old cell differs from
+ * the new cell, replace the cell paragraph's text. Process columns in
+ * reverse so later-column edits don't shift earlier-column cell
+ * paragraph indices.
+ */
+function emitCellEdits(
+  region: TableRegion,
+  docRow: number,
+  oldCells: string[],
+  newCells: string[],
+  requests: docs_v1.Schema$Request[],
+): void {
+  const maxCol = Math.min(oldCells.length, newCells.length);
+  for (let c = maxCol - 1; c >= 0; c--) {
+    if (oldCells[c] === newCells[c]) continue;
+    const range = cellParagraphRange(region.table, docRow, c);
+    if (!range) continue;
+    // Delete existing cell text (everything up to the cell paragraph's
+    // trailing \n). The paragraph is [start, end); the \n is at end-1.
+    if (range.endIndex - 1 > range.startIndex) {
+      requests.push({
+        deleteContentRange: {
+          range: { startIndex: range.startIndex, endIndex: range.endIndex - 1 },
+        },
+      });
+    }
+    if (newCells[c].length > 0) {
+      requests.push({
+        insertText: {
+          location: { index: range.startIndex },
+          text: newCells[c],
+        },
+      });
+    }
+  }
+}
+
+/**
+ * Emit a single `insertTableRow` + per-cell `insertText` sequence to
+ * add a new row after `anchorDocRow` in the live table. `newRowOffset`
+ * is the row's position among the rows being inserted in this batch
+ * (0-based, relative to the anchor). Used to compute the cell
+ * paragraph positions of the new row from the anchor's endIndex.
+ */
+function emitInsertTableRow(
+  region: TableRegion,
+  anchorDocRow: number,
+  cells: string[],
+  newRowOffset: number,
+  requests: docs_v1.Schema$Request[],
+): void {
+  const anchorRow = region.table.tableRows?.[anchorDocRow];
+  if (!anchorRow || anchorRow.endIndex == null) return;
+  const C = cells.length;
+
+  requests.push({
+    insertTableRow: {
+      tableCellLocation: {
+        tableStartLocation: { index: region.docStartIndex },
+        rowIndex: anchorDocRow,
+        columnIndex: 0,
+      },
+      insertBelow: true,
+    },
+  });
+
+  // Each newly inserted row occupies 1 (row) + 2*C (cells) indices in
+  // the doc, and an empty cell paragraph is at newRowStart + 2 + 2c.
+  // When we insert multiple rows in the same batch (reverse order),
+  // the new row at offset `newRowOffset` from the anchor lands
+  // `newRowOffset * (1 + 2*C)` past the anchor's endIndex.
+  const rowSize = 1 + 2 * C;
+  const newRowStart = anchorRow.endIndex + newRowOffset * rowSize;
+
+  // Insert cell text in reverse column order so earlier cells' doc
+  // indices aren't shifted by later cells' inserts.
+  for (let c = C - 1; c >= 0; c--) {
+    if (cells[c].length === 0) continue;
+    const cellParagraphAt = newRowStart + 2 + 2 * c;
+    requests.push({
+      insertText: {
+        location: { index: cellParagraphAt },
+        text: cells[c],
+      },
+    });
+  }
 }

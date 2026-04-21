@@ -32,6 +32,12 @@ interface Para {
   heading?: number;
 }
 
+interface TableSpec {
+  /** Rows of cell text. Row 0 is the header; subsequent rows are
+   *  data rows. Each row must have the same number of cells. */
+  rows: string[][];
+}
+
 /**
  * Build a minimal Schema$Document with the given paragraphs. Each
  * paragraph has a single textRun containing its text + trailing "\n".
@@ -40,25 +46,49 @@ interface Para {
  * to reason about).
  */
 function makeDoc(paras: Para[]): { document: docs_v1.Schema$Document; bodyText: string } {
+  return makeDocWithParts(paras.map((p) => ({ kind: 'para' as const, para: p })));
+}
+
+/**
+ * Build a Schema$Document from a sequence of parts (paragraphs and
+ * tables) whose indices, startIndex/endIndex fields, and body text
+ * buffer are laid out the way the live Docs API would produce them.
+ * Tables track per-cell paragraph ranges so callers can assert on
+ * request shapes that target specific cells by row/col.
+ */
+function makeDocWithParts(
+  parts: Array<
+    | { kind: 'para'; para: Para }
+    | { kind: 'table'; table: TableSpec }
+  >,
+): { document: docs_v1.Schema$Document; bodyText: string } {
   const body: docs_v1.Schema$StructuralElement[] = [];
   let pos = 1;
   let bodyText = '';
-  for (const p of paras) {
-    const content = p.text + '\n';
-    const len = content.length; // UTF-16 code units
-    const namedStyle = p.heading ? `HEADING_${p.heading}` : 'NORMAL_TEXT';
-    body.push({
-      startIndex: pos,
-      endIndex: pos + len,
-      paragraph: {
-        elements: [
-          { startIndex: pos, endIndex: pos + len, textRun: { content, textStyle: {} } },
-        ],
-        paragraphStyle: { namedStyleType: namedStyle },
-      },
-    });
-    pos += len;
-    bodyText += content;
+  for (const part of parts) {
+    if (part.kind === 'para') {
+      const p = part.para;
+      const content = p.text + '\n';
+      const len = content.length;
+      const namedStyle = p.heading ? `HEADING_${p.heading}` : 'NORMAL_TEXT';
+      body.push({
+        startIndex: pos,
+        endIndex: pos + len,
+        paragraph: {
+          elements: [
+            { startIndex: pos, endIndex: pos + len, textRun: { content, textStyle: {} } },
+          ],
+          paragraphStyle: { namedStyleType: namedStyle },
+        },
+      });
+      pos += len;
+      bodyText += content;
+    } else {
+      const { element, endIndex, text } = buildTableElement(part.table, pos);
+      body.push(element);
+      pos = endIndex;
+      bodyText += text;
+    }
   }
   return {
     document: {
@@ -70,6 +100,73 @@ function makeDoc(paras: Para[]): { document: docs_v1.Schema$Document; bodyText: 
       inlineObjects: {},
     },
     bodyText,
+  };
+}
+
+/**
+ * Build a Schema$StructuralElement wrapping a Schema$Table with the
+ * given rows and cell texts, starting at `tableStart`. Each cell has
+ * one paragraph whose content is `cellText + "\n"`. Cell structural
+ * elements take 1 index; row structural elements take 1 index; the
+ * table structural element takes 1 index. Matches the index layout
+ * documented in md-to-docs.ts / processTableSegment.
+ */
+function buildTableElement(
+  table: TableSpec,
+  tableStart: number,
+): {
+  element: docs_v1.Schema$StructuralElement;
+  endIndex: number;
+  text: string;
+} {
+  const tableRows: docs_v1.Schema$TableRow[] = [];
+  let idx = tableStart + 1; // row 0 structural
+  let text = '';
+  for (let r = 0; r < table.rows.length; r++) {
+    const rowStart = idx;
+    const tableCells: docs_v1.Schema$TableCell[] = [];
+    let cellsIdx = idx + 1; // first cell structural
+    for (let c = 0; c < table.rows[r].length; c++) {
+      const cellStart = cellsIdx;
+      const paraStart = cellStart + 1;
+      const paraContent = table.rows[r][c] + '\n';
+      const paraEnd = paraStart + paraContent.length;
+      const cellEnd = paraEnd;
+      tableCells.push({
+        startIndex: cellStart,
+        endIndex: cellEnd,
+        content: [{
+          startIndex: paraStart,
+          endIndex: paraEnd,
+          paragraph: {
+            elements: [{
+              startIndex: paraStart,
+              endIndex: paraEnd,
+              textRun: { content: paraContent, textStyle: {} },
+            }],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+          },
+        }],
+      });
+      text += paraContent;
+      cellsIdx = cellEnd;
+    }
+    const rowEnd = cellsIdx;
+    tableRows.push({ startIndex: rowStart, endIndex: rowEnd, tableCells });
+    idx = rowEnd;
+  }
+  return {
+    element: {
+      startIndex: tableStart,
+      endIndex: idx,
+      table: {
+        rows: table.rows.length,
+        columns: table.rows[0]?.length ?? 0,
+        tableRows,
+      },
+    },
+    endIndex: idx,
+    text,
   };
 }
 
@@ -614,5 +711,166 @@ describe('applyRequests (test helper)', () => {
     //   insert at index 4 (before 'd'): "abcXYdef"
     //   delete [2,3) removes 'b': "acXYdef"
     expect(after).toBe('acXYdef');
+  });
+});
+
+describe('pipeline: agent edit → applied doc (table edits)', () => {
+  // These tests inspect the emitted request shapes directly instead of
+  // applying them via applyRequests: the simulator doesn't know how to
+  // reshape a Schema$Table under insertTableRow / deleteTableRow, and
+  // modelling that faithfully here would re-implement a big chunk of
+  // the Docs API. Validating the request shapes plus the target cell
+  // paragraph ranges is sufficient — the e2e round-trip test exercises
+  // the actual Docs application.
+
+  it('edits a table cell via a cell-paragraph text replacement', async () => {
+    const { document } = makeDocWithParts([
+      { kind: 'para', para: { text: 'Heading', heading: 1 } },
+      {
+        kind: 'table',
+        table: {
+          rows: [
+            ['Col1', 'Col2'],
+            ['a', 'b'],
+            ['c', 'd'],
+          ],
+        },
+      },
+    ]);
+    const { markdown: base } = docsToMarkdownWithMapping(document);
+    const ours = base.replace('| a | b |', '| A | b |');
+
+    const theirs = base;
+    const diff = await computeDocDiff(base, ours, theirs, document, [], 'test-agent');
+    // docsToMarkdownWithMapping emits one indexMap entry per structural
+    // element — use the real one:
+    const { indexMap } = docsToMarkdownWithMapping(document);
+    const diffReal = await computeDocDiff(base, ours, theirs, document, indexMap, 'test-agent');
+
+    // No structural row ops — it's a cell edit.
+    expect(diffReal.requests.some((r) => r.insertTableRow)).toBe(false);
+    expect(diffReal.requests.some((r) => r.deleteTableRow)).toBe(false);
+
+    // There should be a text replacement scoped to the "a" cell's
+    // paragraph range. The doc has: heading (Heading\n at [1, 9)),
+    // then table starting at 9. Row 0 (header): row structural at 10,
+    // col 0 cell at 11, paragraph at 12 ("Col1\n"), endIndex 17,
+    // col 1 cell at 17, paragraph at 18 ("Col2\n"), endIndex 23.
+    // Row 1: row at 23, col 0 cell at 24, paragraph at 25 ("a\n"),
+    // endIndex 27, col 1 cell at 27, paragraph at 28 ("b\n"), endIndex 30.
+    // So the "a" paragraph is at [25, 27).
+    const deletes = diffReal.requests.filter((r) => r.deleteContentRange);
+    const inserts = diffReal.requests.filter((r) => r.insertText);
+
+    const aDelete = deletes.find(
+      (r) => r.deleteContentRange?.range?.startIndex === 25,
+    );
+    expect(aDelete).toBeDefined();
+    // Paragraph is "a\n" at [25, 27); the delete drops just "a" (keeps \n),
+    // i.e. endIndex === 26.
+    expect(aDelete!.deleteContentRange?.range?.endIndex).toBe(26);
+
+    const aInsert = inserts.find(
+      (r) => r.insertText?.location?.index === 25 && r.insertText?.text === 'A',
+    );
+    expect(aInsert).toBeDefined();
+
+    // The "b" cell is untouched — no delete or insert at that range.
+    expect(deletes.find((r) => r.deleteContentRange?.range?.startIndex === 28)).toBeUndefined();
+    expect(inserts.find((r) => r.insertText?.location?.index === 28 && r.insertText?.text === 'b')).toBeUndefined();
+
+    // And the header row (doc row 0) is NOT touched.
+    expect(deletes.find((r) => r.deleteContentRange?.range?.startIndex === 12)).toBeUndefined();
+    expect(deletes.find((r) => r.deleteContentRange?.range?.startIndex === 18)).toBeUndefined();
+
+    // Unused to avoid lint warnings.
+    void diff;
+  });
+
+  it('adds a table row via insertTableRow + per-cell insertText', async () => {
+    const { document } = makeDocWithParts([
+      { kind: 'para', para: { text: 'Heading', heading: 1 } },
+      {
+        kind: 'table',
+        table: {
+          rows: [
+            ['Col1', 'Col2'],
+            ['a', 'b'],
+            ['c', 'd'],
+          ],
+        },
+      },
+    ]);
+    const { markdown: base, indexMap } = docsToMarkdownWithMapping(document);
+    const ours = base.replace('| c | d |', '| c | d |\n| e | f |');
+
+    const diff = await computeDocDiff(base, ours, document.body!.content ? base : base, document, indexMap, 'test-agent');
+
+    const rowInserts = diff.requests.filter((r) => r.insertTableRow);
+    expect(rowInserts.length).toBe(1);
+    const loc = rowInserts[0].insertTableRow!.tableCellLocation!;
+    // Table starts at index 9, and the new row is inserted below
+    // doc row 2 ("c | d"). rowIndex must be 2 and insertBelow true.
+    expect(loc.tableStartLocation?.index).toBe(9);
+    expect(loc.rowIndex).toBe(2);
+    expect(rowInserts[0].insertTableRow!.insertBelow).toBe(true);
+
+    // The per-cell inserts land at positions computed from the anchor
+    // row's endIndex. Row 2 (['c', 'd']) cells lay out:
+    //   table at 9, row 2 at [30, 37): row structure at 30, cell(2,0)
+    //   at 31, paragraph "c\n" at [32, 34), cell(2,1) at 34,
+    //   paragraph "d\n" at [35, 37). So row 2 endIndex = 37.
+    // After insertTableRow below row 2, the new row starts at 37 and
+    // its cell paragraphs are at newRowStart + 2 + 2c: 39 (col 0),
+    // 41 (col 1).
+    const cellInserts = diff.requests.filter(
+      (r) => r.insertText && (r.insertText.text === 'e' || r.insertText.text === 'f'),
+    );
+    expect(cellInserts.length).toBe(2);
+    const fInsert = cellInserts.find((r) => r.insertText?.text === 'f');
+    const eInsert = cellInserts.find((r) => r.insertText?.text === 'e');
+    expect(fInsert?.insertText?.location?.index).toBe(41);
+    expect(eInsert?.insertText?.location?.index).toBe(39);
+    // 'f' must be emitted BEFORE 'e' in the request stream, so that
+    // inserting 'e' doesn't shift 'f's target index.
+    const fIdx = diff.requests.indexOf(fInsert!);
+    const eIdx = diff.requests.indexOf(eInsert!);
+    expect(fIdx).toBeLessThan(eIdx);
+  });
+
+  it('deletes a table row via deleteTableRow, not text-delete', async () => {
+    const { document } = makeDocWithParts([
+      { kind: 'para', para: { text: 'Heading', heading: 1 } },
+      {
+        kind: 'table',
+        table: {
+          rows: [
+            ['Col1', 'Col2'],
+            ['a', 'b'],
+            ['c', 'd'],
+          ],
+        },
+      },
+    ]);
+    const { markdown: base, indexMap } = docsToMarkdownWithMapping(document);
+    const ours = base.replace('| a | b |\n', '');
+
+    const diff = await computeDocDiff(base, ours, base, document, indexMap, 'test-agent');
+
+    const rowDeletes = diff.requests.filter((r) => r.deleteTableRow);
+    expect(rowDeletes.length).toBe(1);
+    const loc = rowDeletes[0].deleteTableRow!.tableCellLocation!;
+    expect(loc.tableStartLocation?.index).toBe(9);
+    expect(loc.rowIndex).toBe(1); // row [a, b] is doc row 1
+
+    // No text-deletes should target the cell paragraphs of that row —
+    // the structural row delete already removes them. Specifically,
+    // nothing should delete into the "a" or "b" cell ranges ([25, 27)
+    // and [28, 30)).
+    const textDeletes = diff.requests.filter((r) => r.deleteContentRange);
+    for (const d of textDeletes) {
+      const start = d.deleteContentRange!.range!.startIndex!;
+      expect(start < 23 || start >= 30).toBe(true);
+    }
   });
 });
