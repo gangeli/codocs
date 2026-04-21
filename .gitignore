@@ -3,6 +3,7 @@ dist/
 .env
 .env.*
 *.tsbuildinfo
+.claude/scheduled_tasks.lock
 
 # Built CLI binary
 /codocs
