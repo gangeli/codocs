@@ -77,6 +77,7 @@ e2e/rendering: build
 
 e2e/roundtrip: build
 	npx tsx scripts/e2e-roundtrip.ts
+	npx tsx scripts/e2e-edit-roundtrip.ts
 
 e2e/agents: build
 	npx tsx scripts/e2e-agents.ts $(if $(filter 0,$(QUOTA)),,--quota)

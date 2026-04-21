@@ -9,6 +9,177 @@ import {
 } from '../../src/harness/diff.js';
 import type { IndexMapEntry } from '../../src/converter/element-parser.js';
 
+// ── Index map test helpers ────────────────────────────────────────
+//
+// NOTE TO FUTURE CLAUDE (and humans): Whenever a new test in this file
+// needs an IndexMapEntry[], build it with buildDocAndMap() (or validate
+// a hand-rolled map via validateIndexMap()) so mismatches between
+// markdown offsets and doc paragraph content fail loudly rather than
+// silently producing misleading diff output. Do NOT go back to ad-hoc
+// `makeDocument(bodyEndIndex)` + literal index maps — they claim
+// mappings the fake doc can't actually back up.
+
+/**
+ * Build a fake Google Docs document whose body contains real paragraphs,
+ * plus an index map that is validated against the resulting doc before
+ * it is returned. `paragraphs` lists the non-empty paragraphs the test
+ * wants in the doc body, in order; each entry's `text` is the paragraph
+ * content as it appears in the doc (no trailing newline, no markdown
+ * markers) and `mdOffset` is where the corresponding markdown line
+ * starts in `md`. If `mdOffset` is omitted the paragraph still lands
+ * in the doc body but does not contribute an index map entry (useful
+ * for tests that want a sparse index).
+ */
+function buildDocAndMap(
+  md: string,
+  paragraphs: Array<{ text: string; mdOffset?: number }>,
+): {
+  doc: docs_v1.Schema$Document;
+  indexMap: IndexMapEntry[];
+  bodyEndIndex: number;
+} {
+  const content: docs_v1.Schema$StructuralElement[] = [
+    { startIndex: 0, endIndex: 1, sectionBreak: {} },
+  ];
+  const indexMap: IndexMapEntry[] = [];
+  let idx = 1;
+
+  for (const { text, mdOffset } of paragraphs) {
+    const docText = text + '\n';
+    const start = idx;
+    const end = idx + docText.length;
+    content.push({
+      startIndex: start,
+      endIndex: end,
+      paragraph: {
+        elements: [
+          {
+            startIndex: start,
+            endIndex: end,
+            textRun: { content: docText },
+          },
+        ],
+      },
+    });
+    if (mdOffset !== undefined) {
+      indexMap.push({ mdOffset, docIndex: start });
+    }
+    idx = end;
+  }
+
+  const doc: docs_v1.Schema$Document = { body: { content } };
+  const bodyEndIndex = idx;
+  validateIndexMap(md, doc, indexMap);
+  return { doc, indexMap, bodyEndIndex };
+}
+
+/**
+ * Strip the markdown markers that don't appear in the rendered doc text
+ * (heading/bullet/numbered prefixes, bold/italic wrappers, inline code,
+ * links). Used when comparing a raw markdown line against the text of
+ * the paragraph it represents in the Google Doc.
+ */
+function stripMdMarkers(line: string): string {
+  return line
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^(?:-|\*|\+|\d+\.)\s+\[[ xX]\]\s+/, '')
+    .replace(/^(?:-|\*|\+|\d+\.)\s+/, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/(?<!\w)_([^_]+)_(?!\w)/g, '$1');
+}
+
+/**
+ * Verify every IndexMapEntry matches the underlying doc + markdown.
+ *
+ * For each `{ mdOffset, docIndex }`:
+ *   - The doc must have a paragraph whose startIndex === docIndex.
+ *   - The markdown line starting at `mdOffset` (up to the next '\n'),
+ *     with common markdown markers stripped (heading prefixes, bullets,
+ *     bold/italic/link wrappers, inline code), must equal the
+ *     paragraph's text (without its trailing '\n').
+ *
+ * Throws a descriptive Error on any mismatch. Call this from tests
+ * that construct index maps by hand so typos in offsets or doc indices
+ * surface as test failures rather than weird diff behaviour.
+ */
+function validateIndexMap(
+  md: string,
+  doc: docs_v1.Schema$Document,
+  indexMap: IndexMapEntry[],
+): void {
+  const paragraphsByStart = new Map<number, string>();
+  for (const el of doc.body?.content ?? []) {
+    if (el.paragraph && el.startIndex != null) {
+      let t = '';
+      for (const e of el.paragraph.elements ?? []) {
+        if (e.textRun?.content) t += e.textRun.content;
+      }
+      paragraphsByStart.set(el.startIndex, t.replace(/\n$/, ''));
+    }
+  }
+
+  for (const entry of indexMap) {
+    const docText = paragraphsByStart.get(entry.docIndex);
+    if (docText === undefined) {
+      const starts = Array.from(paragraphsByStart.keys()).join(', ');
+      throw new Error(
+        `Index map entry { mdOffset: ${entry.mdOffset}, docIndex: ${entry.docIndex} }: ` +
+          `no paragraph starts at docIndex ${entry.docIndex}. ` +
+          `Paragraph start indices in doc: [${starts}]`,
+      );
+    }
+    const nl = md.indexOf('\n', entry.mdOffset);
+    const mdLine =
+      nl === -1 ? md.substring(entry.mdOffset) : md.substring(entry.mdOffset, nl);
+    const stripped = stripMdMarkers(mdLine);
+    if (stripped !== docText) {
+      throw new Error(
+        `Index map entry { mdOffset: ${entry.mdOffset}, docIndex: ${entry.docIndex} }: ` +
+          `markdown line is ${JSON.stringify(mdLine)} ` +
+          `(stripped: ${JSON.stringify(stripped)}) ` +
+          `but doc paragraph has text ${JSON.stringify(docText)}`,
+      );
+    }
+  }
+}
+
+describe('index map validation helpers', () => {
+  it('validateIndexMap accepts a correctly built map', () => {
+    const md = `# Title\n\nBody line.\n`;
+    const { doc, indexMap } = buildDocAndMap(md, [
+      { text: 'Title', mdOffset: 0 },
+      { text: 'Body line.', mdOffset: 9 },
+    ]);
+    expect(() => validateIndexMap(md, doc, indexMap)).not.toThrow();
+  });
+
+  it('validateIndexMap throws when mdOffset points to the wrong text', () => {
+    const md = `# Title\n\nBody line.\n`;
+    const { doc } = buildDocAndMap(md, [
+      { text: 'Title', mdOffset: 0 },
+      { text: 'Body line.', mdOffset: 9 },
+    ]);
+    // Swap mdOffsets so the first entry now points at the body line.
+    const bogus: IndexMapEntry[] = [
+      { mdOffset: 9, docIndex: 1 },
+      { mdOffset: 0, docIndex: 9 },
+    ];
+    expect(() => validateIndexMap(md, doc, bogus)).toThrow(/markdown line is/);
+  });
+
+  it('validateIndexMap throws when docIndex has no paragraph', () => {
+    const md = `# Title\n\nBody.\n`;
+    const { doc } = buildDocAndMap(md, [{ text: 'Title', mdOffset: 0 }]);
+    expect(() =>
+      validateIndexMap(md, doc, [{ mdOffset: 0, docIndex: 999 }]),
+    ).toThrow(/no paragraph starts at docIndex 999/);
+  });
+});
+
 describe('parseSections', () => {
   it('parses a document with no headings as a single section', () => {
     const md = 'Hello world\nSecond line\n';
@@ -367,55 +538,129 @@ Charlie updated by human.
     expect(result.mergedMarkdown).toContain('Beta updated by agent.');
     expect(result.mergedMarkdown).toContain('Charlie updated by human.');
   });
+
+  it('keeps agent changes when the same section was deleted by others', () => {
+    // Agent modified section A. Concurrently, others deleted section A.
+    // Current policy: agent's work survives (the edit "wins" over the delete).
+    const base = `# A
+
+Original.
+`;
+    const ours = `# A
+
+Agent modified.
+`;
+    const theirs = ``;
+
+    const result = mergeDocuments(base, ours, theirs);
+
+    expect(result.hasConflicts).toBe(false);
+    expect(result.mergedMarkdown).toContain('Agent modified.');
+  });
+
+  it('conflicts when both sides add a new section with the same heading', () => {
+    const base = `# A
+
+A body.
+`;
+    const ours = `# A
+
+A body.
+
+# B
+
+B by agent.
+`;
+    const theirs = `# A
+
+A body.
+
+# B
+
+B by human.
+`;
+
+    const result = mergeDocuments(base, ours, theirs);
+
+    // Same heading added by both with different content — must conflict.
+    expect(result.hasConflicts).toBe(true);
+    expect(result.mergedMarkdown).toContain('<<<<<<<');
+    expect(result.mergedMarkdown).toContain('>>>>>>>');
+  });
+
+  it('keeps conflict markers when the resolver callback leaves them in place', async () => {
+    const base = `# S
+
+Original.
+`;
+    const ours = `# S
+
+Ours.
+`;
+    const theirs = `# S
+
+Theirs.
+`;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'S', mdOffset: 0 },
+      { text: 'Original.', mdOffset: base.indexOf('Original.') },
+    ]);
+
+    // Resolver returns text that still includes the conflict markers — the
+    // diff engine must treat this as unresolved and not silently accept it.
+    const badResolver = async (conflictText: string) => conflictText;
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent', badResolver);
+
+    expect(result.conflictsResolved).toBe(0);
+  });
+
+  it('section reordering by others alone is lost (merged keeps base order)', () => {
+    // Current behaviour: alignSections walks base, then ours, then theirs,
+    // so the first-seen order wins. When only `theirs` reorders, the
+    // merged output still follows the base ordering.
+    const base = `# A
+
+A.
+
+# B
+
+B.
+`;
+    const ours = base;
+    const theirs = `# B
+
+B.
+
+# A
+
+A.
+`;
+
+    const result = mergeDocuments(base, ours, theirs);
+
+    expect(result.hasConflicts).toBe(false);
+    const aIdx = result.mergedMarkdown.indexOf('# A');
+    const bIdx = result.mergedMarkdown.indexOf('# B');
+    expect(aIdx).toBeGreaterThanOrEqual(0);
+    expect(bIdx).toBeGreaterThanOrEqual(0);
+    expect(aIdx).toBeLessThan(bIdx);
+  });
 });
 
 describe('computeDocDiff', () => {
-  /**
-   * Helper to build a minimal Google Docs document with a body whose last
-   * structural element ends at `bodyEndIndex`.
-   */
-  function makeDocument(bodyEndIndex: number): docs_v1.Schema$Document {
-    return {
-      body: {
-        content: [
-          { startIndex: 0, endIndex: 1, sectionBreak: {} },
-          {
-            startIndex: 1,
-            endIndex: bodyEndIndex,
-            paragraph: {
-              elements: [
-                {
-                  startIndex: 1,
-                  endIndex: bodyEndIndex,
-                  textRun: { content: 'x'.repeat(bodyEndIndex - 1) },
-                },
-              ],
-            },
-          },
-        ],
-      },
-    };
-  }
-
-  /**
-   * Build a simple indexMap: one entry per section mapping markdown offset
-   * to a doc index.
-   */
-  function makeIndexMap(entries: Array<{ mdOffset: number; docIndex: number }>): IndexMapEntry[] {
-    return entries;
-  }
-
   it('clamps deleteContentRange endIndex when changed line extends to body end', async () => {
-    // Single section, no heading — so the entire content is the "changed" part.
-    // The delete must not extend past bodyEndIndex - 1.
-    const bodyEndIndex = 20;
-    const doc = makeDocument(bodyEndIndex);
-
+    // Single paragraph that occupies the entire body — the delete range
+    // for the changed line extends right up to bodyEndIndex and must be
+    // clamped to bodyEndIndex - 1.
     const base = `Original.\n`;
     const ours = `Updated.\n`;
     const theirs = base;
 
-    const indexMap = makeIndexMap([{ mdOffset: 0, docIndex: 1 }]);
+    const { doc, indexMap, bodyEndIndex } = buildDocAndMap(base, [
+      { text: 'Original.', mdOffset: 0 },
+    ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
 
@@ -423,14 +668,10 @@ describe('computeDocDiff', () => {
 
     const deleteReq = result.requests.find((r) => r.deleteContentRange);
     expect(deleteReq).toBeDefined();
-    // The endIndex must not exceed bodyEndIndex - 1
     expect(deleteReq!.deleteContentRange!.range!.endIndex).toBeLessThanOrEqual(bodyEndIndex - 1);
   });
 
   it('does not clamp endIndex when section is not at body end', async () => {
-    const bodyEndIndex = 200;
-    const doc = makeDocument(bodyEndIndex);
-
     const base = `# First
 
 Content A.
@@ -457,11 +698,13 @@ Content C.
 `;
     const theirs = base;
 
-    // Three sections mapped to doc indices
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },
-      { mdOffset: base.indexOf('# Second'), docIndex: 50 },
-      { mdOffset: base.indexOf('# Third'), docIndex: 100 },
+    const { doc, indexMap, bodyEndIndex } = buildDocAndMap(base, [
+      { text: 'First', mdOffset: 0 },
+      { text: 'Content A.', mdOffset: base.indexOf('Content A.') },
+      { text: 'Second', mdOffset: base.indexOf('# Second') },
+      { text: 'Content B.', mdOffset: base.indexOf('Content B.') },
+      { text: 'Third', mdOffset: base.indexOf('# Third') },
+      { text: 'Content C.', mdOffset: base.indexOf('Content C.') },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
@@ -471,35 +714,26 @@ Content C.
     const deleteReq = result.requests.find((r) => r.deleteContentRange);
     expect(deleteReq).toBeDefined();
 
-    // The endIndex should be less than bodyEndIndex, so no clamping occurs
+    // The delete is in the First section, nowhere near body end, so no clamping.
     const endIndex = deleteReq!.deleteContentRange!.range!.endIndex!;
-    expect(endIndex).toBeLessThan(bodyEndIndex);
-    // And it should not have been decremented (no clamping needed)
     expect(endIndex).toBeLessThan(bodyEndIndex - 1);
   });
 
   it('skips delete request when clamped range would be empty', async () => {
-    // Edge case: section occupies only the last character before the trailing newline
-    const bodyEndIndex = 2; // body is just index 1 (the trailing newline)
-    const doc = makeDocument(bodyEndIndex);
-
-    const base = `# Section
-
-Text.
-`;
-    const ours = `# Section
-
-New text.
-`;
+    // Doc body consists of just the trailing newline — a single empty
+    // paragraph at indices [1, 2). When the delete is clamped down to
+    // bodyEndIndex - 1, startIndex === endIndex and the delete is skipped.
+    const base = `\n`;
+    const ours = `New text.\n`;
     const theirs = base;
 
-    // Section starts at doc index 1, ends at bodyEndIndex (2)
-    // After clamping, endIndex would be 1, which equals startIndex => skip
-    const indexMap = makeIndexMap([{ mdOffset: 0, docIndex: 1 }]);
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: '', mdOffset: 0 },
+    ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
 
-    // Should still have changes (insert requests), but no delete request
+    // Should still have changes (insert requests), but no delete request.
     const deleteReq = result.requests.find((r) => r.deleteContentRange);
     expect(deleteReq).toBeUndefined();
   });
@@ -513,9 +747,9 @@ New text.
   // engine must produce minimal deletes that only touch changed lines.
 
   it('does not delete unchanged heading when body is added beneath it', async () => {
-    const bodyEndIndex = 100;
-    const doc = makeDocument(bodyEndIndex);
-
+    // Base doc has only the heading; ours adds content beneath it.
+    // The heading paragraph should not be deleted — we expect a pure
+    // append with no deleteContentRange requests at all.
     const base = `# A haiku about fruit\n`;
     const ours = `# A haiku about fruit
 
@@ -523,26 +757,18 @@ Green rind hides the sweet
 `;
     const theirs = base;
 
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },   // heading paragraph
-      { mdOffset: 23, docIndex: 25 },  // empty line after heading
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A haiku about fruit', mdOffset: 0 },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // No deleteContentRange should cover the heading (doc index 1-24)
-    for (const req of result.requests) {
-      if (req.deleteContentRange) {
-        expect(req.deleteContentRange.range!.startIndex!).toBeGreaterThanOrEqual(25);
-      }
-    }
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs).toHaveLength(0);
   });
 
   it('does not delete unchanged body when only one paragraph in the section changes', async () => {
-    const bodyEndIndex = 200;
-    const doc = makeDocument(bodyEndIndex);
-
     const base = `# Section
 
 Paragraph one stays the same.
@@ -561,43 +787,27 @@ Paragraph three stays the same.
 `;
     const theirs = base;
 
-    // Map each line to its doc index. Lines in the base:
-    // 0: "# Section"        md=0   doc=1
-    // 1: ""                 md=10  doc=11
-    // 2: "Paragraph one..." md=11  doc=12
-    // 3: ""                 md=41  doc=42
-    // 4: "Paragraph two..." md=42  doc=43
-    // 5: ""                 md=69  doc=70
-    // 6: "Paragraph three." md=70  doc=71
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },
-      { mdOffset: 10, docIndex: 11 },
-      { mdOffset: 11, docIndex: 12 },
-      { mdOffset: 41, docIndex: 42 },
-      { mdOffset: 42, docIndex: 43 },
-      { mdOffset: 69, docIndex: 70 },
-      { mdOffset: 70, docIndex: 71 },
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Section', mdOffset: 0 },
+      { text: 'Paragraph one stays the same.', mdOffset: base.indexOf('Paragraph one') },
+      { text: 'Paragraph two will change.', mdOffset: base.indexOf('Paragraph two') },
+      { text: 'Paragraph three stays the same.', mdOffset: base.indexOf('Paragraph three') },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // With insert-first, delete indices are shifted by the inserted text length.
     // Verify the delete SIZE matches only the changed paragraph, not the whole section.
-    // "Paragraph two will change.\n" = 27 chars. The delete should be ~27 chars.
+    // "Paragraph two will change.\n" is 27 chars in the doc.
     const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
     expect(deleteReqs).toHaveLength(1);
     const delRange = deleteReqs[0].deleteContentRange!.range!;
     const deleteSize = delRange.endIndex! - delRange.startIndex!;
-    // The old "Paragraph two will change." line is ~27 chars (including \n)
     expect(deleteSize).toBeLessThanOrEqual(30);
     expect(deleteSize).toBeGreaterThan(0);
   });
 
   it('does not delete any text when agent only appends to end of section', async () => {
-    const bodyEndIndex = 100;
-    const doc = makeDocument(bodyEndIndex);
-
     const base = `# Title
 
 Existing content.
@@ -610,23 +820,20 @@ New content added by agent.
 `;
     const theirs = base;
 
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },
-      { mdOffset: 9, docIndex: 12 },  // "Existing content."
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Title', mdOffset: 0 },
+      { text: 'Existing content.', mdOffset: base.indexOf('Existing content.') },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // Should have NO delete requests — only inserts
+    // Should have NO delete requests — only inserts.
     const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
     expect(deleteReqs).toHaveLength(0);
   });
 
   it('preserves text in other sections entirely', async () => {
-    const bodyEndIndex = 300;
-    const doc = makeDocument(bodyEndIndex);
-
     const base = `# Section A
 
 Content A.
@@ -645,30 +852,31 @@ Updated content B.
 `;
     const theirs = base;
 
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },
-      { mdOffset: base.indexOf('# Section B'), docIndex: 100 },
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Section A', mdOffset: 0 },
+      { text: 'Content A.', mdOffset: base.indexOf('Content A.') },
+      { text: 'Section B', mdOffset: base.indexOf('# Section B') },
+      { text: 'Content B.', mdOffset: base.indexOf('Content B.') },
     ]);
+
+    // Any delete must fall inside Section B (which starts at the doc
+    // index of the Section B heading paragraph).
+    const sectionBStart = indexMap.find((e) => e.mdOffset === base.indexOf('# Section B'))!.docIndex;
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // All deletes should be within Section B's range (100+), not Section A (1-99)
     for (const req of result.requests) {
       if (req.deleteContentRange) {
-        expect(req.deleteContentRange.range!.startIndex!).toBeGreaterThanOrEqual(100);
+        expect(req.deleteContentRange.range!.startIndex!).toBeGreaterThanOrEqual(sectionBStart);
       }
     }
   });
 
   it('inserts new content AFTER the heading, not before it', async () => {
     // Reproduces the bug: agent adds a haiku under an empty heading.
-    // The insert must go after the heading text, not before it.
-    const bodyEndIndex = 50;
-    const doc = makeDocument(bodyEndIndex);
-
-    const base = `# A haiku about fruit
-`;
+    // The insert must go after the heading paragraph, not at doc index 1.
+    const base = `# A haiku about fruit\n`;
     const ours = `# A haiku about fruit
 
 Green rind hides the prize
@@ -677,23 +885,21 @@ Summer's watermelon
 `;
     const theirs = base;
 
-    // Heading occupies doc indices 1-22
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A haiku about fruit', mdOffset: 0 },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // The insert should go AFTER the heading (at or after doc index 22),
-    // not at the section start (doc index 1)
+    // The insert should go AFTER the heading (not at the section start, doc index 1).
     const insertReqs = result.requests.filter((r) => r.insertText);
     expect(insertReqs.length).toBeGreaterThan(0);
     for (const req of insertReqs) {
       expect(req.insertText!.location!.index).toBeGreaterThan(1);
     }
 
-    // No delete should touch the heading
+    // No delete should touch the heading.
     for (const req of result.requests) {
       if (req.deleteContentRange) {
         expect(req.deleteContentRange.range!.startIndex!).toBeGreaterThan(1);
@@ -704,26 +910,21 @@ Summer's watermelon
   it('inserted text starts on a new line, not merged into previous paragraph', async () => {
     // Bug: when appending after a heading, the inserted text had no leading
     // newline, causing it to merge into the heading paragraph.
-    // "A haiku about fruitGreen rind hides the sweet" instead of separate paragraphs.
-    const bodyEndIndex = 50;
-    const doc = makeDocument(bodyEndIndex);
-
-    const base = `# A haiku about fruit
-`;
+    const base = `# A haiku about fruit\n`;
     const ours = `# A haiku about fruit
 
 Green rind hides the sweet
 `;
     const theirs = base;
 
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A haiku about fruit', mdOffset: 0 },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // The inserted text must start with a newline to create a new paragraph
+    // The first insert must start with a newline to create a new paragraph.
     const insertReqs = result.requests.filter((r) => r.insertText);
     expect(insertReqs.length).toBeGreaterThan(0);
     const firstInsertText = insertReqs[0].insertText!.text!;
@@ -731,16 +932,10 @@ Green rind hides the sweet
   });
 
   it('deletes the full old line when replacing (no leftover characters)', async () => {
-    // Bug: "Summer's watermelon" → "Summer's melon treat" left a stray "S",
-    // producing "SSummer's melon treat". The delete range was one char short
-    // because markdown offsets (which include "# " etc.) don't map 1:1 to
-    // doc indices.
-    const bodyEndIndex = 100;
-    const doc = makeDocument(bodyEndIndex);
-
-    // The doc content is:
-    //   "A haiku about fruit\nGreen rind hides the sweet\nRed flesh bursting\nSummer's watermelon\n"
-    // Note: the "# " prefix in markdown doesn't exist in the doc.
+    // Bug: "Summer's watermelon" → "Summer's melon treat" left a stray "S".
+    // The doc here mirrors how Google Docs stores a haiku-style block: the
+    // heading and each verse land in their own paragraphs even though the
+    // markdown separates the verses with single newlines.
     const base = `# A haiku about fruit
 
 Green rind hides the sweet
@@ -755,40 +950,31 @@ Summer's melon treat
 `;
     const theirs = base;
 
-    // Doc indices (no "# " prefix — heading is just "A haiku about fruit"):
-    //   1: "A haiku about fruit\n"  (20 chars, ends at 21)
-    //  21: "Green rind hides the sweet\n" (27 chars, ends at 48)
-    //  48: "Red flesh bursting\n" (19 chars, ends at 67)
-    //  67: "Summer's watermelon\n" (20 chars, ends at 87)
-    // Markdown offsets mirror what docsToMarkdownWithMapping emits — each
-    // entry is at a paragraph start in the markdown (one past the "\n\n"
-    // separator from the previous paragraph).
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },    // "# A haiku about fruit"
-      { mdOffset: 23, docIndex: 21 },  // "Green rind hides the sweet"
-      { mdOffset: 50, docIndex: 48 },  // "Red flesh bursting"
-      { mdOffset: 69, docIndex: 67 },  // "Summer's watermelon"
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A haiku about fruit', mdOffset: 0 },
+      { text: 'Green rind hides the sweet', mdOffset: base.indexOf('Green rind') },
+      { text: 'Red flesh bursting', mdOffset: base.indexOf('Red flesh') },
+      { text: "Summer's watermelon", mdOffset: base.indexOf("Summer's watermelon") },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // With insert-first, the insert goes at 67, then the delete is shifted
-    // by the inserted length. Verify the delete SIZE covers exactly the old line.
+    // The delete SIZE should cover exactly the old line (~20 chars).
     const deleteReq = result.requests.find((r) => r.deleteContentRange);
     expect(deleteReq).toBeDefined();
-    const delSize = deleteReq!.deleteContentRange!.range!.endIndex! - deleteReq!.deleteContentRange!.range!.startIndex!;
-    // "Summer's watermelon\n" is 20 chars in the doc; may include adjacent
-    // whitespace depending on index map interpolation accuracy.
+    const delSize =
+      deleteReq!.deleteContentRange!.range!.endIndex! -
+      deleteReq!.deleteContentRange!.range!.startIndex!;
     expect(delSize).toBeGreaterThanOrEqual(19);
     expect(delSize).toBeLessThanOrEqual(30);
 
-    // The insert should contain the new text
+    // The insert must contain the new text and start at the old line's position.
     const insertReqs = result.requests.filter((r) => r.insertText);
     const insertTexts = insertReqs.map((r) => r.insertText!.text).join('');
     expect(insertTexts).toContain("Summer's melon treat");
-    // Insert should start at 67 (the old line's position)
-    expect(insertReqs[0].insertText!.location!.index).toBe(67);
+    const oldLineDocIndex = indexMap.find((e) => e.mdOffset === base.indexOf("Summer's watermelon"))!.docIndex;
+    expect(insertReqs[0].insertText!.location!.index).toBe(oldLineDocIndex);
   });
 
   it('insert indices are valid after preceding deletes (no out-of-bounds)', async () => {
@@ -796,12 +982,6 @@ Summer's melon treat
     // subsequent inserts can reference positions that no longer exist.
     // Google Docs returns: "insertion index must be inside the bounds
     // of an existing paragraph."
-    //
-    // This test simulates a section where lines are both modified and
-    // appended — producing multiple hunks.
-    const bodyEndIndex = 200;
-    const doc = makeDocument(bodyEndIndex);
-
     const base = `# Section
 
 Line one.
@@ -818,18 +998,652 @@ New line five.
 `;
     const theirs = base;
 
-    const indexMap = makeIndexMap([
-      { mdOffset: 0, docIndex: 1 },
-      { mdOffset: 11, docIndex: 11 },  // "Line one."
-      { mdOffset: 21, docIndex: 21 },  // "Line two."
-      { mdOffset: 31, docIndex: 31 },  // "Line three."
+    const { doc, indexMap, bodyEndIndex } = buildDocAndMap(base, [
+      { text: 'Section', mdOffset: 0 },
+      { text: 'Line one.', mdOffset: base.indexOf('Line one.') },
+      { text: 'Line two.', mdOffset: base.indexOf('Line two.') },
+      { text: 'Line three.', mdOffset: base.indexOf('Line three.') },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // Verify all insert positions are valid: every insertText index must
-    // be >= 1 and < bodyEndIndex. And every delete must have start < end.
+    for (const req of result.requests) {
+      if (req.insertText) {
+        const idx = req.insertText.location!.index!;
+        expect(idx).toBeGreaterThanOrEqual(1);
+        expect(idx).toBeLessThan(bodyEndIndex);
+      }
+      if (req.deleteContentRange) {
+        const start = req.deleteContentRange.range!.startIndex!;
+        const end = req.deleteContentRange.range!.endIndex!;
+        expect(start).toBeGreaterThanOrEqual(1);
+        expect(end).toBeGreaterThan(start);
+        expect(end).toBeLessThan(bodyEndIndex);
+      }
+    }
+  });
+});
+
+describe('computeDocDiff › structural edits', () => {
+  it('deletes an entire section when the agent drops it', async () => {
+    const base = `# A
+
+A body.
+
+# B
+
+B body.
+`;
+    const ours = `# A
+
+A body.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A', mdOffset: 0 },
+      { text: 'A body.', mdOffset: base.indexOf('A body.') },
+      { text: 'B', mdOffset: base.indexOf('# B') },
+      { text: 'B body.', mdOffset: base.indexOf('B body.') },
+    ]);
+
+    const sectionBStart = indexMap.find((e) => e.mdOffset === base.indexOf('# B'))!.docIndex;
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs.length).toBeGreaterThan(0);
+    // Delete must start inside section B (or on the separator paragraph
+    // immediately preceding it), not inside section A's body.
+    for (const req of deleteReqs) {
+      expect(req.deleteContentRange!.range!.startIndex!).toBeGreaterThanOrEqual(sectionBStart - 2);
+    }
+
+    // No B-body text should be re-inserted (pure deletion, not a rewrite).
+    const insertReqs = result.requests.filter((r) => r.insertText);
+    const insertedText = insertReqs.map((r) => r.insertText!.text).join('');
+    expect(insertedText).not.toContain('B body.');
+  });
+
+  it('inserts a new mid-doc section between its neighbours, not at the tail', async () => {
+    const base = `# A
+
+A.
+
+# C
+
+C.
+`;
+    const ours = `# A
+
+A.
+
+# B
+
+B inserted.
+
+# C
+
+C.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A', mdOffset: 0 },
+      { text: 'A.', mdOffset: base.indexOf('A.') },
+      { text: 'C', mdOffset: base.indexOf('# C') },
+      { text: 'C.', mdOffset: base.indexOf('C.') },
+    ]);
+
+    // `C` heading starts at this doc index in the fake doc. The new section B
+    // must be inserted at or before that position.
+    const sectionCStart = indexMap.find((e) => e.mdOffset === base.indexOf('# C'))!.docIndex;
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const insertReqs = result.requests.filter((r) => r.insertText);
+    const insertedText = insertReqs.map((r) => r.insertText!.text).join('');
+    expect(insertedText).toContain('B inserted.');
+
+    // The primary insertion anchor is at or before Section C's start.
+    // (Follow-up inserts in the same batch chain off that anchor, so
+    // their raw indices are allowed to shift forward.)
+    const firstInsertIdx = insertReqs[0].insertText!.location!.index!;
+    expect(firstInsertIdx).toBeLessThanOrEqual(sectionCStart);
+    // And no insert is at the body-end tail.
+    const bodyEndIndex = doc.body!.content![doc.body!.content!.length - 1].endIndex!;
+    for (const req of insertReqs) {
+      expect(req.insertText!.location!.index!).toBeLessThan(bodyEndIndex - 1);
+    }
+  });
+
+  it('detects a heading-level change as a content edit', async () => {
+    // alignSections keys on heading TEXT, so `# A` → `## A` is treated as
+    // "same section, content changed". Expect the diff to rewrite the
+    // heading line.
+    const base = `# A
+
+Content.
+`;
+    const ours = `## A
+
+Content.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A', mdOffset: 0 },
+      { text: 'Content.', mdOffset: base.indexOf('Content.') },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    const insertReqs = result.requests.filter((r) => r.insertText);
+    expect(deleteReqs.length).toBeGreaterThan(0);
+    expect(insertReqs.length).toBeGreaterThan(0);
+
+    // The heading text (plain "A") was not deleted — only the '#' marker
+    // changed in markdown, but the diff still reissues the heading line.
+    const insertedText = insertReqs.map((r) => r.insertText!.text).join('');
+    expect(insertedText.toLowerCase()).toContain('a');
+  });
+
+  it('edits a null-heading preamble without touching the following section', async () => {
+    const base = `Preamble.
+
+# Section
+
+Content.
+`;
+    const ours = `Updated preamble.
+
+# Section
+
+Content.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Preamble.', mdOffset: 0 },
+      { text: 'Section', mdOffset: base.indexOf('# Section') },
+      { text: 'Content.', mdOffset: base.indexOf('Content.') },
+    ]);
+
+    const sectionDocStart = indexMap.find((e) => e.mdOffset === base.indexOf('# Section'))!.docIndex;
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    // Any delete must stay inside the preamble range [1, sectionDocStart).
+    for (const req of result.requests) {
+      if (req.deleteContentRange) {
+        expect(req.deleteContentRange.range!.endIndex!).toBeLessThanOrEqual(sectionDocStart);
+      }
+    }
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('Updated preamble.');
+  });
+
+  it('preserves both occurrences when duplicate heading text is present', () => {
+    const base = `# Notes
+
+First.
+
+# Notes
+
+Second.
+`;
+    const ours = `# Notes
+
+First updated.
+
+# Notes
+
+Second.
+`;
+    const theirs = base;
+
+    const result = mergeDocuments(base, ours, theirs);
+
+    expect(result.hasConflicts).toBe(false);
+    // The first section's body was updated.
+    expect(result.mergedMarkdown).toContain('First updated.');
+    // The second section must survive — it must not be silently dropped.
+    expect(result.mergedMarkdown).toContain('Second.');
+    // Both heading occurrences preserved, in original order.
+    const firstIdx = result.mergedMarkdown.indexOf('First updated.');
+    const secondIdx = result.mergedMarkdown.indexOf('Second.');
+    expect(firstIdx).toBeGreaterThan(-1);
+    expect(secondIdx).toBeGreaterThan(firstIdx);
+  });
+
+  it('adds a body to an empty (heading-only) section', async () => {
+    const base = `# A
+
+# B
+
+Body B.
+`;
+    const ours = `# A
+
+Content A.
+
+# B
+
+Body B.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A', mdOffset: 0 },
+      { text: 'B', mdOffset: base.indexOf('# B') },
+      { text: 'Body B.', mdOffset: base.indexOf('Body B.') },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('Content A.');
+
+    // Body B. must not get deleted along the way.
+    const bodyBDocIndex = indexMap.find((e) => e.mdOffset === base.indexOf('Body B.'))!.docIndex;
+    for (const req of result.requests) {
+      if (req.deleteContentRange) {
+        const r = req.deleteContentRange.range!;
+        // The delete shouldn't swallow Body B (which starts at bodyBDocIndex).
+        expect(r.endIndex!).toBeLessThanOrEqual(bodyBDocIndex + 7 /* len("Body B.") */);
+      }
+    }
+  });
+});
+
+describe('computeDocDiff › content shape', () => {
+  it('edits one item in a bullet list without touching the others', async () => {
+    const base = `- Item 1
+- Item 2
+- Item 3
+`;
+    const ours = `- Item 1
+- Item 2 updated
+- Item 3
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Item 1', mdOffset: 0 },
+      { text: 'Item 2', mdOffset: base.indexOf('- Item 2') },
+      { text: 'Item 3', mdOffset: base.indexOf('- Item 3') },
+    ]);
+
+    const item2Start = indexMap[1].docIndex;
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    // Exactly one delete — the Item 2 line.
+    expect(deleteReqs).toHaveLength(1);
+    const delStart = deleteReqs[0].deleteContentRange!.range!.startIndex!;
+    const delEnd = deleteReqs[0].deleteContentRange!.range!.endIndex!;
+    expect(delStart).toBe(item2Start);
+    expect(delEnd - delStart).toBeLessThanOrEqual(10); // ~"Item 2\n"
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('Item 2 updated');
+  });
+
+  it('parseSections does NOT split on "#" lines that are inside a fenced code block', () => {
+    const md = `# Real heading
+
+\`\`\`
+# Not a heading
+print('hi')
+\`\`\`
+`;
+    const sections = parseSections(md);
+    // Exactly one section: the fenced-code-block line is body content,
+    // not a heading.
+    expect(sections).toHaveLength(1);
+    expect(sections[0].heading).toBe('Real heading');
+    expect(sections.some((s) => s.heading === 'Not a heading')).toBe(false);
+    // The fence content is preserved inside the single section.
+    expect(sections[0].content).toContain('# Not a heading');
+    expect(sections[0].content).toContain("print('hi')");
+  });
+
+  it('rewrites a changed row in a markdown table (line-level diff)', async () => {
+    // The diff engine treats every markdown line as independent, so editing
+    // a single cell rewrites the whole row. This test just confirms the
+    // machinery survives the table characters.
+    const base = `| col1 | col2 |
+|------|------|
+| a    | b    |
+| c    | d    |
+`;
+    const ours = `| col1 | col2 |
+|------|------|
+| a    | b    |
+| c    | D!   |
+`;
+    const theirs = base;
+
+    // `base.indexOf('| c')` would wrongly match `| col1`, so compute
+    // offsets from line boundaries directly.
+    const lineStart = (line: string) => {
+      const idx = base.indexOf(line);
+      if (idx === -1) throw new Error(`line not found: ${line}`);
+      return idx;
+    };
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: '| col1 | col2 |', mdOffset: lineStart('| col1') },
+      { text: '|------|------|', mdOffset: lineStart('|------') },
+      { text: '| a    | b    |', mdOffset: lineStart('| a    |') },
+      { text: '| c    | d    |', mdOffset: lineStart('| c    |') },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('D!');
+  });
+
+  it('handles inline formatting where markdown length ≠ rendered length', async () => {
+    // Doc text has "This is bold text." while markdown has "**bold**".
+    // The index map is validated against the rendered text (the validator
+    // strips `**…**`), and the diff still produces sensible requests.
+    const base = `This is **bold** text.\n`;
+    const ours = `This is **extremely bold** text.\n`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'This is bold text.', mdOffset: 0 },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('extremely');
+  });
+
+  it('handles CJK (Japanese) text without offset corruption', async () => {
+    const base = `# 日本語
+
+内容。
+`;
+    const ours = `# 日本語
+
+新しい内容。
+`;
+    const theirs = base;
+
+    const { doc, indexMap, bodyEndIndex } = buildDocAndMap(base, [
+      { text: '日本語', mdOffset: 0 },
+      { text: '内容。', mdOffset: base.indexOf('内容。') },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    // All requests must reference valid doc indices.
+    for (const req of result.requests) {
+      if (req.insertText) {
+        expect(req.insertText.location!.index!).toBeGreaterThanOrEqual(1);
+        expect(req.insertText.location!.index!).toBeLessThanOrEqual(bodyEndIndex);
+      }
+      if (req.deleteContentRange) {
+        expect(req.deleteContentRange.range!.endIndex!).toBeLessThanOrEqual(bodyEndIndex);
+      }
+    }
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('新しい内容');
+  });
+});
+
+describe('computeDocDiff › whitespace edge cases', () => {
+  it('treats a trailing-newline-only change as no-op', async () => {
+    const base = `# A
+
+Content.
+`;
+    const ours = `# A
+
+Content.
+
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A', mdOffset: 0 },
+      { text: 'Content.', mdOffset: base.indexOf('Content.') },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(false);
+    expect(result.requests).toHaveLength(0);
+  });
+
+  it('inserts a new blank line when agent spaces paragraphs apart', async () => {
+    const base = `Line 1.
+Line 2.
+`;
+    const ours = `Line 1.
+
+Line 2.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Line 1.', mdOffset: 0 },
+      { text: 'Line 2.', mdOffset: base.indexOf('Line 2.') },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    // Exactly one insert, issuing a '\n' to break Line 1 and Line 2 apart.
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs).toHaveLength(0);
+    const insertReqs = result.requests.filter((r) => r.insertText);
+    expect(insertReqs.length).toBeGreaterThan(0);
+    // The inserted text must include a newline (paragraph break).
+    const insertedText = insertReqs.map((r) => r.insertText!.text).join('');
+    expect(insertedText).toContain('\n');
+  });
+
+  it('diff survives markdown with no trailing newline', async () => {
+    const base = `# A
+
+Content.`; // no trailing \n
+    const ours = `# A
+
+Updated.`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base + '\n', [
+      // Pad the md with '\n' for buildDocAndMap's validator, but feed the
+      // actual unterminated string to computeDocDiff below.
+      { text: 'A', mdOffset: 0 },
+      { text: 'Content.', mdOffset: base.indexOf('Content.') },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('Updated.');
+  });
+});
+
+describe('computeDocDiff › diff hunk boundaries', () => {
+  it('adjacent hunks do not produce overlapping delete ranges', async () => {
+    const base = `Line 1.
+Line 2.
+Line 3.
+`;
+    const ours = `New1.
+New2.
+Line 3.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Line 1.', mdOffset: 0 },
+      { text: 'Line 2.', mdOffset: base.indexOf('Line 2.') },
+      { text: 'Line 3.', mdOffset: base.indexOf('Line 3.') },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+
+    // Collect all delete ranges and confirm none overlap.
+    const ranges = result.requests
+      .filter((r) => r.deleteContentRange)
+      .map((r) => r.deleteContentRange!.range!);
+    for (let i = 0; i < ranges.length; i++) {
+      for (let j = i + 1; j < ranges.length; j++) {
+        const a = ranges[i];
+        const b = ranges[j];
+        const overlap = a.startIndex! < b.endIndex! && b.startIndex! < a.endIndex!;
+        expect(overlap).toBe(false);
+      }
+    }
+  });
+
+  it('pure prepend at document start inserts before existing content', async () => {
+    const base = `Existing.\n`;
+    const ours = `Prepended.
+
+Existing.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Existing.', mdOffset: 0 },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    // No delete — existing content stays put; only inserts are issued.
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs).toHaveLength(0);
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('Prepended.');
+  });
+
+  it('shorter replacement: long line becomes short', async () => {
+    const base = `This is a very long line that should become short.\n`;
+    const ours = `Short.\n`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'This is a very long line that should become short.', mdOffset: 0 },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs.length).toBeGreaterThan(0);
+    const delSize =
+      deleteReqs[0].deleteContentRange!.range!.endIndex! -
+      deleteReqs[0].deleteContentRange!.range!.startIndex!;
+    expect(delSize).toBeGreaterThanOrEqual(50); // long line + '\n' ≈ 51 chars
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('Short.');
+  });
+
+  it('longer replacement: short line becomes long', async () => {
+    const base = `Short.\n`;
+    const ours = `This is a much longer line than before.\n`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Short.', mdOffset: 0 },
+    ]);
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs.length).toBeGreaterThan(0);
+    const delSize =
+      deleteReqs[0].deleteContentRange!.range!.endIndex! -
+      deleteReqs[0].deleteContentRange!.range!.startIndex!;
+    expect(delSize).toBeLessThanOrEqual(10); // "Short.\n" is 7 chars, allow a little slack
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('much longer');
+  });
+});
+
+describe('computeDocDiff › sparse index map', () => {
+  it('handles a doc with many paragraphs but few index map entries', async () => {
+    // The real-world index map has one entry per paragraph, but Google
+    // Docs' /batchUpdate path only stores the index map from the last
+    // doc fetch, so we occasionally end up interpolating across many
+    // un-indexed paragraphs. This test mimics that sparse scenario.
+    const paras = Array.from({ length: 10 }, (_, i) => `Paragraph number ${i}.`);
+    const base = paras.join('\n\n') + '\n';
+    const ours = base.replace('Paragraph number 7.', 'Paragraph seven modified.');
+    const theirs = base;
+
+    // Only index paragraphs 0, 5, and 9 — let interpolation carry the rest.
+    const { doc, indexMap, bodyEndIndex } = buildDocAndMap(
+      base,
+      paras.map((text, i) => {
+        const indexed = i === 0 || i === 5 || i === 9;
+        return indexed ? { text, mdOffset: base.indexOf(text) } : { text };
+      }),
+    );
+
+    expect(indexMap).toHaveLength(3); // sparse by construction
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(result.hasChanges).toBe(true);
+
+    // All requests must reference valid doc indices.
     for (const req of result.requests) {
       if (req.insertText) {
         const idx = req.insertText.location!.index!;
@@ -845,16 +1659,11 @@ New line five.
       }
     }
 
-    // Verify that inserts come BEFORE their corresponding deletes
-    // (insert-first pattern prevents out-of-bounds errors)
-    const ops = result.requests
-      .filter((r) => r.insertText || r.deleteContentRange)
-      .map((r) => r.insertText ? 'insert' : 'delete');
-
-    // For each delete, there should be at least one insert before it
-    // (unless it's a pure delete with no replacement)
-    // At minimum: no two deletes in a row without an insert between
-    // (this is a loose check — the real validation is that Google Docs accepts it)
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('Paragraph seven modified.');
   });
 });
 

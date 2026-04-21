@@ -131,6 +131,18 @@ Normal text before **bold** normal after. No bleed.`,
   },
 
   {
+    title: 'Inline code styling (standalone)',
+    expect: 'The inline code spans (`const`, `foo.bar()`, `/usr/local/bin`) should each render in a monospace font (Courier New) with a light gray background shading, with no bleed into surrounding text.',
+    markdown: `Use the \`const\` keyword to declare immutable bindings. Call \`foo.bar()\` to invoke the method. Files live in \`/usr/local/bin\`.`,
+  },
+
+  {
+    title: 'Link styling (standalone)',
+    expect: 'Each link should render in the default blue underlined link style. Clicking a link should open the target URL in a new tab. Plain text around the links should remain unstyled.',
+    markdown: `Visit [Anthropic](https://www.anthropic.com) for more info. See also [Google Docs API](https://developers.google.com/docs/api) and [the spec](https://spec.commonmark.org).`,
+  },
+
+  {
     title: 'Paragraph after heading inherits NORMAL_TEXT',
     expect: 'The paragraph text should be normal body size, NOT heading size. This tests the NORMAL_TEXT style reset after headings.',
     markdown: `# Big Heading
@@ -167,6 +179,41 @@ Ordered list:
 - [ ] Deploy to staging`,
   },
 
+  {
+    title: 'Checkbox list with mixed checked/unchecked state',
+    expect: 'All four items should render as native Google Docs checkboxes. The two items marked [x] ("Write spec", "Draft PR") should appear already checked (strikethrough text, box filled). The two [ ] items should be unchecked.',
+    markdown: `- [x] Write spec
+- [ ] Implement feature
+- [x] Draft PR
+- [ ] Ship it`,
+  },
+
+  {
+    title: 'Nested unordered list',
+    expect: 'Three indentation levels of disc-style bullets. Each nesting level should use a visually distinct marker (disc / circle / square) per the BULLET_DISC_CIRCLE_SQUARE preset, with progressively deeper indentation.',
+    markdown: `- Top level item
+  - Second level
+    - Third level
+    - Another third level
+  - Back to second
+- Another top level`,
+  },
+
+  {
+    title: 'Nested mixed list (ordered inside unordered)',
+    expect: 'Top-level bullets (disc). Nested ordered sub-items should render with decimal numbering. Deeply nested items remain readable with progressive indentation.',
+    markdown: `- Project phases
+  1. Research
+  2. Design
+  3. Implementation
+- Team members
+  1. Alice
+  2. Bob
+    - Frontend work
+    - Backend work
+  3. Carol`,
+  },
+
   // ── Code blocks ──────────────────────────────────────────
 
   {
@@ -182,6 +229,93 @@ function hello() {
 \`\`\`
 
 Some text after the code.`,
+  },
+
+  {
+    title: 'Code block with language tag',
+    expect: 'Code should render in monospace with a light gray background, identically to an untagged fence. The language tag (`javascript`) is currently discarded (no syntax highlighting) — this test guards against regressions in code-block styling when a lang is set.',
+    markdown: `\`\`\`javascript
+const answer = 42;
+function greet(name) {
+  return \`Hello, \${name}!\`;
+}
+\`\`\``,
+  },
+
+  // ── Diagrams ─────────────────────────────────────────────
+
+  {
+    title: 'Mermaid diagram (flowchart)',
+    expect: 'A rendered PNG flowchart should appear inline (not the raw mermaid source). Shapes: Start → Decision diamond → two branches (Yes/No) → End. The image should span the page width and not overflow margins.',
+    markdown: `\`\`\`mermaid
+flowchart TD
+  A[Start] --> B{Decision}
+  B -->|Yes| C[Do thing]
+  B -->|No| D[Skip]
+  C --> E[End]
+  D --> E
+\`\`\``,
+  },
+
+  {
+    title: 'Mermaid diagram (sequence)',
+    expect: 'A rendered PNG sequence diagram should appear inline, showing three participants (Client, Server, DB) with arrows between them. The image should be scaled to page width.',
+    markdown: `\`\`\`mermaid
+sequenceDiagram
+  participant C as Client
+  participant S as Server
+  participant D as DB
+  C->>S: request
+  S->>D: query
+  D-->>S: rows
+  S-->>C: response
+\`\`\``,
+  },
+
+  // ── Blockquotes and rules ────────────────────────────────
+
+  {
+    title: 'Blockquote',
+    expect: 'The quoted text should render as a distinct blockquote — visually offset from surrounding body text with a left indent and/or a left vertical bar, clearly marking it as quoted. It must not read as ordinary body paragraphs.',
+    markdown: `Some introductory text.
+
+> This is a blockquote.
+>
+> It can span multiple paragraphs and should render as normal body text (no left border or indent today).
+
+Text after the quote.`,
+  },
+
+  {
+    title: 'Horizontal rule (thematic break)',
+    expect: 'A true horizontal separator line should appear between the two paragraphs — a native Docs horizontal rule, not a row of em-dashes rendered as text.',
+    markdown: `Paragraph before the rule.
+
+---
+
+Paragraph after the rule.`,
+  },
+
+  // ── Images ───────────────────────────────────────────────
+
+  {
+    title: 'Image (embedded inline)',
+    expect: 'The image should be embedded inline in the document as a real image — the Anthropic favicon renders between the two paragraphs. Not an alt-text hyperlink.',
+    markdown: `Before the image.
+
+![Anthropic logo](https://www.anthropic.com/favicon.ico)
+
+After the image.`,
+  },
+
+  {
+    title: 'Image (wide image scaled to page width)',
+    expect: 'The wide PNG should appear as an inline image, scaled to fit the text column (~468pt) rather than overflowing the page margins. Aspect ratio must be preserved (no squashing).',
+    markdown: `A wide image, auto-scaled to fit the page:
+
+![Wikipedia smiley](https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/SNice.svg/1200px-SNice.svg.png)
+
+End of scaled image test.`,
   },
 
   // ── Mixed content ────────────────────────────────────────
@@ -224,6 +358,7 @@ async function run() {
     sections.push(
       `## ${i + 1}. ${tc.title}\n\n` +
       `**Expected:** ${tc.expect}\n\n` +
+      `\u00A0\n\n` +
       `${tc.markdown}\n`,
     );
   }

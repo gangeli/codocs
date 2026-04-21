@@ -154,17 +154,8 @@ function hello() {
 \`\`\`
 
 Some text after.`,
-    customCompare(_original, roundtripped) {
-      // Known limitation: code blocks come back as inline code per-line
-      // (Google Docs uses monospace font, not fenced blocks).
-      // Verify the code content survives.
-      const n = normalize(roundtripped);
-      const hasCode = n.includes('function hello()') && n.includes('return "world"');
-      return {
-        pass: hasCode,
-        diffs: hasCode ? [] : [`Code content not found in: ${n}`],
-      };
-    },
+    // Expected behaviour: the fenced code block round-trips as a fenced
+    // code block, preserving content and structure.
   },
 
   {
@@ -172,16 +163,9 @@ Some text after.`,
     markdown: `\`\`\`typescript
 const x: number = 42;
 \`\`\``,
-    customCompare(original, roundtripped) {
-      // Language tags are lost in Google Docs (rendered as monospace),
-      // so just check that the code content survives.
-      const codeContent = 'const x: number = 42;';
-      const hasCode = normalize(roundtripped).includes(codeContent);
-      return {
-        pass: hasCode,
-        diffs: hasCode ? [] : [`Code content "${codeContent}" not found in roundtripped output`],
-      };
-    },
+    // Expected behaviour: the language tag and fence survive the
+    // round-trip (likely requires sidecar metadata since Docs has no
+    // native code-block concept).
   },
 
   // ── Lists ───────────────────────────────────────────────
@@ -191,12 +175,8 @@ const x: number = 42;
     markdown: `- First item
 - Second item
 - Third item`,
-    customCompare(_original, roundtripped) {
-      // Known limitation: Google Docs adds blank lines between list items.
-      const n = normalize(roundtripped);
-      const hasAll = ['First item', 'Second item', 'Third item'].every(i => n.includes(`- ${i}`));
-      return { pass: hasAll, diffs: hasAll ? [] : [`List items not found in: ${n}`] };
-    },
+    // Expected behaviour: items are adjacent in the round-tripped
+    // markdown — no blank line inserted between each item.
   },
 
   {
@@ -204,13 +184,8 @@ const x: number = 42;
     markdown: `1. Step one
 2. Step two
 3. Step three`,
-    customCompare(_original, roundtripped) {
-      // Known limitations: Google Docs adds blank lines between items and
-      // renumbers all items to `1.` (the actual numbering is in list properties).
-      const n = normalize(roundtripped);
-      const hasAll = ['Step one', 'Step two', 'Step three'].every(i => n.includes(i));
-      return { pass: hasAll, diffs: hasAll ? [] : [`List items not found in: ${n}`] };
-    },
+    // Expected behaviour: original numbering (1., 2., 3.) survives the
+    // round-trip and items stay adjacent (no blank lines inserted).
   },
 
   // ── Tables ──────────────────────────────────────────────
@@ -229,12 +204,8 @@ const x: number = 42;
 | --- | --- | --- |
 | x | | z |
 | | y | |`,
-    customCompare(_original, roundtripped) {
-      // Known limitation: empty cells get extra spaces in roundtrip ("|  |" vs "| |").
-      const n = normalize(roundtripped);
-      const hasStructure = n.includes('| A | B | C |') && n.includes('x') && n.includes('y') && n.includes('z');
-      return { pass: hasStructure, diffs: hasStructure ? [] : [`Table structure not found in: ${n}`] };
-    },
+    // Expected behaviour: empty cells round-trip as `| |` (single space),
+    // not `|  |`. Table structure and cell positions must match exactly.
   },
 
   // ── Blockquotes ─────────────────────────────────────────
@@ -242,13 +213,8 @@ const x: number = 42;
   {
     title: 'Blockquote',
     markdown: `> This is a quoted block of text.`,
-    customCompare(_original, roundtripped) {
-      // Known limitation: blockquote > prefix is lost (Google Docs has no
-      // native blockquote concept; we insert plain text).
-      const n = normalize(roundtripped);
-      const hasText = n.includes('This is a quoted block of text.');
-      return { pass: hasText, diffs: hasText ? [] : [`Blockquote text not found in: ${n}`] };
-    },
+    // Expected behaviour: the `>` prefix survives the round-trip (likely
+    // requires sidecar metadata or a Docs-native styling convention).
   },
 
   // ── Horizontal rules ────────────────────────────────────
@@ -260,12 +226,7 @@ const x: number = 42;
 ---
 
 Below the rule.`,
-    customCompare(_original, roundtripped) {
-      // Known limitation: --- is rendered as ——— (em-dash characters).
-      const n = normalize(roundtripped);
-      const hasContent = n.includes('Above the rule') && n.includes('Below the rule');
-      return { pass: hasContent, diffs: hasContent ? [] : [`Rule content not found in: ${n}`] };
-    },
+    // Expected behaviour: `---` round-trips as `---`, not em-dashes.
   },
 
   // ── Mixed content ───────────────────────────────────────
@@ -297,14 +258,8 @@ Then run:
 npm install
 npm start
 \`\`\``,
-    customCompare(_original, roundtripped) {
-      // Combines known limitations of lists (extra blank lines) and
-      // code blocks (inline code per-line).
-      const n = normalize(roundtripped);
-      const checks = ['## Setup', 'Install dependencies', 'Node.js 18+', 'npm or yarn', 'npm install', 'npm start'];
-      const hasAll = checks.every(c => n.includes(c));
-      return { pass: hasAll, diffs: hasAll ? [] : [`Missing content in: ${n}`] };
-    },
+    // Expected behaviour: exact round-trip of the combined heading, list
+    // (no blank lines between items), and fenced code block.
   },
 
   // ── Paragraphs ──────────────────────────────────────────
@@ -331,29 +286,8 @@ graph TD
     C --> E[End]
     D --> E
 \`\`\``,
-    customCompare(_original, roundtripped) {
-      // With a DB, the mermaid source should be restored from the image
-      // description hash. Verify the roundtripped output contains the
-      // original mermaid source inside a fenced code block.
-      const normalized = normalize(roundtripped);
-      const hasMermaidBlock = normalized.includes('```mermaid');
-      const hasSource = normalized.includes('graph TD') && normalized.includes('A[Start]');
-      if (hasMermaidBlock && hasSource) {
-        return { pass: true, diffs: [] };
-      }
-      // Fall back: at minimum the image should be there
-      const hasImage = /!\[.*\]\(https:\/\//.test(normalized);
-      if (hasImage) {
-        return {
-          pass: false,
-          diffs: [`Image was inserted but mermaid source was not restored. Got:\n${normalized}`],
-        };
-      }
-      return {
-        pass: false,
-        diffs: [`Neither mermaid source nor image found. Got:\n${normalized}`],
-      };
-    },
+    // Expected behaviour: with the DB enabled, the mermaid source is
+    // restored from the image-description hash and round-trips exactly.
   },
 
   // ── Edge cases ──────────────────────────────────────────
@@ -366,13 +300,8 @@ graph TD
   {
     title: 'Nested formatting',
     markdown: `This is **bold and *bold italic* text** here.`,
-    customCompare(_original, roundtripped) {
-      // Known limitation: bold+italic boundary splits differently on round-trip.
-      // Google Docs stores formatting per-run, so boundaries may shift.
-      const n = normalize(roundtripped);
-      const hasContent = n.includes('bold and') && n.includes('bold italic') && n.includes('text');
-      return { pass: hasContent, diffs: hasContent ? [] : [`Formatting content not found in: ${n}`] };
-    },
+    // Expected behaviour: nested bold/italic round-trips with boundaries
+    // preserved exactly.
   },
 ];
 

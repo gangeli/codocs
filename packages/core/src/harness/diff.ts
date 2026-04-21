@@ -47,8 +47,15 @@ export interface DiffResult {
 // Heading regex: line starting with 1-6 `#` followed by a space
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 
+// Fenced code-block opener/closer: 3+ backticks or tildes, optionally
+// preceded by up to 3 spaces of indentation, with optional info string.
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+
 /**
  * Parse a markdown string into sections split by headings.
+ *
+ * Heading-like lines inside a fenced code block (``` or ~~~) are treated
+ * as body content, not section boundaries.
  */
 export function parseSections(markdown: string): MdSection[] {
   const lines = markdown.split('\n');
@@ -56,9 +63,15 @@ export function parseSections(markdown: string): MdSection[] {
   let currentHeading: string | null = null;
   let currentStartLine = 0;
   let currentLines: string[] = [];
+  let inFence = false;
 
   for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(HEADING_RE);
+    if (FENCE_RE.test(lines[i])) {
+      inFence = !inFence;
+      currentLines.push(lines[i]);
+      continue;
+    }
+    const match = inFence ? null : lines[i].match(HEADING_RE);
 
     if (match) {
       // Flush previous section if it has content
@@ -98,7 +111,9 @@ export function parseSections(markdown: string): MdSection[] {
 }
 
 /**
- * Match sections across three versions by heading text.
+ * Match sections across three versions by (heading, occurrence-index).
+ * Two sections sharing a heading text are kept distinct via their
+ * 0-based position among same-heading siblings in the source list.
  * Returns aligned triples: [baseSection, oursSection, theirsSection].
  * Any may be null if the section doesn't exist in that version.
  */
@@ -107,27 +122,47 @@ function alignSections(
   oursSections: MdSection[],
   theirsSections: MdSection[],
 ): Array<[MdSection | null, MdSection | null, MdSection | null]> {
-  // Collect all unique headings in order of first appearance
-  const seen = new Set<string | null>();
-  const orderedHeadings: (string | null)[] = [];
+  const NULL_HEADING = '\0null';
+  function withKeys(sections: MdSection[]): Array<{ key: string; section: MdSection }> {
+    const counts = new Map<string, number>();
+    return sections.map((s) => {
+      const h = s.heading ?? NULL_HEADING;
+      const n = counts.get(h) ?? 0;
+      counts.set(h, n + 1);
+      return { key: `${h}\0${n}`, section: s };
+    });
+  }
+  const base = withKeys(baseSections);
+  const ours = withKeys(oursSections);
+  const theirs = withKeys(theirsSections);
 
-  for (const sections of [baseSections, oursSections, theirsSections]) {
-    for (const s of sections) {
-      const key = s.heading;
-      if (!seen.has(key)) {
+  // Merge the three keyed orderings, preserving each source's relative
+  // positions. A new key from `ours` (or `theirs`) gets inserted after
+  // its predecessor in that source, so a section the agent adds between
+  // two existing ones lands in the middle of the merged order, not at
+  // the tail.
+  const seen = new Set<string>();
+  const orderedKeys: string[] = [];
+  for (const arr of [base, ours, theirs]) {
+    let anchor = -1; // index in orderedKeys of the last key seen/inserted from this source
+    for (const { key } of arr) {
+      if (seen.has(key)) {
+        anchor = orderedKeys.indexOf(key);
+      } else {
+        orderedKeys.splice(anchor + 1, 0, key);
         seen.add(key);
-        orderedHeadings.push(key);
+        anchor += 1;
       }
     }
   }
 
-  const findSection = (sections: MdSection[], heading: string | null) =>
-    sections.find((s) => s.heading === heading) ?? null;
+  const findSection = (arr: Array<{ key: string; section: MdSection }>, key: string) =>
+    arr.find((e) => e.key === key)?.section ?? null;
 
-  return orderedHeadings.map((h) => [
-    findSection(baseSections, h),
-    findSection(oursSections, h),
-    findSection(theirsSections, h),
+  return orderedKeys.map((k) => [
+    findSection(base, k),
+    findSection(ours, k),
+    findSection(theirs, k),
   ]);
 }
 
@@ -315,16 +350,37 @@ export async function computeDocDiff(
     docEndIndex: number;
   }> = [];
 
-  for (const mergedS of mergedSections) {
+  for (let mi = 0; mi < mergedSections.length; mi++) {
+    const mergedS = mergedSections[mi];
     const theirsS = theirsSections.find((s) => s.heading === mergedS.heading);
     if (!theirsS || theirsS.content !== mergedS.content) {
-      // This section changed — find its doc indices
-      const docRange = findSectionDocRange(
-        theirsS ?? null,
-        theirsSections,
-        indexMap,
-        bodyEndIndex,
-      );
+      let docRange;
+      if (!theirsS) {
+        // New section — its doc position is the start of the first
+        // following merged section that also exists in `theirs`. If
+        // no such neighbour exists (new section is last), append at body end.
+        let docStartIndex = bodyEndIndex;
+        for (let j = mi + 1; j < mergedSections.length; j++) {
+          const nextTheirs = theirsSections.find((s) => s.heading === mergedSections[j].heading);
+          if (nextTheirs) {
+            docStartIndex = findSectionDocRange(
+              nextTheirs,
+              theirsSections,
+              indexMap,
+              bodyEndIndex,
+            ).docStartIndex;
+            break;
+          }
+        }
+        docRange = { docStartIndex, docEndIndex: docStartIndex };
+      } else {
+        docRange = findSectionDocRange(
+          theirsS,
+          theirsSections,
+          indexMap,
+          bodyEndIndex,
+        );
+      }
       changedSections.push({
         theirsSection: theirsS ?? null,
         mergedSection: mergedS,
@@ -356,18 +412,31 @@ export async function computeDocDiff(
 
   for (const change of changedSections) {
     if (!change.theirsSection) {
-      // New section — just insert at end
+      // New section — insert at the position computed above, clamped
+      // to a valid doc index. When the new section lands mid-doc, the
+      // content needs a leading '\n' so it begins in its own paragraph
+      // rather than fusing with whatever follows.
       if (change.mergedSection) {
-        const insertAt = bodyEndIndex - 1;
+        const insertAt = Math.min(Math.max(1, change.docStartIndex), bodyEndIndex - 1);
+        const isMidDoc = insertAt < bodyEndIndex - 1;
+        let actualInsertAt = insertAt;
+        if (isMidDoc) {
+          requests.push({
+            insertText: { location: { index: insertAt }, text: '\n' },
+          });
+          actualInsertAt = insertAt + 1;
+        }
         const { text, requests: insertRequests } = markdownToDocsRequests(
           change.mergedSection.content,
-          insertAt,
+          actualInsertAt,
           false,
           bodyEndIndex,
         );
         requests.push(...insertRequests);
         if (text.length > 0) {
-          requests.push(...createAttributionRequests(agentName, insertAt, insertAt + text.length));
+          requests.push(
+            ...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length),
+          );
         }
       }
       continue;
@@ -448,6 +517,27 @@ export async function computeDocDiff(
             range: { startIndex: deleteStartIdx, endIndex: clampedEnd },
           },
         });
+      }
+
+      // Special case: chunk is all empty strings. chunk.join('\n') is "",
+      // so the main insert branch below skips. But each "" represents a
+      // blank paragraph the agent wants to add — emit a raw '\n' per
+      // element so the paragraph break actually lands in the doc.
+      if (
+        newContent.length === 0 &&
+        hunk.buffer2.chunk.length > 0 &&
+        hunk.buffer2.chunk.every((c: string) => c === '')
+      ) {
+        const insertAt = Math.min(deleteStartIdx, bodyEndIndex - 1);
+        if (insertAt >= 1) {
+          requests.push({
+            insertText: {
+              location: { index: insertAt },
+              text: '\n'.repeat(hunk.buffer2.chunk.length),
+            },
+          });
+        }
+        continue;
       }
 
       // Step 2: INSERT new content at the same position
