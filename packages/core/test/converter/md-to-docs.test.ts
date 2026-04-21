@@ -119,11 +119,11 @@ describe('markdownToDocsRequests', () => {
     const { text, requests } = markdownToDocsRequests(md);
     expect(text).toContain('unchecked item');
     expect(text).toContain('checked item');
+    // Adjacent same-preset item ranges are merged into a single request
+    // (multiple requests for the same preset would flatten nesting).
     const bulletReqs = requests.filter((r) => r.createParagraphBullets);
-    expect(bulletReqs.length).toBe(3);
-    for (const req of bulletReqs) {
-      expect(req.createParagraphBullets!.bulletPreset).toBe('BULLET_CHECKBOX');
-    }
+    expect(bulletReqs.length).toBe(1);
+    expect(bulletReqs[0].createParagraphBullets!.bulletPreset).toBe('BULLET_CHECKBOX');
   });
 
   it('uses regular bullet preset for non-checkbox list items', () => {

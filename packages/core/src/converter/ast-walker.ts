@@ -121,13 +121,38 @@ function flushTextSegment(ctx: WalkContext) {
       type: 'text',
       text: ctx.buf,
       styles: [...ctx.styles],
-      bullets: [...ctx.bullets],
+      bullets: consolidateBullets(ctx.bullets),
     });
   }
   ctx.buf = '';
   ctx.offset = 0;
   ctx.styles = [];
   ctx.bullets = [];
+}
+
+// When Docs receives multiple createParagraphBullets requests with the same
+// preset on adjacent paragraphs, it coalesces them into a single list and
+// ignores per-paragraph leading tabs in the later requests — flattening the
+// whole list to level 0. Merging adjacent same-preset ranges into one
+// request lets the API interpret each paragraph's tabs independently, which
+// is what produces the nesting levels.
+function consolidateBullets(bullets: docs_v1.Schema$Request[]): docs_v1.Schema$Request[] {
+  const merged: docs_v1.Schema$Request[] = [];
+  for (const req of bullets) {
+    const cur = req.createParagraphBullets;
+    const prev = merged[merged.length - 1]?.createParagraphBullets;
+    if (
+      prev &&
+      cur &&
+      prev.bulletPreset === cur.bulletPreset &&
+      prev.range?.endIndex === cur.range?.startIndex
+    ) {
+      prev.range!.endIndex = cur.range!.endIndex;
+    } else {
+      merged.push({ createParagraphBullets: { ...cur, range: { ...cur!.range } } });
+    }
+  }
+  return merged;
 }
 
 // ── AST walking ────────────────────────────────────────────────
