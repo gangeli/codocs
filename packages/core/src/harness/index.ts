@@ -12,10 +12,6 @@ export { writeTempContext, cleanupTempFiles } from './context.js';
 export type { TempContext } from './context.js';
 export { buildPrompt, buildConflictPrompt } from './prompt.js';
 export type { PromptContext } from './prompt.js';
-export { buildCodePrompt } from './code-prompt.js';
-export type { CodePromptContext } from './code-prompt.js';
-export { buildClassificationPreamble, parseClassification } from './classifier.js';
-export type { Classification } from './classifier.js';
 export {
   getDefaultBranch, createWorktree, removeWorktree,
   commitAll, pushBranch, rebaseOnto, forcePushBranch,
