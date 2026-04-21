@@ -81,6 +81,9 @@ export interface AttributionSpan {
 /** Named range prefix used for agent attribution */
 export const AGENT_RANGE_PREFIX = 'agent:';
 
+/** Named range prefix used to preserve code-block language tags across round-trips. */
+export const CODELANG_RANGE_PREFIX = 'codelang:';
+
 /** Configuration for the event listener */
 export interface EventListenerConfig {
   /** Google Cloud project ID */

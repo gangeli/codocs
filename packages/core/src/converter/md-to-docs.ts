@@ -489,6 +489,11 @@ function adjustRequestIndex(req: docs_v1.Schema$Request, delta: number) {
     r.startIndex = (r.startIndex ?? 0) + delta;
     r.endIndex = (r.endIndex ?? 0) + delta;
   }
+  if (req.createNamedRange?.range) {
+    const r = req.createNamedRange.range;
+    r.startIndex = (r.startIndex ?? 0) + delta;
+    r.endIndex = (r.endIndex ?? 0) + delta;
+  }
 }
 
 function getStartIndex(req: docs_v1.Schema$Request): number {

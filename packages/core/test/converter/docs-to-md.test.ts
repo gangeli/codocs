@@ -59,7 +59,6 @@ describe('docsToMarkdown', () => {
 
     // Lock in the exact markdown serialization, not just substrings.
     const expected =
-      '---\n\n' +
       '# My Title\n\n' +
       'Hello **bold** world.\n\n' +
       'Some *italic* text.\n';
@@ -71,7 +70,6 @@ describe('docsToMarkdown', () => {
     const md = docsToMarkdown(doc);
 
     const expected =
-      '---\n\n' +
       '- Item one\n' +
       '- Item two\n' +
       '- Item three\n';
@@ -169,27 +167,27 @@ describe('docsToMarkdown', () => {
 
   it('emits ## for HEADING_2', () => {
     const md = docsToMarkdown(makeSingleParagraphDoc('Head 2', 'HEADING_2'));
-    expect(md).toBe('---\n\n## Head 2\n');
+    expect(md).toBe('## Head 2\n');
   });
 
   it('emits ### for HEADING_3', () => {
     const md = docsToMarkdown(makeSingleParagraphDoc('Head 3', 'HEADING_3'));
-    expect(md).toBe('---\n\n### Head 3\n');
+    expect(md).toBe('### Head 3\n');
   });
 
   it('emits #### for HEADING_4', () => {
     const md = docsToMarkdown(makeSingleParagraphDoc('Head 4', 'HEADING_4'));
-    expect(md).toBe('---\n\n#### Head 4\n');
+    expect(md).toBe('#### Head 4\n');
   });
 
   it('emits ##### for HEADING_5', () => {
     const md = docsToMarkdown(makeSingleParagraphDoc('Head 5', 'HEADING_5'));
-    expect(md).toBe('---\n\n##### Head 5\n');
+    expect(md).toBe('##### Head 5\n');
   });
 
   it('emits ###### for HEADING_6', () => {
     const md = docsToMarkdown(makeSingleParagraphDoc('Head 6', 'HEADING_6'));
-    expect(md).toBe('---\n\n###### Head 6\n');
+    expect(md).toBe('###### Head 6\n');
   });
 
   // ── Ordered list ────────────────────────────────────────────────
@@ -245,7 +243,7 @@ describe('docsToMarkdown', () => {
     };
 
     const md = docsToMarkdown(doc);
-    expect(md).toBe('---\n\n1. first\n2. second\n');
+    expect(md).toBe('1. first\n2. second\n');
   });
 
   // ── Code block ──────────────────────────────────────────────────
@@ -264,7 +262,7 @@ describe('docsToMarkdown', () => {
       { weightedFontFamily: { fontFamily: 'Courier New' } },
     );
     const md = docsToMarkdown(doc);
-    expect(md).toBe('---\n\n```\nconst x = 1;\n```\n');
+    expect(md).toBe('```\nconst x = 1;\n```\n');
   });
 
   // ── Emoji / CJK round-trip ─────────────────────────────────────
@@ -272,7 +270,7 @@ describe('docsToMarkdown', () => {
   it('preserves emoji and CJK characters without corruption', () => {
     const doc = makeSingleParagraphDoc('Hello 🎉 你好', 'NORMAL_TEXT');
     const md = docsToMarkdown(doc);
-    expect(md).toBe('---\n\nHello 🎉 你好\n');
+    expect(md).toBe('Hello 🎉 你好\n');
     // Explicit sanity checks: the codepoints survive intact.
     expect(md).toContain('🎉');
     expect(md).toContain('你好');

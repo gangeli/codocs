@@ -10,6 +10,7 @@
 import type { docs_v1 } from 'googleapis';
 import type { Root, Content, Heading, List, ListItem, Table, TableRow, TableCell, Code, InlineCode, Link, Image, Paragraph, Blockquote } from 'mdast';
 import { headingDepthToNamedStyle, CODE_FONT_FAMILY, CODE_BLOCK_BG } from './style-map.js';
+import { CODELANG_RANGE_PREFIX } from '../types.js';
 
 // ── Segment types ──────────────────────────────────────────────
 
@@ -420,6 +421,19 @@ function emitCodeBlock(node: Code, ctx: WalkContext) {
       fields: 'shading',
     },
   });
+
+  // Docs has no native code-block concept, so store the fence language as a
+  // named range covering the block — read-back looks up this range to put
+  // the language back on the fence. Skip for lang-less fences to avoid
+  // cluttering the doc with empty codelang:* ranges.
+  if (node.lang && end > start) {
+    ctx.styles.push({
+      createNamedRange: {
+        name: CODELANG_RANGE_PREFIX + node.lang,
+        range: { startIndex: start, endIndex: end },
+      },
+    });
+  }
 }
 
 function emitImage(node: Image, ctx: WalkContext) {

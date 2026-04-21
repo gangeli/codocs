@@ -7,6 +7,7 @@
 
 import type { docs_v1 } from 'googleapis';
 import { namedStyleToHeadingDepth, isMonospaceFont } from './style-map.js';
+import { CODELANG_RANGE_PREFIX } from '../types.js';
 
 interface ParseContext {
   /** The full document (for resolving inline objects, lists, etc.) */
@@ -114,19 +115,28 @@ function parseDocumentToMarkdownImpl(
 
     // Consecutive monospace paragraphs form a fenced code block.
     if (isCodeBlockLine(element)) {
+      const blockStart = element.startIndex ?? 0;
       const lines: string[] = [];
+      let blockEnd = element.endIndex ?? blockStart;
       while (i < body.content.length && isCodeBlockLine(body.content[i])) {
         lines.push(extractRawText(body.content[i].paragraph!));
+        blockEnd = body.content[i].endIndex ?? blockEnd;
         i++;
       }
       i--; // outer loop's i++ will re-advance past the last code line
-      md = '```\n' + lines.join('\n') + '\n```';
+      const lang = findCodeLang(ctx.namedRanges, blockStart, blockEnd);
+      md = '```' + (lang ?? '') + '\n' + lines.join('\n') + '\n```';
     } else if (element.paragraph) {
       md = parseParagraph(element.paragraph, element, ctx);
       curListId = element.paragraph.bullet?.listId ?? null;
     } else if (element.table) {
       md = parseTable(element.table, ctx);
     } else if (element.sectionBreak && !ctx.filterRanges) {
+      // Every new Google Doc body starts with a sectionBreak the API
+      // won't let us delete. Drop the leading one so canonical inputs
+      // round-trip losslessly. Later sectionBreaks (rare — the write
+      // path never emits them) still render as `---`.
+      if (i === 0) continue;
       md = '---';
     }
 
@@ -438,6 +448,28 @@ function isCodeBlockLine(element: docs_v1.Schema$StructuralElement): boolean {
     }
   }
   return hasAnyText;
+}
+
+/**
+ * Find the `codelang:<lang>` named range covering the given structural-element
+ * range (a detected code block) and return `<lang>`, or null if no such range
+ * exists. The write path stores the fence language this way because Docs has
+ * no native code-block concept to carry it.
+ */
+function findCodeLang(
+  namedRanges: Map<string, Array<{ startIndex: number; endIndex: number }>>,
+  blockStart: number,
+  blockEnd: number,
+): string | null {
+  for (const [name, ranges] of namedRanges) {
+    if (!name.startsWith(CODELANG_RANGE_PREFIX)) continue;
+    for (const r of ranges) {
+      if (r.startIndex >= blockStart && r.endIndex <= blockEnd) {
+        return name.slice(CODELANG_RANGE_PREFIX.length);
+      }
+    }
+  }
+  return null;
 }
 
 /** Concatenate the raw text of a paragraph's text runs, stripping the
