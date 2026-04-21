@@ -117,7 +117,10 @@ describe('element-parser edge cases', () => {
     expect(md).toContain('[click here](https://example.com)');
   });
 
-  it('handles monospace font as inline code', () => {
+  it('renders a fully-monospace paragraph as a fenced code block', () => {
+    // Inline code requires MIXED monospace + normal runs within a single
+    // paragraph. When the entire paragraph is monospace, it's the
+    // (possibly single-line) content of a fenced code block on round-trip.
     const doc = makeDoc([
       {
         startIndex: 1,
@@ -140,7 +143,43 @@ describe('element-parser edge cases', () => {
       },
     ]);
     const md = docsToMarkdown(doc);
-    expect(md).toContain('`foo()`');
+    expect(md).toContain('```\nfoo()\n```');
+  });
+
+  it('emits inline code when monospace is mixed with plain text in one paragraph', () => {
+    const doc = makeDoc([
+      {
+        startIndex: 1,
+        endIndex: 30,
+        paragraph: {
+          elements: [
+            {
+              startIndex: 1,
+              endIndex: 9,
+              textRun: { content: 'Use the ' },
+            },
+            {
+              startIndex: 9,
+              endIndex: 22,
+              textRun: {
+                content: 'console.log()',
+                textStyle: {
+                  weightedFontFamily: { fontFamily: 'Courier New' },
+                },
+              },
+            },
+            {
+              startIndex: 22,
+              endIndex: 30,
+              textRun: { content: ' please.\n' },
+            },
+          ],
+          paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+        },
+      },
+    ]);
+    const md = docsToMarkdown(doc);
+    expect(md).toContain('Use the `console.log()` please.');
   });
 
   it('handles TITLE style as h1', () => {

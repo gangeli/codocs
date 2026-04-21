@@ -23,6 +23,12 @@ interface ParseContext {
    * keys are fileIds extracted from each inline object's sourceUri.
    */
   mermaidByFileId: Map<string, string>;
+  /**
+   * Per-list-level running counter for ordered-list numbering. Key is
+   * `${listId}|${nestingLevel}`; value is the next number to emit.
+   * Seeded lazily from each list's `startNumber` property.
+   */
+  orderedCounters: Map<string, number>;
 }
 
 /** An entry mapping a markdown character offset to a Google Doc index. */
@@ -86,47 +92,60 @@ function parseDocumentToMarkdownImpl(
     filterRanges,
     includeAttribution: options.includeAttribution ?? false,
     mermaidByFileId: options.mermaidByFileId ?? new Map(),
+    orderedCounters: new Map(),
   };
 
   const body = document.body;
   if (!body?.content) return { markdown: '', indexMap: [] };
 
-  const parts: string[] = [];
+  // Use a variable separator between paragraphs: single '\n' when two
+  // consecutive paragraphs belong to the SAME list (so list items stay
+  // adjacent), '\n\n' otherwise.
+  let output = '';
   const indexMap: IndexMapEntry[] = [];
-  let mdOffset = 0;
+  let prevListId: string | null = null;
 
-  for (const element of body.content) {
+  for (let i = 0; i < body.content.length; i++) {
+    const element = body.content[i];
     const docStart = element.startIndex ?? 0;
-    const docEnd = element.endIndex ?? 0;
 
-    if (element.paragraph) {
-      const md = parseParagraph(element.paragraph, element, ctx);
-      if (md !== null) {
-        if (parts.length > 0) mdOffset += 2; // for "\n\n" separator
-        indexMap.push({ mdOffset, docIndex: docStart });
-        parts.push(md);
-        mdOffset += md.length;
+    let md: string | null = null;
+    let curListId: string | null = null;
+
+    // Consecutive monospace paragraphs form a fenced code block.
+    if (isCodeBlockLine(element)) {
+      const lines: string[] = [];
+      while (i < body.content.length && isCodeBlockLine(body.content[i])) {
+        lines.push(extractRawText(body.content[i].paragraph!));
+        i++;
       }
+      i--; // outer loop's i++ will re-advance past the last code line
+      md = '```\n' + lines.join('\n') + '\n```';
+    } else if (element.paragraph) {
+      md = parseParagraph(element.paragraph, element, ctx);
+      curListId = element.paragraph.bullet?.listId ?? null;
     } else if (element.table) {
-      const md = parseTable(element.table, ctx);
-      if (md !== null) {
-        if (parts.length > 0) mdOffset += 2;
-        indexMap.push({ mdOffset, docIndex: docStart });
-        parts.push(md);
-        mdOffset += md.length;
-      }
+      md = parseTable(element.table, ctx);
     } else if (element.sectionBreak && !ctx.filterRanges) {
-      if (parts.length > 0) mdOffset += 2;
-      indexMap.push({ mdOffset, docIndex: docStart });
-      parts.push('---');
-      mdOffset += 3;
+      md = '---';
     }
+
+    if (md === null) continue;
+
+    const sep =
+      output === ''
+        ? ''
+        : prevListId !== null && prevListId === curListId
+        ? '\n'
+        : '\n\n';
+    output += sep;
+    indexMap.push({ mdOffset: output.length, docIndex: docStart });
+    output += md;
+    prevListId = curListId;
   }
 
-  let result = parts.join('\n\n');
-
-  // Clean up excessive blank lines
-  result = result.replace(/\n{3,}/g, '\n\n').trim();
+  // Collapse any accidental runs of 3+ newlines, then normalise trailing/leading.
+  let result = output.replace(/\n{3,}/g, '\n\n').trim();
 
   return { markdown: result + '\n', indexMap };
 }
@@ -148,17 +167,35 @@ function parseParagraph(
   const headingDepth = namedStyleToHeadingDepth(style);
   const isBullet = !!para.bullet;
 
-  // Build the text content of this paragraph
-  let text = '';
+  // Build the text content of this paragraph. Text runs are collected as
+  // styled segments and emitted together so shared-style boundaries merge
+  // (e.g. `**bold and *italic* bold**` stays as one bold span instead of
+  // fragmenting into `**bold and** ***italic*** **bold**`).
   const elements = para.elements ?? [];
-
+  const pieces: string[] = [];
+  let runBuf: StyledSegment[] = [];
+  const flushRuns = () => {
+    if (runBuf.length === 0) return;
+    // Docs always appends "\n" to the last textRun of a paragraph.
+    // Strip it so it doesn't land inside our style markers
+    // (e.g. `***emphasis\n***`).
+    const last = runBuf[runBuf.length - 1];
+    if (last.text.endsWith('\n')) {
+      runBuf[runBuf.length - 1] = { ...last, text: last.text.slice(0, -1) };
+    }
+    pieces.push(emitStyledSegments(runBuf));
+    runBuf = [];
+  };
   for (const el of elements) {
     if (el.textRun) {
-      text += formatTextRun(el.textRun);
+      runBuf.push(toStyledSegment(el.textRun));
     } else if (el.inlineObjectElement) {
-      text += formatInlineObject(el.inlineObjectElement, ctx);
+      flushRuns();
+      pieces.push(formatInlineObject(el.inlineObjectElement, ctx));
     }
   }
+  flushRuns();
+  let text = pieces.join('');
 
   // Remove trailing newline that Docs always adds to paragraphs
   text = text.replace(/\n$/, '');
@@ -213,50 +250,129 @@ function parseParagraph(
 
     // If glyph type is set (DECIMAL, ALPHA, etc.), it's ordered
     const isOrdered = glyphType && glyphType !== 'GLYPH_TYPE_UNSPECIFIED';
-    const marker = isOrdered ? '1.' : '-';
+    let marker: string;
+    if (isOrdered) {
+      // Emit the actual running number for this (list, nesting-level).
+      // Seeded from the list's startNumber (default 1) and incremented
+      // per item encountered in document order.
+      const counterKey = `${listId ?? ''}|${nestingLevel}`;
+      const startNumber = nestingProps?.startNumber ?? 1;
+      const next = ctx.orderedCounters.get(counterKey) ?? startNumber;
+      ctx.orderedCounters.set(counterKey, next + 1);
+      marker = `${next}.`;
+    } else {
+      marker = '-';
+    }
 
     return prefix + indent + marker + ' ' + text;
+  }
+
+  // Horizontal rule: the write path emits `---` as three em-dashes as a
+  // standalone paragraph (Docs has no native HR). Recognise that shape
+  // on read so the round-trip preserves the original `---`.
+  if (text === '———') {
+    return prefix + '---';
   }
 
   return prefix + text;
 }
 
-function formatTextRun(textRun: docs_v1.Schema$TextRun): string {
-  let text = textRun.content ?? '';
-  const style = textRun.textStyle;
+interface StyledSegment {
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  strikethrough: boolean;
+  code: boolean;
+  link?: string;
+}
 
-  if (!style || !text.trim()) return text;
+function toStyledSegment(textRun: docs_v1.Schema$TextRun): StyledSegment {
+  const text = textRun.content ?? '';
+  const style = textRun.textStyle ?? {};
+  return {
+    text,
+    bold: !!style.bold,
+    italic: !!style.italic,
+    strikethrough: !!style.strikethrough,
+    code: isMonospaceFont(style.weightedFontFamily?.fontFamily),
+    link: style.link?.url ?? undefined,
+  };
+}
 
-  // Check for code (monospace font)
-  if (isMonospaceFont(style.weightedFontFamily?.fontFamily)) {
-    // If multi-line, treat as code block (handled at paragraph level)
-    text = text.replace(/\n$/, '');
-    return '`' + text + '`';
+/**
+ * Emit a paragraph's text runs as markdown, opening and closing inline
+ * markers only when the corresponding style actually changes. Adjacent
+ * runs that share bold/italic/etc. get a single wrapping pair, so e.g.
+ *   run1("bold ", bold) + run2("italic", bold+italic) + run3(" bold", bold)
+ * renders as `**bold *italic* bold**`, not `**bold** ***italic*** **bold**`.
+ */
+function emitStyledSegments(segments: StyledSegment[]): string {
+  let output = '';
+  let openBold = false;
+  let openItalic = false;
+  let openStrike = false;
+  let openCode = false;
+  let openLink: string | undefined;
+
+  for (const seg of segments) {
+    if (seg.text === '') continue;
+
+    // Close styles that aren't active in this segment (reverse of open order
+    // so nested markers are well-formed).
+    if (openCode && !seg.code) {
+      output += '`';
+      openCode = false;
+    }
+    if (openItalic && !seg.italic) {
+      output += '*';
+      openItalic = false;
+    }
+    if (openBold && !seg.bold) {
+      output += '**';
+      openBold = false;
+    }
+    if (openStrike && !seg.strikethrough) {
+      output += '~~';
+      openStrike = false;
+    }
+    if (openLink !== undefined && seg.link !== openLink) {
+      output += `](${openLink})`;
+      openLink = undefined;
+    }
+
+    // Open styles that are new this segment.
+    if (openLink === undefined && seg.link !== undefined) {
+      output += '[';
+      openLink = seg.link;
+    }
+    if (!openStrike && seg.strikethrough) {
+      output += '~~';
+      openStrike = true;
+    }
+    if (!openBold && seg.bold) {
+      output += '**';
+      openBold = true;
+    }
+    if (!openItalic && seg.italic) {
+      output += '*';
+      openItalic = true;
+    }
+    if (!openCode && seg.code) {
+      output += '`';
+      openCode = true;
+    }
+
+    output += seg.text;
   }
 
-  // Apply inline formatting — order matters: innermost first
-  const trimmed = text.trim();
-  const leadingSpace = text.slice(0, text.indexOf(trimmed));
-  const trailingSpace = text.slice(text.indexOf(trimmed) + trimmed.length);
+  // Close anything still open at the paragraph end.
+  if (openCode) output += '`';
+  if (openItalic) output += '*';
+  if (openBold) output += '**';
+  if (openStrike) output += '~~';
+  if (openLink !== undefined) output += `](${openLink})`;
 
-  let formatted = trimmed;
-
-  if (style.strikethrough) {
-    formatted = '~~' + formatted + '~~';
-  }
-  if (style.italic) {
-    formatted = '*' + formatted + '*';
-  }
-  if (style.bold) {
-    formatted = '**' + formatted + '**';
-  }
-
-  // Links
-  if (style.link?.url) {
-    formatted = '[' + formatted + '](' + style.link.url + ')';
-  }
-
-  return leadingSpace + formatted + trailingSpace;
+  return output;
 }
 
 function formatInlineObject(
@@ -302,10 +418,83 @@ function extractDriveFileId(url: string): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * A paragraph qualifies as a fenced-code-block line iff it has no heading
+ * style, no bullet, and every textRun with content uses a monospace font.
+ * Consecutive such paragraphs get joined into a single ``` ``` block.
+ */
+function isCodeBlockLine(element: docs_v1.Schema$StructuralElement): boolean {
+  const para = element.paragraph;
+  if (!para) return false;
+  if (para.bullet) return false;
+  if (namedStyleToHeadingDepth(para.paragraphStyle?.namedStyleType) > 0) return false;
+  const runs = para.elements ?? [];
+  let hasAnyText = false;
+  for (const el of runs) {
+    if (el.textRun?.content) {
+      hasAnyText = true;
+      const font = el.textRun.textStyle?.weightedFontFamily?.fontFamily;
+      if (!isMonospaceFont(font)) return false;
+    }
+  }
+  return hasAnyText;
+}
+
+/** Concatenate the raw text of a paragraph's text runs, stripping the
+ *  trailing paragraph newline Docs always appends. */
+function extractRawText(para: docs_v1.Schema$Paragraph): string {
+  let t = '';
+  for (const el of para.elements ?? []) {
+    if (el.textRun?.content) t += el.textRun.content;
+  }
+  return t.replace(/\n$/, '');
+}
+
+/**
+ * The write path renders a blockquote as a 1×1 table with all borders
+ * hidden except a thick gray left bar. Detect that exact shape here so
+ * the round-trip preserves the `>` prefix.
+ */
+function isBlockquoteTable(table: docs_v1.Schema$Table): boolean {
+  const rows = table.tableRows ?? [];
+  if (rows.length !== 1) return false;
+  const cells = rows[0].tableCells ?? [];
+  if (cells.length !== 1) return false;
+  const s = cells[0].tableCellStyle;
+  if (!s) return false;
+  const w = (b: docs_v1.Schema$TableCellBorder | undefined) =>
+    b?.width?.magnitude ?? 0;
+  // Matches the writer: BLOCKQUOTE_RULE_WIDTH_PT = 3, other borders = 0.
+  return w(s.borderLeft) === 3 && w(s.borderTop) === 0 && w(s.borderRight) === 0 && w(s.borderBottom) === 0;
+}
+
+function parseBlockquoteTable(
+  table: docs_v1.Schema$Table,
+  ctx: ParseContext,
+): string {
+  const cell = table.tableRows![0].tableCells![0];
+  const lines: string[] = [];
+  for (const el of cell.content ?? []) {
+    if (!el.paragraph) continue;
+    const md = parseParagraph(el.paragraph, el, ctx);
+    if (md === null) {
+      lines.push('>');
+      continue;
+    }
+    for (const line of md.split('\n')) {
+      lines.push(line === '' ? '>' : `> ${line}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 function parseTable(
   table: docs_v1.Schema$Table,
   ctx: ParseContext,
 ): string | null {
+  if (isBlockquoteTable(table)) {
+    return parseBlockquoteTable(table, ctx);
+  }
   const rows = table.tableRows ?? [];
   if (rows.length === 0) return null;
 
@@ -335,15 +524,16 @@ function parseTable(
 
   if (mdRows.length === 0) return null;
 
-  // Build markdown table
+  // Build markdown table. Empty cells render as "| |" (single space between
+  // pipes), not "|  |" — otherwise the round-trip adds a space per empty cell.
+  const formatCell = (c: string) => (c === '' ? ' ' : ` ${c} `);
+  const formatRow = (cells: string[]) => '|' + cells.map(formatCell).join('|') + '|';
+
   const lines: string[] = [];
-  // Header row
-  lines.push('| ' + mdRows[0].join(' | ') + ' |');
-  // Separator
-  lines.push('| ' + mdRows[0].map(() => '---').join(' | ') + ' |');
-  // Data rows
+  lines.push(formatRow(mdRows[0]));
+  lines.push(formatRow(mdRows[0].map(() => '---')));
   for (let i = 1; i < mdRows.length; i++) {
-    lines.push('| ' + mdRows[i].join(' | ') + ' |');
+    lines.push(formatRow(mdRows[i]));
   }
 
   return lines.join('\n');
