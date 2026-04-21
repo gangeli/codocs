@@ -425,7 +425,21 @@ export async function computeDocDiff(
       const deleteEndIdx = deleteEndLine < lineDocIndices.length
         ? lineDocIndices[deleteEndLine]
         : change.docEndIndex;
-      const clampedEnd = deleteEndIdx >= bodyEndIndex ? bodyEndIndex - 1 : deleteEndIdx;
+      const wasClamped = deleteEndIdx >= bodyEndIndex;
+      const clampedEnd = wasClamped ? bodyEndIndex - 1 : deleteEndIdx;
+
+      // When replacing lines with new content, the delete range spans the
+      // line text AND its trailing \n (deleteEndIdx points at the start of
+      // the NEXT line). chunk.join('\n') has \n's BETWEEN lines but no
+      // trailing \n, and markdownToDocsRequests further strips any trailing
+      // \n. Without an explicit tail \n the replacement fuses into the
+      // following paragraph. Skip when the delete was clamped (the doc's
+      // final \n was NOT consumed, so re-inserting one would duplicate).
+      const needsTrailingNewline =
+        oldLength > 0 &&
+        newContent.length > 0 &&
+        !newContent.endsWith('\n') &&
+        !wasClamped;
 
       // Step 1: DELETE old content
       if (oldLength > 0 && clampedEnd > deleteStartIdx) {
@@ -469,6 +483,19 @@ export async function computeDocDiff(
 
         if (text.length > 0) {
           requests.push(...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length));
+        }
+
+        // Restore the trailing \n consumed by the delete. We insert it as
+        // raw text AFTER the markdown requests (so it lands right after
+        // the freshly-inserted content) to bypass the trailing-newline
+        // stripping done by markdownToDocsRequests.
+        if (needsTrailingNewline) {
+          requests.push({
+            insertText: {
+              location: { index: actualInsertAt + text.length },
+              text: '\n',
+            },
+          });
         }
       }
     }
@@ -556,9 +583,25 @@ function buildLineDocIndices(
 ): number[] {
   const result: number[] = [];
   let mdOffset = sectionMdStart;
+  const lastEntry = indexMap.length > 0 ? indexMap[indexMap.length - 1] : null;
 
   for (let i = 0; i < lines.length; i++) {
-    const docIndex = interpolateDocIndex(mdOffset, indexMap, sectionDocEnd);
+    let docIndex: number;
+    // Past the last indexMap entry we are inside (or just past) the last
+    // paragraph recorded for the doc. Within a paragraph markdown and doc
+    // offsets advance 1:1, so extrapolate 1:1 from the last entry and clamp
+    // to sectionDocEnd. Using the global local-ratio extrapolation here
+    // undershoots (it re-applies heading/formatting drift that doesn't exist
+    // past the last paragraph) and causes delete ranges to miss the tail
+    // character of the replaced line.
+    if (lastEntry && mdOffset > lastEntry.mdOffset) {
+      docIndex = Math.min(
+        lastEntry.docIndex + (mdOffset - lastEntry.mdOffset),
+        sectionDocEnd,
+      );
+    } else {
+      docIndex = interpolateDocIndex(mdOffset, indexMap, sectionDocEnd);
+    }
     result.push(docIndex);
     mdOffset += lines[i].length + 1; // +1 for '\n'
   }

@@ -760,11 +760,14 @@ Summer's melon treat
     //  21: "Green rind hides the sweet\n" (27 chars, ends at 48)
     //  48: "Red flesh bursting\n" (19 chars, ends at 67)
     //  67: "Summer's watermelon\n" (20 chars, ends at 87)
+    // Markdown offsets mirror what docsToMarkdownWithMapping emits — each
+    // entry is at a paragraph start in the markdown (one past the "\n\n"
+    // separator from the previous paragraph).
     const indexMap = makeIndexMap([
       { mdOffset: 0, docIndex: 1 },    // "# A haiku about fruit"
-      { mdOffset: 23, docIndex: 21 },  // "Green rind..."
-      { mdOffset: 48, docIndex: 48 },  // "Red flesh..."
-      { mdOffset: 65, docIndex: 67 },  // "Summer's watermelon"
+      { mdOffset: 23, docIndex: 21 },  // "Green rind hides the sweet"
+      { mdOffset: 50, docIndex: 48 },  // "Red flesh bursting"
+      { mdOffset: 69, docIndex: 67 },  // "Summer's watermelon"
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
