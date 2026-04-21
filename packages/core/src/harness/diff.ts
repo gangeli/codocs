@@ -362,8 +362,12 @@ export async function computeDocDiff(
   const theirsSections = parseSections(theirs);
   const mergedSections = parseSections(mergeResult.mergedMarkdown);
 
-  // If nothing changed, return early
-  if (mergeResult.mergedMarkdown.trim() === theirs.trim()) {
+  // If nothing meaningful changed, return early. Trailing whitespace
+  // within a line and leading/trailing blank lines at the doc level are
+  // semantically insignificant — Google Docs doesn't preserve them and
+  // readers/normalizers strip them, so producing a diff for them just
+  // generates an immediately-discarded round-trip edit.
+  if (normalizeForNoOpCheck(mergeResult.mergedMarkdown) === normalizeForNoOpCheck(theirs)) {
     return { hasChanges: false, requests: [], conflictsResolved };
   }
 
@@ -440,19 +444,45 @@ export async function computeDocDiff(
 
   for (const change of changedSections) {
     if (!change.theirsSection) {
-      // New section — insert at the position computed above, clamped
-      // to a valid doc index. When the new section lands mid-doc, the
-      // content needs a leading '\n' so it begins in its own paragraph
-      // rather than fusing with whatever follows.
+      // New section. markdownToDocsRequests strips the trailing \n from its
+      // last segment, so we have to inject a separator \n so our content
+      // doesn't fuse into the neighbouring paragraph.
+      //
+      //   - Append at end (insertAt == bodyEndIndex-1, right before the
+      //     doc's terminating \n): the separator \n goes BEFORE the
+      //     content so the content lands in its own paragraph instead of
+      //     extending the doc's last paragraph. The doc's existing final
+      //     \n terminates our content.
+      //   - Mid-doc (insertAt is the start of some following paragraph):
+      //     insert the separator \n at the insert point BEFORE the
+      //     content (sequentially). Google Docs processes requests in
+      //     order, so the later content insert at the same index pushes
+      //     our \n to `insertAt + text.length`. The key is that the \n
+      //     request appears FIRST in the batch — that way, when Docs
+      //     splits the following paragraph at our insert point, the
+      //     split-left slot is what the content extends (and what our
+      //     paragraph-style update targets), not the following
+      //     paragraph itself. Inserting the \n AFTER the content is
+      //     tempting but wrong: the content would first be merged into
+      //     the following paragraph (inheriting its heading style), and
+      //     the paragraph-style update would then strip the heading off
+      //     the real next paragraph when the \n split it back out.
       if (change.mergedSection) {
         const insertAt = Math.min(Math.max(1, change.docStartIndex), bodyEndIndex - 1);
-        const isMidDoc = insertAt < bodyEndIndex - 1;
+        const isAppendAtEnd = insertAt >= bodyEndIndex - 1;
         let actualInsertAt = insertAt;
-        if (isMidDoc) {
+        if (isAppendAtEnd) {
           requests.push({
             insertText: { location: { index: insertAt }, text: '\n' },
           });
           actualInsertAt = insertAt + 1;
+        } else {
+          // Separator \n inserted FIRST at the content-insert position.
+          // The content request that follows lands at the same index and
+          // pushes our \n to `insertAt + content.length`.
+          requests.push({
+            insertText: { location: { index: insertAt }, text: '\n' },
+          });
         }
         const { text, requests: insertRequests } = markdownToDocsRequests(
           change.mergedSection.content,
@@ -460,7 +490,7 @@ export async function computeDocDiff(
           false,
           bodyEndIndex,
         );
-        requests.push(...insertRequests);
+        appendWithBulletClear(requests, insertRequests, document, actualInsertAt, text.length);
         if (text.length > 0) {
           requests.push(
             ...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length),
@@ -491,7 +521,10 @@ export async function computeDocDiff(
 
     if (hunks.length === 0) continue; // no actual line changes
 
-    // Build a line-to-doc-index map for the old section.
+    // Build a line-to-doc-index map for the old section. The extra
+    // sentinel at lineDocIndices[oldLines.length] = section end lets us
+    // compute a delete range that runs up to the next line's start
+    // without a special case for the last line.
     const sectionMdStart = computeMdOffset(change.theirsSection, theirsSections);
     const lineDocIndices = buildLineDocIndices(
       oldLines,
@@ -499,6 +532,7 @@ export async function computeDocDiff(
       indexMap,
       change.docEndIndex,
     );
+    lineDocIndices.push(change.docEndIndex);
 
     // Google Docs batchUpdate processes requests sequentially.
     // Process hunks in reverse order (highest index first) so that
@@ -513,21 +547,31 @@ export async function computeDocDiff(
       const newContent = hunk.buffer2.chunk.join('\n');
 
       const deleteStartIdx = Math.min(
-        oldOffset < lineDocIndices.length
-          ? lineDocIndices[oldOffset]
-          : change.docEndIndex,
+        lineDocIndices[Math.min(oldOffset, lineDocIndices.length - 1)],
         bodyEndIndex - 1,
       );
 
-      // Compute deleteEndIdx by summing each deleted line's span (content +
-      // \n terminator), NOT by looking at lineDocIndices[oldOffset+oldLength].
-      // The latter over-reads when the following line is an empty paragraph —
-      // interpolateDocIndex snaps empty mdOffsets to the NEXT content line's
-      // docIndex, so the delete range would swallow the empty paragraph.
-      let deleteEndIdx = deleteStartIdx;
+      // deleteEndIdx is the min of two estimates — both are upper bounds
+      // but each over-reads in cases the other gets right:
+      //   - mdSumEnd sums markdown line lengths + \n. Over-counts for
+      //     markdown lines with doc-less prefixes (`# `, `- `, `1. `,
+      //     `**…**`), because `"# H".length + 1 == 4` while the doc only
+      //     stores `H\n` == 2.
+      //   - docSpanEnd uses the next line's doc index (via the sentinel
+      //     for past-last). Over-reads when the next markdown line is a
+      //     blank separator between two content paragraphs that were
+      //     emitted with doc-side empty paragraphs between them —
+      //     interpolateDocIndex snaps the empty mdOffset forward to the
+      //     *next* content paragraph's docIndex, so the "gap" includes
+      //     one extra empty-paragraph `\n`.
+      // Neither estimate undershoots the real span, so taking the min
+      // yields the correct delete range in both shapes.
+      let mdSumEnd = deleteStartIdx;
       for (let k = oldOffset; k < oldOffset + oldLength && k < oldLines.length; k++) {
-        deleteEndIdx += oldLines[k].length + 1;
+        mdSumEnd += oldLines[k].length + 1;
       }
+      const docSpanEnd = lineDocIndices[Math.min(oldOffset + oldLength, lineDocIndices.length - 1)];
+      const deleteEndIdx = Math.min(mdSumEnd, docSpanEnd);
       const wasClamped = deleteEndIdx >= bodyEndIndex;
       const clampedEnd = wasClamped ? bodyEndIndex - 1 : deleteEndIdx;
 
@@ -582,23 +626,56 @@ export async function computeDocDiff(
       //
       //   - Append at end of section (oldOffset past oldLines): the insert
       //     point is bodyEndIndex-1, which is BEFORE the doc's terminating
-      //     \n. Inserting text there fuses with the preceding paragraph. We
-      //     prepend "\n\n" (terminator for preceding para + empty separator
-      //     para) — the existing final \n then serves as terminator for the
-      //     new paragraph.
+      //     \n. Inserting text there would fuse with the preceding
+      //     paragraph. We prepend "\n\n" (terminator for preceding para +
+      //     empty separator para) — the existing final \n then serves as
+      //     terminator for the new paragraph.
       //
-      //   - Mid-section insert (oldOffset within oldLines): the insert point
-      //     is the start of the FOLLOWING content paragraph, i.e. right
-      //     after a \n — no fusion with preceding. But the inserted text
-      //     would fuse with the following content, so we append "\n\n"
-      //     (terminator for new para + empty separator para) after the text.
+      //   - Mid-section insert (oldOffset within oldLines): the insert
+      //     point is the start of the FOLLOWING content paragraph. The
+      //     content would fuse with that following paragraph and the
+      //     paragraph-style update would then retarget the following
+      //     paragraph. Insert a separator \n FIRST at the same index —
+      //     the subsequent content inserts push our \n forward, and when
+      //     Docs splits the following paragraph at our insert point, the
+      //     split-left slot is what the content extends (and what our
+      //     paragraph-style update targets), not the following paragraph.
       //
       // Replacement hunks (oldLength > 0) rely on needsTrailingNewline to
-      // restore the single \n consumed by the delete; no extra prefix needed.
+      // restore the single \n consumed by the delete. For the same reason
+      // as mid-section inserts, the \n goes BEFORE the content so the
+      // paragraph-style update lands on the new paragraph, not the next.
       if (newContent.length > 0) {
         const insertAt = Math.min(deleteStartIdx, bodyEndIndex - 1);
         const isPureInsert = oldLength === 0 && insertAt > 1;
-        const isAppendAtEnd = isPureInsert && oldOffset >= oldLines.length;
+        // "Append at end" applies ONLY when insertAt is at the doc's
+        // terminating \n (bodyEndIndex-1). `oldOffset >= oldLines.length`
+        // is not enough on its own: for a pure insert past a non-last
+        // section's lines, insertAt points to the NEXT section's heading,
+        // not the doc's end — prepending "\n\n" there would split the
+        // following heading's paragraph and fuse the new content into it.
+        // Fall through to the mid-section separator branch in that case.
+        const isAppendAtEnd =
+          isPureInsert &&
+          oldOffset >= oldLines.length &&
+          insertAt >= bodyEndIndex - 1;
+
+        // When insertAt points to the startIndex of a structural
+        // non-paragraph element (table, section break), text ops there
+        // fail with "insertion index must be inside an existing
+        // paragraph". Shift the separator one position earlier, into
+        // the previous paragraph's trailing \n — inserting a \n there
+        // creates an empty paragraph at the original insertAt which
+        // the subsequent content then extends. Only the separator
+        // position shifts; the content insert still targets the
+        // original insertAt (which, post-separator, is the empty
+        // paragraph).
+        const separatorAt =
+          !isAppendAtEnd &&
+          insertAt > 1 &&
+          isStructuralNonParagraphAt(document, insertAt)
+            ? insertAt - 1
+            : insertAt;
 
         let actualInsertAt = insertAt;
         if (isAppendAtEnd) {
@@ -606,6 +683,19 @@ export async function computeDocDiff(
             insertText: { location: { index: insertAt }, text: '\n\n' },
           });
           actualInsertAt = insertAt + 2;
+        } else if (isPureInsert || needsTrailingNewline) {
+          // Mid-section separator: inserted BEFORE the content at the
+          // same index, so later content inserts push it to
+          // `actualInsertAt + text.length` once processed sequentially.
+          // For pure inserts we need both a separator after the new
+          // paragraph AND a blank-line separator before the following
+          // content, so emit "\n\n" here.
+          requests.push({
+            insertText: {
+              location: { index: separatorAt },
+              text: isPureInsert ? '\n\n' : '\n',
+            },
+          });
         }
 
         const { text, requests: insertRequests } = markdownToDocsRequests(
@@ -614,29 +704,10 @@ export async function computeDocDiff(
           false,
           bodyEndIndex,
         );
-        requests.push(...insertRequests);
+        appendWithBulletClear(requests, insertRequests, document, actualInsertAt, text.length);
 
         if (text.length > 0) {
           requests.push(...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length));
-        }
-
-        if (isPureInsert && !isAppendAtEnd) {
-          // Mid-section insert: suffix "\n\n" (new-para terminator + empty
-          // separator before following content).
-          requests.push({
-            insertText: {
-              location: { index: actualInsertAt + text.length },
-              text: '\n\n',
-            },
-          });
-        } else if (needsTrailingNewline) {
-          // Replacement: restore the single \n consumed by the delete.
-          requests.push({
-            insertText: {
-              location: { index: actualInsertAt + text.length },
-              text: '\n',
-            },
-          });
         }
       }
     }
@@ -692,14 +763,17 @@ function findSectionDocRange(
 }
 
 /**
- * Compute the approximate markdown character offset of a section,
- * based on joining all prior sections with separators.
+ * Compute the markdown character offset where a section starts in its
+ * source document. parseSections consumes all lines up to (but not
+ * including) the next heading line, so each section's content already
+ * contains the trailing `\n` of its last line. Only one additional `\n`
+ * separator remains between adjacent sections in the source.
  */
 function computeMdOffset(section: MdSection, allSections: MdSection[]): number {
   let offset = 0;
   for (const s of allSections) {
     if (s === section) return offset;
-    offset += s.content.length + 2; // +2 for "\n\n" separator
+    offset += s.content.length + 1;
   }
   return offset;
 }
@@ -840,4 +914,88 @@ function getBodyEndIndex(document: docs_v1.Schema$Document): number {
   if (!body?.content?.length) return 1;
   const last = body.content[body.content.length - 1];
   return last.endIndex ?? 1;
+}
+
+/**
+ * True iff `index` is the startIndex of a non-paragraph structural
+ * element (table, section break). Text insert/delete ops at such an
+ * index are rejected by the Docs API ("insertion index must be inside
+ * the bounds of an existing paragraph"). Callers that need to insert
+ * at a paragraph boundary abutting a table — e.g. appending a bullet
+ * right before a table — can use this to detect the case and shift
+ * their insert one char earlier, into the preceding paragraph's \n.
+ */
+function isStructuralNonParagraphAt(
+  document: docs_v1.Schema$Document,
+  index: number,
+): boolean {
+  for (const elem of document.body?.content ?? []) {
+    if (elem.startIndex === index && !elem.paragraph) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True iff the document contains any bullet-formatted paragraph.
+ * When we insert content into an existing doc, the split that creates
+ * the new paragraph can copy bullet formatting from the paragraph
+ * being split — but only if some paragraph in the doc has a bullet in
+ * the first place. Narrowing to per-insert "is this adjacent to a
+ * bullet?" is fragile, because deletes within the same batch shift
+ * what paragraph ends up at the insert position. A document-wide
+ * check is a safe over-approximation: if there are no bullets at all,
+ * we know for certain the clear is unnecessary, so we skip the extra
+ * request. This keeps the minimal-edit request count small for plain
+ * documents while still emitting the clear whenever bullets exist
+ * anywhere nearby.
+ */
+function normalizeForNoOpCheck(s: string): string {
+  return s
+    .split('\n')
+    .map((l) => l.replace(/[ \t]+$/, ''))
+    .join('\n')
+    .trim();
+}
+
+function docHasAnyBullet(document: docs_v1.Schema$Document): boolean {
+  for (const elem of document.body?.content ?? []) {
+    if (elem.paragraph?.bullet) return true;
+  }
+  return false;
+}
+
+/**
+ * Append the requests produced by markdownToDocsRequests to the batch,
+ * interleaving a deleteParagraphBullets request between paragraph
+ * styles and bullet creates when the insertion could inherit bullet
+ * formatting from a surrounding paragraph. The clear runs AFTER the
+ * paragraph-style updates land and BEFORE the bullet creates, so any
+ * inherited bullet is stripped before the new content's own bullet (if
+ * any) is re-applied.
+ */
+function appendWithBulletClear(
+  out: docs_v1.Schema$Request[],
+  insertRequests: docs_v1.Schema$Request[],
+  document: docs_v1.Schema$Document,
+  actualInsertAt: number,
+  textLength: number,
+): void {
+  if (textLength === 0 || !docHasAnyBullet(document)) {
+    out.push(...insertRequests);
+    return;
+  }
+  const bullets = insertRequests.filter((r) => r.createParagraphBullets);
+  const rest = insertRequests.filter((r) => !r.createParagraphBullets);
+  out.push(...rest);
+  out.push({
+    deleteParagraphBullets: {
+      range: {
+        startIndex: actualInsertAt,
+        endIndex: actualInsertAt + textLength,
+      },
+    },
+  });
+  out.push(...bullets);
 }

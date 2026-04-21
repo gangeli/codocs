@@ -1,13 +1,21 @@
 /**
- * End-to-end tests for the agent-edit pipeline:
+ * Pipeline tests for the agent-edit path:
  *
  *   fake doc → docsToMarkdownWithMapping → agent edit → computeDocDiff
  *   → apply requests to simulated doc buffer → verify final text
  *
- * These tests catch bugs where the requests produced by `computeDocDiff`
- * don't correctly map edited markdown back onto the doc, producing
- * garbled output (e.g., old text + new text interleaved, split surrogate
- * pairs, off-by-one deletes, etc.).
+ * NOT a true end-to-end test: we never hit the real Google Docs API.
+ * The doc is a hand-built `Schema$Document` and request application is
+ * done by the local `applyRequests` simulator, which ONLY understands
+ * `insertText` + `deleteContentRange`. Style, bullet, table, image,
+ * and named-range requests are ignored by the simulator, so bugs in
+ * those request shapes will not surface here — use the per-feature
+ * converter tests for that coverage.
+ *
+ * These tests catch bugs where the text-manipulation requests produced
+ * by `computeDocDiff` don't correctly map edited markdown back onto
+ * the doc, producing garbled output (e.g., old text + new text
+ * interleaved, split surrogate pairs, off-by-one deletes, etc.).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -119,7 +127,7 @@ async function runPipeline(
 
 // ── Tests ──────────────────────────────────────────────────────
 
-describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
+describe('pipeline: agent edit → applied doc (emoji/surrogate pairs)', () => {
   it('replaces a line containing an emoji without leaving surrogates', async () => {
     const { document, bodyText } = makeDoc([
       { text: 'A \u{1F916} is \u{1F914} reply is posted' },
@@ -180,7 +188,7 @@ describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
     );
     expect(ours).not.toBe(base); // sanity: edit was applied
 
-    const { result } = await runPipeline(document, bodyText, ours);
+    const { result, requests } = await runPipeline(document, bodyText, ours);
 
     // Full expected body: heading and first two body paragraphs untouched;
     // only the last paragraph's emoji changes. Body-level representation
@@ -194,6 +202,25 @@ describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
       '\n' +
       'The \u{1F914} reply is deleted and replaced with the agent\u2019s text reply.\n';
     expect(result).toBe(expectedBody);
+
+    // The test name promises "no unchanged-text deletion" — verify that
+    // directly by checking that every delete range stays strictly inside
+    // the last paragraph (the only one being edited). The unchanged
+    // paragraphs ("Features" heading + first two body lines + the blank
+    // paragraph between them) must never overlap any delete range, or
+    // Google Docs comments anchored to those ranges would get clobbered
+    // even though the text is unchanged.
+    const lastPara = document.body!.content!.find(
+      (el) => el.paragraph?.elements?.[0]?.textRun?.content?.startsWith('The \u{1F916} reply is deleted'),
+    );
+    expect(lastPara).toBeDefined();
+    const lastParaStart = lastPara!.startIndex!;
+    const deleteReqs = requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs.length).toBeGreaterThan(0);
+    for (const req of deleteReqs) {
+      const r = req.deleteContentRange!.range!;
+      expect(r.startIndex).toBeGreaterThanOrEqual(lastParaStart);
+    }
   });
 
   it('handles emoji at the very end of a line without truncation', async () => {
@@ -333,7 +360,45 @@ describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
   });
 });
 
-describe('e2e: agent edit → applied doc (multi-line edits)', () => {
+describe('pipeline: agent edit → applied doc (multi-line edits)', () => {
+  it('replaces a single line with two lines without fusing into the next heading', async () => {
+    // Matches the shape of e2e test A11: take a plain three-section doc
+    // with headings, replace the middle section's single body paragraph
+    // with a two-paragraph body. The second new paragraph must not fuse
+    // into the following heading's text run.
+    //
+    // An extra blank paragraph between the second new paragraph and the
+    // next heading is acceptable (it renders as an empty paragraph which
+    // docsToMarkdown skips, so the markdown round-trip is unchanged).
+    const { document, bodyText } = makeDoc([
+      { text: 'Alpha', heading: 1 },
+      { text: 'First paragraph of Alpha.' },
+      { text: 'Beta', heading: 1 },
+      { text: 'Second paragraph of Beta.' },
+      { text: 'Gamma', heading: 1 },
+      { text: 'Third paragraph of Gamma.' },
+    ]);
+    const { markdown: base } = docsToMarkdownWithMapping(document);
+
+    const ours = base.replace(
+      'Second paragraph of Beta.',
+      'Second paragraph of Beta line one.\n\nSecond paragraph of Beta line two.',
+    );
+    const { result } = await runPipeline(document, bodyText, ours);
+
+    // All six original paragraph terminators plus exactly one extra
+    // blank-paragraph \n between line two and Gamma. The key property:
+    // "Second paragraph of Beta line two." and "Gamma" are NOT in the
+    // same doc paragraph (there is at least one \n between them).
+    expect(result).toContain(
+      'Beta\nSecond paragraph of Beta line one.\nSecond paragraph of Beta line two.\n',
+    );
+    expect(result).not.toContain('line two.Gamma');
+    expect(result).toMatch(/Beta line two\.\n+Gamma\n/);
+    // No stray old content.
+    expect(result).not.toContain('Second paragraph of Beta.');
+  });
+
   it('replaces a paragraph in the middle of a section cleanly', async () => {
     const { document, bodyText } = makeDoc([
       { text: 'Intro', heading: 1 },

@@ -1503,6 +1503,7 @@ async function run() {
       );
       canvases.set(name, docId);
       console.log(`  canvas '${name}' → ${docId}`);
+      id = docId;
     }
     return id!;
   }

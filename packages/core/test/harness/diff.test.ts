@@ -74,6 +74,51 @@ function buildDocAndMap(
 }
 
 /**
+ * Flatten the body text of a doc built via buildDocAndMap — concatenate
+ * each paragraph's textRun content in order. Doc-index 1 maps to
+ * bodyText[0]; this matches how applyRequests models the buffer.
+ */
+function docBodyText(doc: docs_v1.Schema$Document): string {
+  let text = '';
+  for (const el of doc.body?.content ?? []) {
+    if (!el.paragraph) continue;
+    for (const e of el.paragraph.elements ?? []) {
+      if (e.textRun?.content) text += e.textRun.content;
+    }
+  }
+  return text;
+}
+
+/**
+ * Apply a sequence of Google Docs batchUpdate requests to a flat text
+ * buffer that models the doc body (doc-index 1 maps to bodyText[0]).
+ * Mirrors the simulator in diff-pipeline.test.ts. Supports insertText
+ * and deleteContentRange; style/named-range/etc. requests are ignored
+ * because they don't change text content.
+ *
+ * Use to verify the FINAL STATE of the doc after a diff's requests are
+ * applied — a complement to the request-shape checks above. Bugs in
+ * request sequencing (inserts that reference already-deleted indices,
+ * overlapping deletes, missing newlines between paragraphs) surface
+ * here even when the shape assertions pass.
+ */
+function applyRequests(bodyText: string, requests: docs_v1.Schema$Request[]): string {
+  let buf = bodyText;
+  for (const req of requests) {
+    if (req.insertText) {
+      const at = req.insertText.location!.index! - 1;
+      const text = req.insertText.text ?? '';
+      buf = buf.slice(0, at) + text + buf.slice(at);
+    } else if (req.deleteContentRange) {
+      const start = req.deleteContentRange.range!.startIndex! - 1;
+      const end = req.deleteContentRange.range!.endIndex! - 1;
+      buf = buf.slice(0, start) + buf.slice(end);
+    }
+  }
+  return buf;
+}
+
+/**
  * Strip the markdown markers that don't appear in the rendered doc text
  * (heading/bullet/numbered prefixes, bold/italic wrappers, inline code,
  * links). Used when comparing a raw markdown line against the text of
@@ -275,8 +320,9 @@ Old details.
     const result = mergeDocuments(base, ours, theirs);
 
     expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('Hello updated by someone.');
-    expect(result.mergedMarkdown).not.toContain('Hello.');
+    // Full pin: when ours === base the merge must emit exactly theirs,
+    // with no section dropped, duplicated, or reordered.
+    expect(result.mergedMarkdown).toBe(theirs);
   });
 
   it('returns ours when no one else changed the doc', () => {
@@ -301,7 +347,8 @@ New details from agent.
     const result = mergeDocuments(base, ours, theirs);
 
     expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('New details from agent.');
+    // Full pin: when theirs === base the merge must emit exactly ours.
+    expect(result.mergedMarkdown).toBe(ours);
   });
 
   it('merges non-overlapping changes from both sides', () => {
@@ -332,8 +379,11 @@ Old details.
     const result = mergeDocuments(base, ours, theirs);
 
     expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('Someone updated intro.');
-    expect(result.mergedMarkdown).toContain('Agent updated details.');
+    // Full pin: both non-overlapping edits survive in their original
+    // section positions, no duplication, no reordering.
+    expect(result.mergedMarkdown).toBe(
+      '# Intro\n\nSomeone updated intro.\n\n# Details\n\nAgent updated details.\n',
+    );
   });
 
   it('detects conflicts when both sides edit the same section', () => {
@@ -410,8 +460,9 @@ Added by agent.
     const result = mergeDocuments(base, ours, theirs);
 
     expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('# New Section');
-    expect(result.mergedMarkdown).toContain('Added by agent.');
+    // When theirs === base the merge must emit exactly ours — the new
+    // section lands in its original position with no reordering.
+    expect(result.mergedMarkdown).toBe(ours);
   });
 
   it('handles section added by others', () => {
@@ -431,8 +482,9 @@ Added by human.
     const result = mergeDocuments(base, ours, theirs);
 
     expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('# Other Section');
-    expect(result.mergedMarkdown).toContain('Added by human.');
+    // Mirror of the previous test: when ours === base the merge must
+    // emit exactly theirs.
+    expect(result.mergedMarkdown).toBe(theirs);
   });
 
   it('handles section deleted by agent', () => {
@@ -453,8 +505,9 @@ Stays.
     const result = mergeDocuments(base, ours, theirs);
 
     expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('Stays.');
-    expect(result.mergedMarkdown).not.toContain('Goes away.');
+    // Deletion survives: when theirs === base the merge must emit
+    // exactly ours, with the "# Remove" section fully gone.
+    expect(result.mergedMarkdown).toBe(ours);
   });
 
   it('handles document with no headings (single section merge)', () => {
@@ -465,7 +518,7 @@ Stays.
     const result = mergeDocuments(base, ours, theirs);
 
     expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('Agent text.');
+    expect(result.mergedMarkdown).toBe(ours);
   });
 
   it('handles conflict in document with no headings', () => {
@@ -575,19 +628,23 @@ Charlie updated by human.
     const result = mergeDocuments(base, ours, theirs);
 
     expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('Alpha updated by human.');
-    expect(result.mergedMarkdown).toContain('Beta updated by agent.');
-    expect(result.mergedMarkdown).toContain('Charlie updated by human.');
+    // Three-way merge with non-overlapping edits: A and C from theirs,
+    // B from ours. Pin the full output so a regression that drops a
+    // section or reorders them would fail here.
+    expect(result.mergedMarkdown).toBe(
+      '# A\n\nAlpha updated by human.\n\n# B\n\nBeta updated by agent.\n\n# C\n\nCharlie updated by human.\n',
+    );
   });
 
-  it('silently revives section concurrently deleted by others (KNOWN LIMITATION)', () => {
-    // Agent modified section A. Concurrently, others deleted section A.
-    // Current policy: agent's edit wins silently — the section is
-    // resurrected into the merged output even though another party
-    // explicitly removed it. User-expected behavior is a CONFLICT, so
-    // the human can decide whether the edit or the deletion should win.
-    // This test pins current behaviour; flip it to expect hasConflicts
-    // once the merge engine learns to surface edit/delete races.
+  // KNOWN BUG — wrapped in it.fails so this test asserts user-expected
+  // behavior (CONFLICT on edit/delete race) and flips to green once the
+  // merge engine surfaces the race. Remove it.fails at that point.
+  //
+  // The scenario: agent modified section A while another party deleted
+  // section A concurrently. A human should be asked to decide whether
+  // the edit or the delete should win. Currently the merge engine
+  // resurrects the section silently, which is wrong.
+  it.fails('reports a conflict when the agent edits a section the other side deleted', () => {
     const base = `# A
 
 Original.
@@ -600,8 +657,10 @@ Agent modified.
 
     const result = mergeDocuments(base, ours, theirs);
 
-    expect(result.hasConflicts).toBe(false);
-    expect(result.mergedMarkdown).toContain('Agent modified.');
+    // User-expected: this is an edit/delete race, must surface as a
+    // conflict so a human picks a winner.
+    expect(result.hasConflicts).toBe(true);
+    expect(result.conflictSections.length).toBeGreaterThan(0);
   });
 
   it('conflicts when both sides add a new section with the same heading', () => {
@@ -634,7 +693,14 @@ B by human.
     expect(result.mergedMarkdown).toContain('>>>>>>>');
   });
 
-  it('keeps conflict markers when the resolver callback leaves them in place', async () => {
+  // KNOWN BUG — wrapped in it.fails so this test acts as a TODO pin. The
+  // test asserts the user-expected behavior: when the resolver refuses to
+  // strip conflict markers, every marker should survive through into the
+  // emitted insertText requests (so the agent can see the conflict it
+  // needs to resolve). Today the diff engine silently drops the middle
+  // `=======` separator from the request stream even though
+  // mergeDocuments produces it. Remove it.fails once that is fixed.
+  it.fails('keeps conflict markers when the resolver callback leaves them in place', async () => {
     const base = `# S
 
 Original.
@@ -661,12 +727,31 @@ Theirs.
 
     expect(result.conflictsResolved).toBe(0);
 
-    // The underlying merge should still carry the three conflict marker
-    // strings — nothing should have silently stripped them. DiffResult
-    // doesn't surface mergedMarkdown, so check via mergeDocuments. This
-    // assertion would fail if computeDocDiff mutated the merge state to
-    // drop the markers when the resolver returned text that still had
-    // them in it.
+    // The markers must survive through into the emitted batchUpdate:
+    // concatenate every insertText payload and verify all three markers
+    // still appear, along with both conflict bodies. A regression that
+    // silently stripped the markers in the diff engine would fail here
+    // even though the separate mergeDocuments probe below would still
+    // pass.
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText).toContain('<<<<<<<');
+    expect(insertedText).toContain('=======');
+    expect(insertedText).toContain('>>>>>>>');
+    expect(insertedText).toContain('Ours.');
+    expect(insertedText).toContain('Theirs.');
+    // And markers must appear in the canonical order: start, mid, end.
+    const startIdx = insertedText.indexOf('<<<<<<<');
+    const midIdx = insertedText.indexOf('=======', startIdx);
+    const endIdx = insertedText.indexOf('>>>>>>>', midIdx);
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(midIdx).toBeGreaterThan(startIdx);
+    expect(endIdx).toBeGreaterThan(midIdx);
+
+    // Belt-and-braces: the underlying merge's serialized markdown still
+    // carries the markers too, so nothing upstream stripped them.
     const mergeResult = mergeDocuments(base, ours, theirs);
     expect(mergeResult.mergedMarkdown).toContain('<<<<<<<');
     expect(mergeResult.mergedMarkdown).toContain('=======');
@@ -863,14 +948,17 @@ Paragraph three stays the same.
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // Verify the delete SIZE matches only the changed paragraph, not the whole section.
-    // "Paragraph two will change.\n" is 27 chars in the doc.
+    // Verify the delete covers exactly "Paragraph two will change.\n" —
+    // the changed paragraph plus its trailing newline. Any larger delete
+    // would wipe unchanged paragraphs and strip their comment anchors.
     const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
     expect(deleteReqs).toHaveLength(1);
     const delRange = deleteReqs[0].deleteContentRange!.range!;
     const deleteSize = delRange.endIndex! - delRange.startIndex!;
-    expect(deleteSize).toBeLessThanOrEqual(30);
-    expect(deleteSize).toBeGreaterThan(0);
+    expect(deleteSize).toBe('Paragraph two will change.\n'.length);
+    // And the delete starts at the changed paragraph's doc index.
+    const paraTwoStart = indexMap.find((e) => e.mdOffset === base.indexOf('Paragraph two'))!.docIndex;
+    expect(delRange.startIndex).toBe(paraTwoStart);
   });
 
   it('does not delete any text when agent only appends to end of section', async () => {
@@ -1026,14 +1114,16 @@ Summer's melon treat
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
-    // The delete SIZE should cover exactly the old line (~20 chars).
+    // The delete must cover the entire old line "Summer's watermelon"
+    // (19 UTF-16 units). The trailing '\n' is clamped off because this
+    // paragraph sits at body end — so the expected delete size is
+    // exactly the line length, no more, no less.
     const deleteReq = result.requests.find((r) => r.deleteContentRange);
     expect(deleteReq).toBeDefined();
     const delSize =
       deleteReq!.deleteContentRange!.range!.endIndex! -
       deleteReq!.deleteContentRange!.range!.startIndex!;
-    expect(delSize).toBeGreaterThanOrEqual(19);
-    expect(delSize).toBeLessThanOrEqual(30);
+    expect(delSize).toBe("Summer's watermelon".length);
 
     // The insert must contain the new text and start at the old line's position.
     const insertReqs = result.requests.filter((r) => r.insertText);
@@ -1041,6 +1131,17 @@ Summer's melon treat
     expect(insertTexts).toContain("Summer's melon treat");
     const oldLineDocIndex = indexMap.find((e) => e.mdOffset === base.indexOf("Summer's watermelon"))!.docIndex;
     expect(insertReqs[0].insertText!.location!.index).toBe(oldLineDocIndex);
+
+    // Apply the requests to the body buffer and verify the final state:
+    // the old "Summer's watermelon" line is replaced by "Summer's melon
+    // treat", with the three preceding paragraphs untouched and a
+    // single trailing newline. A sequencing bug (insert landing at the
+    // wrong index, delete overshooting, leftover "S" from the old line)
+    // would surface here even though the request-shape assertions pass.
+    const applied = applyRequests(docBodyText(doc), result.requests);
+    expect(applied).toBe(
+      "A haiku about fruit\nGreen rind hides the sweet\nRed flesh bursting\nSummer's melon treat\n",
+    );
   });
 
   it('insert indices are valid after preceding deletes (no out-of-bounds)', async () => {
@@ -1048,11 +1149,6 @@ Summer's melon treat
     // subsequent inserts can reference positions that no longer exist.
     // Google Docs returns: "insertion index must be inside the bounds
     // of an existing paragraph."
-    //
-    // NOTE: this test only verifies that every request lives inside the
-    // BASE doc's bounds. It does NOT simulate applying the deletes and
-    // checking that later inserts still fit in the resulting (smaller)
-    // doc — that batch-simulation coverage lives in diff-e2e.test.ts.
     const base = `# Section
 
 Line one.
@@ -1093,6 +1189,16 @@ New line five.
         expect(end).toBeLessThan(bodyEndIndex);
       }
     }
+
+    // Apply the requests and verify the final buffer matches the doc
+    // shape of `ours`. This is the stricter check the old comment here
+    // flagged as missing: it catches bugs where an insert's index is
+    // still valid in the BASE doc but invalid after preceding deletes
+    // shift the buffer.
+    const applied = applyRequests(docBodyText(doc), result.requests);
+    expect(applied).toBe(
+      'Section\nLine one MODIFIED.\nLine two.\nLine three MODIFIED.\nNew line four.\nNew line five.\n',
+    );
   });
 });
 
@@ -1208,11 +1314,23 @@ C.
     // their raw indices are allowed to shift forward.)
     const firstInsertIdx = insertReqs[0].insertText!.location!.index!;
     expect(firstInsertIdx).toBeLessThanOrEqual(sectionCStart);
-    // And no insert is at the body-end tail.
+    // No CONTENT insert lands at or past the body-end tail. A bare '\n'
+    // separator that runs after the content inserts is allowed to point
+    // past pre-edit bodyEndIndex — batchUpdate processes requests
+    // sequentially, so the content has already shifted the doc by the
+    // time the separator executes. Exclude single-newline inserts.
     const bodyEndIndex = doc.body!.content![doc.body!.content!.length - 1].endIndex!;
     for (const req of insertReqs) {
+      if (req.insertText!.text === '\n') continue;
       expect(req.insertText!.location!.index!).toBeLessThan(bodyEndIndex - 1);
     }
+
+    // Apply the requests and verify the final buffer: heading+body for
+    // A, the new B section fully inserted between A and C, and C kept
+    // intact. This catches sequencing bugs (e.g., B's content landing
+    // after C's heading) that the positional checks above miss.
+    const applied = applyRequests(docBodyText(doc), result.requests);
+    expect(applied).toBe('A\nA.\nB\nB inserted.\nC\nC.\n');
   });
 
   it('detects a heading-level change as a content edit', async () => {
@@ -1298,7 +1416,7 @@ Content.
     expect(insertedText).toContain('Updated preamble.');
   });
 
-  it('preserves both occurrences when duplicate heading text is present', () => {
+  it('preserves both occurrences when duplicate heading text is present', async () => {
     const base = `# Notes
 
 First.
@@ -1317,24 +1435,43 @@ Second.
 `;
     const theirs = base;
 
-    const result = mergeDocuments(base, ours, theirs);
+    const mergeResult = mergeDocuments(base, ours, theirs);
 
-    expect(result.hasConflicts).toBe(false);
-    // The first section's body was updated.
-    expect(result.mergedMarkdown).toContain('First updated.');
-    // The second section must survive — it must not be silently dropped.
-    expect(result.mergedMarkdown).toContain('Second.');
-    // Both heading occurrences preserved, in original order.
-    const firstIdx = result.mergedMarkdown.indexOf('First updated.');
-    const secondIdx = result.mergedMarkdown.indexOf('Second.');
-    expect(firstIdx).toBeGreaterThan(-1);
-    expect(secondIdx).toBeGreaterThan(firstIdx);
+    expect(mergeResult.hasConflicts).toBe(false);
+    // Pin the full merged markdown, not substrings. Both `# Notes`
+    // occurrences must survive in original order; the first body is
+    // updated, the second is untouched.
+    expect(mergeResult.mergedMarkdown).toBe(
+      '# Notes\n\nFirst updated.\n\n# Notes\n\nSecond.\n',
+    );
 
-    // Count how many `# Notes` heading lines appear in the merged
-    // markdown — both occurrences must be present (not deduped by
-    // heading text).
-    const headingMatches = result.mergedMarkdown.match(/^# Notes$/gm) ?? [];
-    expect(headingMatches).toHaveLength(2);
+    // The diff engine (not just the merge layer) must also handle the
+    // duplicate headings correctly: the "Second." body must NOT end up
+    // inside any delete range, and the inserted text must include
+    // "First updated." exactly once.
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Notes', mdOffset: 0 },
+      { text: 'First.', mdOffset: base.indexOf('First.') },
+      { text: 'Notes', mdOffset: base.indexOf('# Notes', 1) },
+      { text: 'Second.', mdOffset: base.indexOf('Second.') },
+    ]);
+    const secondBodyStart = indexMap.find((e) => e.mdOffset === base.indexOf('Second.'))!.docIndex;
+    const secondBodyEnd = secondBodyStart + 'Second.'.length;
+
+    const diff = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
+    expect(diff.hasChanges).toBe(true);
+    for (const req of diff.requests) {
+      if (req.deleteContentRange) {
+        const r = req.deleteContentRange.range!;
+        const overlapsSecondBody = r.startIndex! < secondBodyEnd && secondBodyStart < r.endIndex!;
+        expect(overlapsSecondBody).toBe(false);
+      }
+    }
+    const insertedText = diff.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+    expect(insertedText.match(/First updated\./g) ?? []).toHaveLength(1);
   });
 
   it('adds a body to an empty (heading-only) section', async () => {
@@ -1406,12 +1543,15 @@ describe('computeDocDiff › content shape', () => {
     expect(result.hasChanges).toBe(true);
 
     const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
-    // Exactly one delete — the Item 2 line.
+    // Exactly one delete — the Item 2 line. Size is exactly
+    // "Item 2\n".length (7): the fake doc stores the bullet as a
+    // paragraph whose text is "Item 2\n" — the "- " marker is not
+    // stored, it's encoded via the bullet property.
     expect(deleteReqs).toHaveLength(1);
     const delStart = deleteReqs[0].deleteContentRange!.range!.startIndex!;
     const delEnd = deleteReqs[0].deleteContentRange!.range!.endIndex!;
     expect(delStart).toBe(item2Start);
-    expect(delEnd - delStart).toBeLessThanOrEqual(10); // ~"Item 2\n"
+    expect(delEnd - delStart).toBe('Item 2\n'.length);
 
     const insertedText = result.requests
       .filter((r) => r.insertText)
@@ -1513,18 +1653,29 @@ print('hi')
       .map((r) => r.insertText!.text)
       .join('');
     expect(insertedText).toContain('extremely');
-    // Bold is stripped from the inserted text (Google Docs doesn't keep
-    // `**` markers) and re-encoded as an updateTextStyle(bold=true)
-    // request over the bolded range. Assert that at least one such
-    // styling request was emitted — i.e., the bold formatting SURVIVES
-    // into the batchUpdate, even though it's not present as literal
-    // `**` in the raw insert payload.
-    const boldStyled = result.requests.some(
+    // The `**` markers are stripped from the inserted text (Google Docs
+    // doesn't keep them as literal characters) and re-encoded as an
+    // updateTextStyle(bold=true) request. Locate that request and verify
+    // its range maps to exactly the "extremely bold" substring of the
+    // inserted plain-text line — a bug that bolded the wrong slice (e.g.
+    // just "bold", or the entire line) would fail here.
+    const boldReq = result.requests.find(
       (r) =>
         r.updateTextStyle?.textStyle?.bold === true &&
         r.updateTextStyle?.fields?.includes('bold'),
     );
-    expect(boldStyled).toBe(true);
+    expect(boldReq).toBeDefined();
+    // Reconstruct the plain-text inserted line, find where "extremely
+    // bold" lives inside it, and derive the expected doc-index range.
+    const insertReq = result.requests.find((r) => r.insertText);
+    expect(insertReq).toBeDefined();
+    const insertStart = insertReq!.insertText!.location!.index!;
+    const insertedLine = insertReq!.insertText!.text!;
+    const boldStart = insertedLine.indexOf('extremely bold');
+    expect(boldStart).toBeGreaterThanOrEqual(0);
+    const range = boldReq!.updateTextStyle!.range!;
+    expect(range.startIndex).toBe(insertStart + boldStart);
+    expect(range.endIndex).toBe(insertStart + boldStart + 'extremely bold'.length);
   });
 
   it('handles CJK (Japanese) text without offset corruption', async () => {
@@ -1719,23 +1870,26 @@ Existing.
   });
 
   it('shorter replacement: long line becomes short', async () => {
-    const base = `This is a very long line that should become short.\n`;
+    const oldLine = 'This is a very long line that should become short.';
+    const base = `${oldLine}\n`;
     const ours = `Short.\n`;
     const theirs = base;
 
     const { doc, indexMap } = buildDocAndMap(base, [
-      { text: 'This is a very long line that should become short.', mdOffset: 0 },
+      { text: oldLine, mdOffset: 0 },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
     const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
-    expect(deleteReqs.length).toBeGreaterThan(0);
+    expect(deleteReqs).toHaveLength(1);
     const delSize =
       deleteReqs[0].deleteContentRange!.range!.endIndex! -
       deleteReqs[0].deleteContentRange!.range!.startIndex!;
-    expect(delSize).toBeGreaterThanOrEqual(50); // long line + '\n' ≈ 51 chars
+    // Exactly the old line's length — trailing '\n' is clamped off at
+    // body end (single-paragraph doc, delete extends to body end).
+    expect(delSize).toBe(oldLine.length);
 
     const insertedText = result.requests
       .filter((r) => r.insertText)
@@ -1745,23 +1899,26 @@ Existing.
   });
 
   it('longer replacement: short line becomes long', async () => {
-    const base = `Short.\n`;
+    const oldLine = 'Short.';
+    const base = `${oldLine}\n`;
     const ours = `This is a much longer line than before.\n`;
     const theirs = base;
 
     const { doc, indexMap } = buildDocAndMap(base, [
-      { text: 'Short.', mdOffset: 0 },
+      { text: oldLine, mdOffset: 0 },
     ]);
 
     const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent');
     expect(result.hasChanges).toBe(true);
 
     const deleteReqs = result.requests.filter((r) => r.deleteContentRange);
-    expect(deleteReqs.length).toBeGreaterThan(0);
+    expect(deleteReqs).toHaveLength(1);
     const delSize =
       deleteReqs[0].deleteContentRange!.range!.endIndex! -
       deleteReqs[0].deleteContentRange!.range!.startIndex!;
-    expect(delSize).toBeLessThanOrEqual(10); // "Short.\n" is 7 chars, allow a little slack
+    // Exactly the old line's length — trailing '\n' is clamped off at
+    // body end (single-paragraph doc, delete extends to body end).
+    expect(delSize).toBe(oldLine.length);
 
     const insertedText = result.requests
       .filter((r) => r.insertText)

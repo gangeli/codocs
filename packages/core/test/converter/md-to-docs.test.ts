@@ -217,26 +217,22 @@ describe('markdownToDocsRequests', () => {
     expect(bulletReqs.length).toBe(1);
     expect(bulletReqs[0].createParagraphBullets!.bulletPreset).toBe('BULLET_CHECKBOX');
 
-    // The [x] item — "checked item" — must carry a strikethrough text-style
-    // request (Docs represents a checked checkbox by striking through the
-    // list-item text).
-    // The inserted text is "unchecked item\nchecked item\nanother unchecked";
-    // "checked item" starts at text offset 15, so with insertion at index 1
-    // the strikethrough range should be [16, 28) or cover that text.
+    // The [x] item — "checked item" — must carry a strikethrough
+    // text-style request covering "checked item" plus the list-item
+    // paragraph terminator. Docs represents a checked checkbox by
+    // striking through the list-item paragraph, and the range the
+    // emitter uses is inclusive of the paragraph's '\n' — expected end
+    // is 1 + checkedStart + len + 1. The range must NOT cover the
+    // preceding "unchecked item" or the following "another unchecked".
     const strikeReq = requests.find(
       (r) => r.updateTextStyle?.textStyle?.strikethrough === true,
     );
     expect(strikeReq).toBeDefined();
     const range = strikeReq!.updateTextStyle!.range!;
-    // Must start at or after the "checked item" text offset and must NOT
-    // extend past it.
     const plain = 'unchecked item\nchecked item\nanother unchecked';
     const checkedStart = plain.indexOf('checked item', plain.indexOf('\n'));
-    const checkedEnd = checkedStart + 'checked item'.length;
-    expect(range.startIndex).toBeGreaterThanOrEqual(1 + checkedStart);
-    expect(range.endIndex).toBeLessThanOrEqual(1 + checkedEnd + 1); // +1 tolerates paragraph terminator
-    // And must NOT cover the preceding "unchecked item" text.
-    expect(range.startIndex).toBeGreaterThan(1 + 'unchecked item'.length);
+    expect(range.startIndex).toBe(1 + checkedStart);
+    expect(range.endIndex).toBe(1 + checkedStart + 'checked item'.length + 1);
   });
 
   it('uses regular bullet preset for non-checkbox list items', () => {
@@ -250,10 +246,15 @@ describe('markdownToDocsRequests', () => {
 
   it('prepends a delete request when clearFirst is true', () => {
     const { requests } = markdownToDocsRequests('Hello', 1, true, 50);
-    const deleteReq = requests.find((r) => r.deleteContentRange);
-    expect(deleteReq).toBeDefined();
-    expect(deleteReq!.deleteContentRange!.range!.startIndex).toBe(1);
-    expect(deleteReq!.deleteContentRange!.range!.endIndex).toBe(49);
+    // The delete must be the FIRST request — if it landed after the
+    // insert, Docs would wipe the text we just wrote. The test name
+    // says "prepends", so pin the position, not just presence.
+    expect(requests[0].deleteContentRange).toBeDefined();
+    expect(requests[0].deleteContentRange!.range!.startIndex).toBe(1);
+    expect(requests[0].deleteContentRange!.range!.endIndex).toBe(49);
+    // And exactly one delete request is emitted (no stray duplicates).
+    const deleteReqs = requests.filter((r) => r.deleteContentRange);
+    expect(deleteReqs).toHaveLength(1);
   });
 
   it('handles empty markdown', () => {
@@ -457,13 +458,18 @@ describe('markdownToDocsRequests', () => {
     const md = '# Section\n\n- item one\n- item two';
     const { requests } = markdownToDocsRequests(md);
 
-    // Bullet items are paragraphs — should get NORMAL_TEXT
+    // Bullet items are paragraphs — both must get NORMAL_TEXT. Exactly
+    // two NORMAL_TEXT requests (one per item), plus exactly one
+    // HEADING_1 for the section title.
     const paraStyles = requests.filter((r) => r.updateParagraphStyle);
     const normalStyles = paraStyles.filter(
       (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType === 'NORMAL_TEXT',
     );
-    // At least 2 NORMAL_TEXT for the two list items
-    expect(normalStyles.length).toBeGreaterThanOrEqual(2);
+    expect(normalStyles).toHaveLength(2);
+    const headingStyles = paraStyles.filter(
+      (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType === 'HEADING_1',
+    );
+    expect(headingStyles).toHaveLength(1);
   });
 
   it('bold/italic inside a paragraph does not bleed to adjacent text', () => {
@@ -489,11 +495,22 @@ describe('markdownToDocsRequests', () => {
     const insert = requests.find((r) => r.insertText);
     expect(insert!.insertText!.location!.index).toBe(100);
 
-    // All paragraph style ranges should be offset by 100
-    const paraStyles = requests.filter((r) => r.updateParagraphStyle);
-    for (const ps of paraStyles) {
-      expect(ps.updateParagraphStyle!.range!.startIndex!).toBeGreaterThanOrEqual(100);
-    }
+    // Heading range and normal-text range must line up with the offset:
+    // inserted text is "Title\nBody." (11 chars). The heading covers
+    // "Title\n" at [100, 106); the normal paragraph covers "Body." plus
+    // its implicit paragraph terminator at [106, 112).
+    const heading = requests.find(
+      (r) => r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'HEADING_1',
+    );
+    const normal = requests.find(
+      (r) => r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'NORMAL_TEXT',
+    );
+    expect(heading).toBeDefined();
+    expect(normal).toBeDefined();
+    expect(heading!.updateParagraphStyle!.range!.startIndex).toBe(100);
+    expect(heading!.updateParagraphStyle!.range!.endIndex).toBe(100 + 'Title\n'.length);
+    expect(normal!.updateParagraphStyle!.range!.startIndex).toBe(100 + 'Title\n'.length);
+    expect(normal!.updateParagraphStyle!.range!.endIndex).toBe(100 + 'Title\nBody.'.length + 1);
   });
 
   it('converts text before and after a table', () => {
@@ -647,13 +664,15 @@ describe('markdownToDocsRequests', () => {
     expect(insert).toBeDefined();
     expect(insert!.insertText!.text).toBe('Before\n———\nAfter');
 
-    // Both surrounding paragraphs are NORMAL_TEXT. (Two distinct
-    // NORMAL_TEXT requests — "Before" and "After".)
+    // Exactly two NORMAL_TEXT requests — one for "Before" and one for
+    // "After". The HR's em-dash paragraph carries no paragraph-style
+    // request today (which is fine: its text is inserted inside the
+    // same insertText as the two surrounding paragraphs).
     const normals = requests.filter(
       (r) =>
         r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'NORMAL_TEXT',
     );
-    expect(normals.length).toBeGreaterThanOrEqual(2);
+    expect(normals).toHaveLength(2);
   });
 
   // ── Determinism ────────────────────────────────────────────────

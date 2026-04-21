@@ -155,12 +155,16 @@ describe('docsToMarkdown', () => {
     expect(md).toBe('\n');
   });
 
-  it('returns exactly "\\n" for unknown agent filter (locks in current behavior)', () => {
+  // KNOWN BUG — wrapped in it.fails so this test asserts the behavior a
+  // user would reasonably expect ("no content matches → empty string")
+  // and flips green once the converter stops emitting a stray trailing
+  // newline. Remove it.fails at that point.
+  it.fails('returns an empty string when the agent filter matches no content', () => {
     const doc = loadFixture('attributed-doc.json');
     const md = docsToMarkdown(doc, { agentFilter: 'unknown-agent' });
-    // Lock in the exact value, not just trim()==''. Current code returns a
-    // single trailing newline when no paragraphs survive filtering.
-    expect(md).toBe('\n');
+    // User-expected: filtering to zero paragraphs yields the empty
+    // string, not a lone '\n'. Today the converter returns '\n'.
+    expect(md).toBe('');
   });
 
   // ── Heading level coverage ──────────────────────────────────────

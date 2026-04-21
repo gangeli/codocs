@@ -1,5 +1,30 @@
 import { google, type docs_v1 } from 'googleapis';
 
+/**
+ * Google Docs API enforces a ~60 write-ops/minute/user quota. When we hit
+ * it during bursty runs (e2e test suites, large edits), retry with
+ * exponential backoff instead of surfacing the 429 straight to the caller.
+ */
+async function withQuotaRetry<T>(op: () => Promise<T>, label: string): Promise<T> {
+  const maxAttempts = 6;
+  let delayMs = 2000;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await op();
+    } catch (err: any) {
+      const msg = err?.message ?? String(err);
+      const isQuota =
+        err?.code === 429 ||
+        /Quota exceeded/i.test(msg) ||
+        /RATE_LIMIT_EXCEEDED/i.test(msg);
+      if (!isQuota || attempt === maxAttempts) throw err;
+      await new Promise((r) => setTimeout(r, delayMs));
+      delayMs = Math.min(delayMs * 2, 30000);
+    }
+  }
+  throw new Error(`unreachable in withQuotaRetry(${label})`);
+}
+
 export class DocsApi {
   private docs: docs_v1.Docs;
 
@@ -9,29 +34,34 @@ export class DocsApi {
 
   /** Create a new blank document in pageless format. Returns the document ID. */
   async createDocument(title: string): Promise<string> {
-    const res = await this.docs.documents.create({
-      requestBody: { title },
-    });
+    const res = await withQuotaRetry(
+      () => this.docs.documents.create({ requestBody: { title } }),
+      'createDocument',
+    );
     const docId = res.data.documentId!;
 
     // Switch to pageless format by setting a very large page height
     try {
-      await this.docs.documents.batchUpdate({
-        documentId: docId,
-        requestBody: {
-          requests: [{
-            updateDocumentStyle: {
-              documentStyle: {
-                pageSize: {
-                  width: { magnitude: 612, unit: 'PT' },
-                  height: { magnitude: 100000, unit: 'PT' },
+      await withQuotaRetry(
+        () =>
+          this.docs.documents.batchUpdate({
+            documentId: docId,
+            requestBody: {
+              requests: [{
+                updateDocumentStyle: {
+                  documentStyle: {
+                    pageSize: {
+                      width: { magnitude: 612, unit: 'PT' },
+                      height: { magnitude: 100000, unit: 'PT' },
+                    },
+                  },
+                  fields: 'pageSize',
                 },
-              },
-              fields: 'pageSize',
+              }],
             },
-          }],
-        },
-      });
+          }),
+        'createDocument.pageless',
+      );
     } catch {
       // Non-critical — doc still works with default page size
     }
@@ -41,16 +71,23 @@ export class DocsApi {
 
   /** Fetch a full document (default tab only). */
   async getDocument(documentId: string): Promise<docs_v1.Schema$Document> {
-    const res = await this.docs.documents.get({ documentId });
+    const res = await withQuotaRetry(
+      () => this.docs.documents.get({ documentId }),
+      'getDocument',
+    );
     return res.data;
   }
 
   /** Fetch a full document with all tabs included. */
   async getDocumentWithTabs(documentId: string): Promise<docs_v1.Schema$Document> {
-    const res = await this.docs.documents.get({
-      documentId,
-      includeTabsContent: true,
-    });
+    const res = await withQuotaRetry(
+      () =>
+        this.docs.documents.get({
+          documentId,
+          includeTabsContent: true,
+        }),
+      'getDocumentWithTabs',
+    );
     return res.data;
   }
 
@@ -59,10 +96,14 @@ export class DocsApi {
     documentId: string,
     requests: docs_v1.Schema$Request[],
   ): Promise<docs_v1.Schema$BatchUpdateDocumentResponse> {
-    const res = await this.docs.documents.batchUpdate({
-      documentId,
-      requestBody: { requests },
-    });
+    const res = await withQuotaRetry(
+      () =>
+        this.docs.documents.batchUpdate({
+          documentId,
+          requestBody: { requests },
+        }),
+      'batchUpdate',
+    );
     return res.data;
   }
 
