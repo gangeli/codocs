@@ -110,8 +110,16 @@ export function markdownToDocsRequests(
   requests.push(...otherStyles.sort(byStartDesc));
   requests.push(...textStyles.sort(byStartDesc));
 
-  // 4. Apply bullet formatting
-  requests.push(...allBullets);
+  // 4. Apply bullet formatting, highest index first. createParagraphBullets
+  //    strips leading tabs from the paragraphs it styles, which shifts every
+  //    index that follows — applying later-in-document requests first means
+  //    earlier ranges are still at their original positions when processed.
+  const bulletsReversed = [...allBullets].sort(
+    (a, b) =>
+      (b.createParagraphBullets?.range?.startIndex ?? 0) -
+      (a.createParagraphBullets?.range?.startIndex ?? 0),
+  );
+  requests.push(...bulletsReversed);
 
   return { text: fullText, requests };
 }
