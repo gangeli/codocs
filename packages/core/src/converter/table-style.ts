@@ -166,6 +166,59 @@ export function styleTable(
   return requests;
 }
 
+// ── Blockquote styling ─────────────────────────────────────────
+
+/** Thick gray left rule for blockquotes (matches markdown convention). */
+const BLOCKQUOTE_RULE_COLOR: docs_v1.Schema$OptionalColor = {
+  color: { rgbColor: { red: 0.6, green: 0.6, blue: 0.6 } },
+};
+const BLOCKQUOTE_RULE_WIDTH_PT = 3;
+
+/**
+ * Style a 1x1 blockquote table: hide the top/right/bottom borders, show a
+ * thick gray bar on the left, and pad the cell.
+ */
+export function styleBlockquote(tableStart: number): docs_v1.Schema$Request[] {
+  const invisibleBorder: docs_v1.Schema$TableCellBorder = {
+    color: { color: {} },
+    width: { magnitude: 0, unit: 'PT' },
+    dashStyle: 'SOLID',
+  };
+  const leftBorder: docs_v1.Schema$TableCellBorder = {
+    color: BLOCKQUOTE_RULE_COLOR,
+    width: { magnitude: BLOCKQUOTE_RULE_WIDTH_PT, unit: 'PT' },
+    dashStyle: 'SOLID',
+  };
+
+  return [
+    {
+      updateTableCellStyle: {
+        tableRange: {
+          tableCellLocation: {
+            tableStartLocation: { index: tableStart },
+            rowIndex: 0,
+            columnIndex: 0,
+          },
+          rowSpan: 1,
+          columnSpan: 1,
+        },
+        tableCellStyle: {
+          borderTop: invisibleBorder,
+          borderRight: invisibleBorder,
+          borderBottom: invisibleBorder,
+          borderLeft: leftBorder,
+          paddingTop: { magnitude: CELL_PADDING_PT, unit: 'PT' },
+          paddingBottom: { magnitude: CELL_PADDING_PT, unit: 'PT' },
+          paddingLeft: { magnitude: CELL_PADDING_PT * 2, unit: 'PT' },
+          paddingRight: { magnitude: CELL_PADDING_PT, unit: 'PT' },
+        },
+        fields:
+          'borderTop,borderRight,borderBottom,borderLeft,paddingTop,paddingBottom,paddingLeft,paddingRight',
+      },
+    },
+  ];
+}
+
 // ── Helpers ──────────────────────────────────────────────────
 
 /**
