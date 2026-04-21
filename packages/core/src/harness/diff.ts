@@ -136,6 +136,20 @@ function alignSections(
   const ours = withKeys(oursSections);
   const theirs = withKeys(theirsSections);
 
+  // Pick the ordering authority: if exactly one side reordered the existing
+  // sections relative to base, that side's ordering wins (walked first, so
+  // its key positions seed `orderedKeys` before the other sides). Otherwise
+  // fall back to base-first, which preserves the original ordering and lets
+  // added/removed sections anchor after their predecessors.
+  const baseKeys = base.map((e) => e.key);
+  const oursReordered = isPermutationReordered(baseKeys, ours.map((e) => e.key));
+  const theirsReordered = isPermutationReordered(baseKeys, theirs.map((e) => e.key));
+
+  let walkOrder: Array<Array<{ key: string; section: MdSection }>>;
+  if (theirsReordered && !oursReordered) walkOrder = [theirs, base, ours];
+  else if (oursReordered && !theirsReordered) walkOrder = [ours, base, theirs];
+  else walkOrder = [base, ours, theirs];
+
   // Merge the three keyed orderings, preserving each source's relative
   // positions. A new key from `ours` (or `theirs`) gets inserted after
   // its predecessor in that source, so a section the agent adds between
@@ -143,7 +157,7 @@ function alignSections(
   // the tail.
   const seen = new Set<string>();
   const orderedKeys: string[] = [];
-  for (const arr of [base, ours, theirs]) {
+  for (const arr of walkOrder) {
     let anchor = -1; // index in orderedKeys of the last key seen/inserted from this source
     for (const { key } of arr) {
       if (seen.has(key)) {
@@ -164,6 +178,20 @@ function alignSections(
     findSection(ours, k),
     findSection(theirs, k),
   ]);
+}
+
+/**
+ * True iff `sideKeys` is a non-trivial permutation of `baseKeys` — i.e. same
+ * set of keys but different order. Additions or deletions disqualify.
+ */
+function isPermutationReordered(baseKeys: string[], sideKeys: string[]): boolean {
+  if (baseKeys.length !== sideKeys.length) return false;
+  const baseSet = new Set(baseKeys);
+  for (const k of sideKeys) if (!baseSet.has(k)) return false;
+  for (let i = 0; i < baseKeys.length; i++) {
+    if (baseKeys[i] !== sideKeys[i]) return true;
+  }
+  return false;
 }
 
 /**
@@ -490,20 +518,26 @@ export async function computeDocDiff(
           : change.docEndIndex,
         bodyEndIndex - 1,
       );
-      const deleteEndLine = oldOffset + oldLength;
-      const deleteEndIdx = deleteEndLine < lineDocIndices.length
-        ? lineDocIndices[deleteEndLine]
-        : change.docEndIndex;
+
+      // Compute deleteEndIdx by summing each deleted line's span (content +
+      // \n terminator), NOT by looking at lineDocIndices[oldOffset+oldLength].
+      // The latter over-reads when the following line is an empty paragraph —
+      // interpolateDocIndex snaps empty mdOffsets to the NEXT content line's
+      // docIndex, so the delete range would swallow the empty paragraph.
+      let deleteEndIdx = deleteStartIdx;
+      for (let k = oldOffset; k < oldOffset + oldLength && k < oldLines.length; k++) {
+        deleteEndIdx += oldLines[k].length + 1;
+      }
       const wasClamped = deleteEndIdx >= bodyEndIndex;
       const clampedEnd = wasClamped ? bodyEndIndex - 1 : deleteEndIdx;
 
-      // When replacing lines with new content, the delete range spans the
-      // line text AND its trailing \n (deleteEndIdx points at the start of
-      // the NEXT line). chunk.join('\n') has \n's BETWEEN lines but no
-      // trailing \n, and markdownToDocsRequests further strips any trailing
-      // \n. Without an explicit tail \n the replacement fuses into the
-      // following paragraph. Skip when the delete was clamped (the doc's
-      // final \n was NOT consumed, so re-inserting one would duplicate).
+      // When replacing lines with new content, the delete range covers each
+      // deleted line's content + its \n terminator. chunk.join('\n') has \n's
+      // BETWEEN lines but no trailing \n, and markdownToDocsRequests further
+      // strips any trailing \n. Without an explicit tail \n the replacement
+      // fuses into the following paragraph. Skip when the delete was clamped
+      // (the doc's final \n was NOT consumed, so re-inserting one would
+      // duplicate).
       const needsTrailingNewline =
         oldLength > 0 &&
         newContent.length > 0 &&
@@ -540,27 +574,38 @@ export async function computeDocDiff(
         continue;
       }
 
-      // Step 2: INSERT new content at the same position
+      // Step 2: INSERT new content.
+      //
+      // Pure-insert hunks (oldLength === 0) need paragraph-separator \n's
+      // because markdownToDocsRequests strips leading/trailing \n from its
+      // content. Where we add them depends on WHERE we're inserting:
+      //
+      //   - Append at end of section (oldOffset past oldLines): the insert
+      //     point is bodyEndIndex-1, which is BEFORE the doc's terminating
+      //     \n. Inserting text there fuses with the preceding paragraph. We
+      //     prepend "\n\n" (terminator for preceding para + empty separator
+      //     para) — the existing final \n then serves as terminator for the
+      //     new paragraph.
+      //
+      //   - Mid-section insert (oldOffset within oldLines): the insert point
+      //     is the start of the FOLLOWING content paragraph, i.e. right
+      //     after a \n — no fusion with preceding. But the inserted text
+      //     would fuse with the following content, so we append "\n\n"
+      //     (terminator for new para + empty separator para) after the text.
+      //
+      // Replacement hunks (oldLength > 0) rely on needsTrailingNewline to
+      // restore the single \n consumed by the delete; no extra prefix needed.
       if (newContent.length > 0) {
         const insertAt = Math.min(deleteStartIdx, bodyEndIndex - 1);
+        const isPureInsert = oldLength === 0 && insertAt > 1;
+        const isAppendAtEnd = isPureInsert && oldOffset >= oldLines.length;
 
-        // Pure append (no delete): need a \n to separate from preceding paragraph.
-        // Insert it as part of the markdown content by wrapping in a paragraph.
-        const contentToInsert = (oldLength === 0 && insertAt > 1)
-          ? '\n' + newContent
-          : newContent;
-
-        // For the \n prefix: insert it as raw text first, then the markdown content after.
-        // This avoids the markdown parser stripping the leading newline.
         let actualInsertAt = insertAt;
-        if (oldLength === 0 && insertAt > 1) {
+        if (isAppendAtEnd) {
           requests.push({
-            insertText: {
-              location: { index: insertAt },
-              text: '\n',
-            },
+            insertText: { location: { index: insertAt }, text: '\n\n' },
           });
-          actualInsertAt = insertAt + 1;
+          actualInsertAt = insertAt + 2;
         }
 
         const { text, requests: insertRequests } = markdownToDocsRequests(
@@ -575,11 +620,17 @@ export async function computeDocDiff(
           requests.push(...createAttributionRequests(agentName, actualInsertAt, actualInsertAt + text.length));
         }
 
-        // Restore the trailing \n consumed by the delete. We insert it as
-        // raw text AFTER the markdown requests (so it lands right after
-        // the freshly-inserted content) to bypass the trailing-newline
-        // stripping done by markdownToDocsRequests.
-        if (needsTrailingNewline) {
+        if (isPureInsert && !isAppendAtEnd) {
+          // Mid-section insert: suffix "\n\n" (new-para terminator + empty
+          // separator before following content).
+          requests.push({
+            insertText: {
+              location: { index: actualInsertAt + text.length },
+              text: '\n\n',
+            },
+          });
+        } else if (needsTrailingNewline) {
+          // Replacement: restore the single \n consumed by the delete.
           requests.push({
             insertText: {
               location: { index: actualInsertAt + text.length },

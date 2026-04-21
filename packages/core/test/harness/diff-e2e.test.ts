@@ -182,11 +182,18 @@ describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
 
     const { result } = await runPipeline(document, bodyText, ours);
 
-    // The unchanged first body paragraph must still contain 🤖.
-    expect(result).toContain('The \u{1F916} reply is posted immediately.');
-    // The edited last paragraph must now contain 🤔 (exactly once) and no 🤖.
-    expect(result).toContain('The \u{1F914} reply is deleted');
-    expect(result).not.toContain('The \u{1F916} reply is deleted');
+    // Full expected body: heading and first two body paragraphs untouched;
+    // only the last paragraph's emoji changes. Body-level representation
+    // uses a single `\n` between every paragraph, and a `\n\n` between
+    // paragraphs separated by an empty paragraph (blank line in markdown).
+    const expectedBody =
+      'Features\n' +
+      'The \u{1F916} reply is posted immediately.\n' +
+      '\n' +
+      'When session forking is supported, the comment is processed concurrently.\n' +
+      '\n' +
+      'The \u{1F914} reply is deleted and replaced with the agent\u2019s text reply.\n';
+    expect(result).toBe(expectedBody);
   });
 
   it('handles emoji at the very end of a line without truncation', async () => {
@@ -224,12 +231,10 @@ describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
     const ours = base.replace('Change \u{1F916} here.', 'Change \u{1F914} here.');
     const { result } = await runPipeline(document, bodyText, ours);
 
-    expect(result).toContain('Line one.\n');
-    expect(result).toContain('Change \u{1F914} here.\n');
-    expect(result).toContain('Line three.\n');
-    expect(result).not.toContain('\u{1F916}');
-    // No orphan surrogate halves.
+    expect(result).toBe('Line one.\nChange \u{1F914} here.\nLine three.\n');
+    // No orphan surrogate halves (complementary check).
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(result)).toBe(false);
+    expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result)).toBe(false);
   });
 
   it('replaces a heading\u2019s body line (heading preserved, no heading marker in doc)', async () => {
@@ -243,12 +248,8 @@ describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
     const ours = base.replace('Summer\u2019s watermelon', 'Summer\u2019s melon treat');
     const { result } = await runPipeline(document, bodyText, ours);
 
-    // Heading text is unchanged (no "# " ever inserted into the doc).
-    expect(result).toContain('A haiku about fruit\n');
-    expect(result).not.toContain('# A haiku');
-    // Body line replaced cleanly.
-    expect(result).toContain('Summer\u2019s melon treat\n');
-    expect(result).not.toContain('watermelon');
+    // Exact body: heading text (no "# " marker in doc) + replaced body line.
+    expect(result).toBe('A haiku about fruit\nSummer\u2019s melon treat\n');
   });
 
   it('appending a new line to a section containing emoji preserves existing emoji', async () => {
@@ -263,8 +264,15 @@ describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
 
     const { result } = await runPipeline(document, bodyText, ours);
 
-    expect(result).toContain('Existing \u{1F916} line.');
-    expect(result).toContain('Another \u{1F914} line.');
+    // Expected body: heading + existing line + empty paragraph (blank line)
+    // + newly appended line. At the body level the blank line between
+    // paragraphs is an empty paragraph, i.e. `\n\n`.
+    const expectedBody =
+      'Features\n' +
+      'Existing \u{1F916} line.\n' +
+      '\n' +
+      'Another \u{1F914} line.\n';
+    expect(result).toBe(expectedBody);
   });
 
   it('does not leave residual characters when the old and new lines share a prefix containing emoji', async () => {
@@ -294,6 +302,35 @@ describe('e2e: agent edit → applied doc (emoji/surrogate pairs)', () => {
     expect(requests).toHaveLength(0);
     expect(result).toBe(bodyText);
   });
+
+  it('introduces a new emoji into plain text without leaving orphan surrogates', async () => {
+    const { document, bodyText } = makeDoc([
+      { text: 'Hello world.' },
+    ]);
+    const ours = 'Hello world \u{1F389}.\n';
+
+    const { result } = await runPipeline(document, bodyText, ours);
+
+    expect(result).toBe('Hello world \u{1F389}.\n');
+    // No orphan surrogate halves (the newly inserted emoji must remain paired).
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(result)).toBe(false);
+    expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result)).toBe(false);
+  });
+
+  it('strips an existing emoji from text without leaving orphan surrogates', async () => {
+    const { document, bodyText } = makeDoc([
+      { text: 'Hello \u{1F389} world.' },
+    ]);
+    const ours = 'Hello world.\n';
+
+    const { result } = await runPipeline(document, bodyText, ours);
+
+    expect(result).toBe('Hello world.\n');
+    // No half of the removed surrogate pair may survive in the body.
+    expect(result).not.toContain('\u{1F389}');
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(result)).toBe(false);
+    expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result)).toBe(false);
+  });
 });
 
 describe('e2e: agent edit → applied doc (multi-line edits)', () => {
@@ -311,10 +348,14 @@ describe('e2e: agent edit → applied doc (multi-line edits)', () => {
     const ours = base.replace('Paragraph two changes.', 'Paragraph two has been rewritten.');
     const { result } = await runPipeline(document, bodyText, ours);
 
-    expect(result).toContain('Paragraph one stays.');
-    expect(result).toContain('Paragraph two has been rewritten.');
-    expect(result).not.toContain('Paragraph two changes.');
-    expect(result).toContain('Paragraph three stays.');
+    const expectedBody =
+      'Intro\n' +
+      'Paragraph one stays.\n' +
+      '\n' +
+      'Paragraph two has been rewritten.\n' +
+      '\n' +
+      'Paragraph three stays.\n';
+    expect(result).toBe(expectedBody);
   });
 
   it('deletes a paragraph without touching its neighbors', async () => {
@@ -331,9 +372,10 @@ describe('e2e: agent edit → applied doc (multi-line edits)', () => {
     const ours = base.replace('\n\nDelete me entirely.', '');
     const { result } = await runPipeline(document, bodyText, ours);
 
-    expect(result).toContain('Keep me.');
-    expect(result).not.toContain('Delete me entirely.');
-    expect(result).toContain('Keep me too.');
+    // Exact body: the deleted paragraph and its leading empty-paragraph
+    // separator are both gone; the surrounding paragraphs are still
+    // separated by a single empty paragraph (rendered as `\n\n`).
+    expect(result).toBe('Intro\nKeep me.\n\nKeep me too.\n');
   });
 
   it('inserts a new paragraph between existing ones', async () => {
@@ -348,9 +390,14 @@ describe('e2e: agent edit → applied doc (multi-line edits)', () => {
     const ours = base.replace('First.\n\nThird.', 'First.\n\nSecond \u{1F914} inserted.\n\nThird.');
     const { result } = await runPipeline(document, bodyText, ours);
 
-    expect(result).toContain('First.');
-    expect(result).toContain('Second \u{1F914} inserted.');
-    expect(result).toContain('Third.');
+    const expectedBody =
+      'Intro\n' +
+      'First.\n' +
+      '\n' +
+      'Second \u{1F914} inserted.\n' +
+      '\n' +
+      'Third.\n';
+    expect(result).toBe(expectedBody);
   });
 
   it('edits two non-adjacent paragraphs in the same section (multi-hunk)', async () => {

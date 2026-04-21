@@ -41,6 +41,26 @@ function createClient(): CodocsClient {
  *
  * Google Docs imposes its own structure (e.g., collapsing blank lines,
  * trailing newlines), so we normalize both sides before comparing.
+ *
+ * IMPORTANT — this normalization means the "round-trip" is NOT lossless
+ * for inputs that rely on the stripped/collapsed details. Concretely,
+ * the following deviations between original and round-tripped markdown
+ * are silently tolerated by any test that does not set `strict: true`:
+ *
+ *   1. CRLF line endings are converted to LF before comparison.
+ *   2. A leading "---\n\n" section break (Google Docs injects one on
+ *      new documents) is stripped from the start of both sides.
+ *   3. Runs of 3+ consecutive newlines are collapsed to exactly 2
+ *      (i.e. multi-blank-line separators are flattened).
+ *   4. Trailing spaces / tabs on every line are removed (so a
+ *      markdown hard-break via two trailing spaces is erased).
+ *   5. Leading and trailing whitespace on the whole document is
+ *      trimmed (so a document ending in \n\n and one ending in \n
+ *      compare equal).
+ *
+ * Tests that want to verify the round-trip is truly lossless for a
+ * canonical input must set `strict: true` on their TestCase, which
+ * routes through strictCompareMarkdown() and performs a `===` check.
  */
 function normalize(md: string): string {
   return md
@@ -63,6 +83,28 @@ interface CompareResult {
   pass: boolean;
   /** Lines that differ */
   diffs: string[];
+}
+
+/**
+ * Strict byte-for-byte comparison — no normalization applied.
+ *
+ * Used by test cases with `strict: true` to verify the round-trip is
+ * genuinely lossless for canonical markdown inputs. Any deviation (a
+ * stray blank line, trailing whitespace, a leading section break, …)
+ * is reported as a failure rather than silently tolerated.
+ */
+function strictCompareMarkdown(original: string, roundtripped: string): CompareResult {
+  if (original === roundtripped) {
+    return { pass: true, diffs: [] };
+  }
+  return {
+    pass: false,
+    diffs: [
+      `  strict byte-for-byte mismatch:\n` +
+      `    original:     ${JSON.stringify(original)}\n` +
+      `    roundtripped: ${JSON.stringify(roundtripped)}`,
+    ],
+  };
 }
 
 function compareMarkdown(original: string, roundtripped: string): CompareResult {
@@ -99,9 +141,30 @@ interface TestCase {
   customCompare?: (original: string, roundtripped: string) => CompareResult;
   /** If true, an in-memory DB is passed to writeMarkdown/readMarkdown for mermaid mapping. */
   needsDb?: boolean;
+  /**
+   * If true, the runner performs a strict byte-for-byte equality check
+   * between the original and the round-tripped markdown — with NO
+   * normalization. This is the only way to verify the round-trip is
+   * truly lossless for canonical inputs; every other test silently
+   * tolerates the deviations listed in {@link normalize}.
+   */
+  strict?: boolean;
 }
 
 const testCases: TestCase[] = [
+  // ── Strict (un-normalized) canonical round-trip ─────────
+
+  {
+    // Baseline case: a minimal, already-canonical markdown input. This
+    // test uses STRICT byte-for-byte comparison — no normalization —
+    // so it verifies the round-trip is actually lossless for a clean
+    // canonical input. Every other test below silently tolerates the
+    // deviations listed in normalize(); this one does not.
+    title: 'Canonical simple doc (strict, no normalization)',
+    strict: true,
+    markdown: `# Title\n\nHello world.\n`,
+  },
+
   // ── Headings ────────────────────────────────────────────
 
   {
@@ -342,10 +405,14 @@ async function run() {
       // Read it back
       const roundtripped = await client.readMarkdown(docId, dbOpt);
 
-      // Compare
+      // Compare. `strict: true` bypasses normalization entirely and
+      // enforces byte-for-byte `===` equality. `customCompare` wins
+      // over both (used for intentionally lossy cases).
       const result = tc.customCompare
         ? tc.customCompare(tc.markdown, roundtripped)
-        : compareMarkdown(tc.markdown, roundtripped);
+        : tc.strict
+          ? strictCompareMarkdown(tc.markdown, roundtripped)
+          : compareMarkdown(tc.markdown, roundtripped);
 
       if (result.pass) {
         console.log(`  ✓ ${label}`);

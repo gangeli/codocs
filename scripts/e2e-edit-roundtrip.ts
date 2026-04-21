@@ -79,8 +79,14 @@ interface Expectation {
   matches?: RegExp[];
   /** Each regex must NOT match the normalized body. */
   notMatches?: RegExp[];
-  /** Arbitrary extra check. */
+  /** Arbitrary extra check against the final body. */
   custom?: (actual: string) => { pass: boolean; reason?: string };
+  /** Exact number of batchUpdate requests produced by computeDocDiff. */
+  exactRequests?: number;
+  /** Maximum number of batchUpdate requests produced by computeDocDiff. */
+  maxRequests?: number;
+  /** Minimum number of batchUpdate requests produced by computeDocDiff. */
+  minRequests?: number;
 }
 
 interface EditTestCase {
@@ -99,6 +105,7 @@ interface EditTestCase {
 function verify(
   actual: string,
   exp: Expectation,
+  requestCount?: number,
 ): { pass: boolean; reasons: string[] } {
   const n = normalize(actual);
   const reasons: string[] = [];
@@ -110,6 +117,23 @@ function verify(
         `Exact body mismatch.\n` +
           `      expected:\n${indent(expectedN, '        ')}\n` +
           `      actual:\n${indent(n, '        ')}`,
+      );
+    }
+  }
+  if (requestCount !== undefined) {
+    if (exp.exactRequests !== undefined && requestCount !== exp.exactRequests) {
+      reasons.push(
+        `expected exactly ${exp.exactRequests} batchUpdate requests, got ${requestCount}`,
+      );
+    }
+    if (exp.maxRequests !== undefined && requestCount > exp.maxRequests) {
+      reasons.push(
+        `expected at most ${exp.maxRequests} batchUpdate requests, got ${requestCount}`,
+      );
+    }
+    if (exp.minRequests !== undefined && requestCount < exp.minRequests) {
+      reasons.push(
+        `expected at least ${exp.minRequests} batchUpdate requests, got ${requestCount}`,
       );
     }
   }
@@ -218,6 +242,20 @@ function makeLongFixture(): string {
   return parts.join('\n\n') + '\n';
 }
 const FIX_LONG = makeLongFixture();
+
+/**
+ * Build the expected body for a Group D test by applying the given
+ * paragraph rewrites to the generated long fixture. `edits` maps
+ * paragraph number -> replacement paragraph body. The returned string
+ * is NOT trailing-newline-terminated (to match normalize().trim() form).
+ */
+function buildLongExpected(edits: Record<number, string>): string {
+  const parts = [`# Long`];
+  for (let i = 1; i <= 40; i++) {
+    parts.push(edits[i] ?? `Paragraph number ${i} in the long doc.`);
+  }
+  return parts.join('\n\n');
+}
 
 // ── Test cases ───────────────────────────────────────────────
 
@@ -343,6 +381,17 @@ Gamma body rewritten.`,
     fixture: FIX_PLAIN,
     apply: (b) => b.replace('paragraph of Beta', 'sentence of Beta'),
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+Second sentence of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.`,
       contains: ['Second sentence of Beta.'],
       notContains: ['Second paragraph of Beta.'],
       ordering: [
@@ -360,6 +409,17 @@ Gamma body rewritten.`,
     fixture: FIX_PLAIN,
     apply: (b) => b.replace('paragraph of Alpha', 'paragraphs of Alpha'),
     expect: {
+      exact: `# Alpha
+
+First paragraphs of Alpha.
+
+# Beta
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.`,
       contains: ['First paragraphs of Alpha.'],
       notContains: ['First paragraph of Alpha.'],
     },
@@ -374,6 +434,17 @@ Gamma body rewritten.`,
         'Second paragraph of Beta has been significantly expanded with extra descriptive prose.',
       ),
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+Second paragraph of Beta has been significantly expanded with extra descriptive prose.
+
+# Gamma
+
+Third paragraph of Gamma.`,
       contains: ['Second paragraph of Beta has been significantly expanded'],
       notContains: ['Second paragraph of Beta.'],
       ordering: [
@@ -411,6 +482,19 @@ Third paragraph of Gamma.`,
         'Second paragraph of Beta line one.\n\nSecond paragraph of Beta line two.',
       ),
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+Second paragraph of Beta line one.
+
+Second paragraph of Beta line two.
+
+# Gamma
+
+Third paragraph of Gamma.`,
       contains: [
         'Second paragraph of Beta line one.',
         'Second paragraph of Beta line two.',
@@ -428,6 +512,13 @@ Third paragraph of Gamma.`,
     fixture: FIX_PLAIN,
     apply: (b) => b.replace('# Alpha\n\nFirst paragraph of Alpha.\n\n', ''),
     expect: {
+      exact: `# Beta
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.`,
       notContains: ['# Alpha', 'First paragraph of Alpha.'],
       contains: ['# Beta', 'Second paragraph of Beta.', '# Gamma', 'Third paragraph of Gamma.'],
       ordering: [
@@ -441,6 +532,13 @@ Third paragraph of Gamma.`,
     fixture: FIX_PLAIN,
     apply: (b) => b.replace('# Beta\n\nSecond paragraph of Beta.\n\n', ''),
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Gamma
+
+Third paragraph of Gamma.`,
       notContains: ['# Beta', 'Second paragraph of Beta.'],
       ordering: [['# Alpha', '# Gamma']],
     },
@@ -451,6 +549,13 @@ Third paragraph of Gamma.`,
     fixture: FIX_PLAIN,
     apply: (b) => b.replace('\n\n# Gamma\n\nThird paragraph of Gamma.', ''),
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+Second paragraph of Beta.`,
       notContains: ['# Gamma', 'Third paragraph of Gamma.'],
       contains: ['# Alpha', '# Beta'],
     },
@@ -461,6 +566,21 @@ Third paragraph of Gamma.`,
     fixture: FIX_PLAIN,
     apply: (b) => b.trimEnd() + '\n\n# Delta\n\nDelta body.\n',
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.
+
+# Delta
+
+Delta body.`,
       contains: ['# Delta', 'Delta body.'],
       ordering: [['# Gamma', '# Delta']],
     },
@@ -471,6 +591,17 @@ Third paragraph of Gamma.`,
     fixture: FIX_PLAIN,
     apply: (b) => b.replace('\n\nSecond paragraph of Beta.', ''),
     expect: {
+      // Beta section becomes empty; normalize() collapses 3+ newlines to 2,
+      // so adjacent headings appear with a single blank line between them.
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+# Gamma
+
+Third paragraph of Gamma.`,
       notContains: ['Second paragraph of Beta.'],
       contains: ['# Alpha', '# Beta', '# Gamma'],
       ordering: [
@@ -484,6 +615,17 @@ Third paragraph of Gamma.`,
     fixture: FIX_PLAIN,
     apply: (b) => b.replace('# Alpha', '## Alpha'),
     expect: {
+      exact: `## Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.`,
       matches: [/^##\s+Alpha\s*$/m],
       notMatches: [/^#\s+Alpha\s*$/m],
       ordering: [
@@ -527,6 +669,20 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('**bold word**', '**BOLD**'),
     expect: {
+      exact: `# Rich
+
+Some **BOLD** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
       contains: ['**BOLD**'],
       notContains: ['**bold word**'],
     },
@@ -537,6 +693,13 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('Some **bold word**', '**Some** **bold word**'),
     expect: {
+      // NOTE: output is ambiguous — adjacent bold runs "**Some** **bold word**"
+      // may be re-rendered by the markdown serializer as either two separate
+      // bold runs with a space between or a single merged "**Some bold word**"
+      // run (since Docs stores textRun styling, not markdown delimiters).
+      // Not asserting `exact` here because we can't deterministically pick
+      // between those renderings without running the pipeline. Keeping the
+      // loose ordering/contains checks as the authoritative assertion.
       contains: ['**Some**', '**bold word**'],
       ordering: [['**Some**', '**bold word**']],
     },
@@ -547,6 +710,20 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('**bold word**', 'bold word'),
     expect: {
+      exact: `# Rich
+
+Some bold word and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
       contains: ['bold word'],
       notMatches: [/\*\*bold word\*\*/],
     },
@@ -557,6 +734,20 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('`inline code`', '`new snippet`'),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`new snippet\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
       contains: ['`new snippet`'],
       notContains: ['`inline code`'],
     },
@@ -567,6 +758,20 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('[link](https://example.com)', '[homepage](https://example.com)'),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [homepage](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
       contains: ['[homepage](https://example.com)'],
       notContains: ['[link](https://example.com)'],
     },
@@ -578,6 +783,20 @@ Third paragraph of Gamma.`,
     apply: (b) =>
       b.replace('[link](https://example.com)', '[link](https://codocs.dev)'),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://codocs.dev).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
       contains: ['[link](https://codocs.dev)'],
       notContains: ['https://example.com'],
     },
@@ -588,6 +807,20 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('- banana', '- blueberry'),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- blueberry
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
       contains: ['- apple', '- blueberry', '- cherry'],
       notContains: ['- banana'],
       ordering: [
@@ -602,6 +835,19 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('- banana\n', ''),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
       contains: ['- apple', '- cherry'],
       notContains: ['- banana'],
       ordering: [['- apple', '- cherry']],
@@ -613,6 +859,21 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('- cherry', '- cherry\n- date'),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+- date
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
       contains: ['- apple', '- banana', '- cherry', '- date'],
       ordering: [['- cherry', '- date']],
     },
@@ -623,6 +884,20 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('| a | b |', '| A | b |'),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| A | b |
+| c | d |
+
+End paragraph.`,
       matches: [/\|\s*A\s*\|\s*b\s*\|/],
       ordering: [['| A | b |', '| c | d |']],
     },
@@ -633,6 +908,21 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('| c | d |', '| c | d |\n| e | f |'),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+| e | f |
+
+End paragraph.`,
       matches: [/\|\s*e\s*\|\s*f\s*\|/],
       ordering: [['| c | d |', '| e | f |']],
     },
@@ -643,6 +933,19 @@ Third paragraph of Gamma.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('| a | b |\n', ''),
     expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| c | d |
+
+End paragraph.`,
       notMatches: [/\|\s*a\s*\|\s*b\s*\|/],
       matches: [/\|\s*c\s*\|\s*d\s*\|/],
     },
@@ -655,6 +958,18 @@ Third paragraph of Gamma.`,
     fixture: FIX_ABOVE,
     apply: (b) => b.replace('Target paragraph to edit.', 'Target paragraph rewritten.'),
     expect: {
+      exact: `# Above
+
+- bullet one
+- bullet two
+
+| K | V |
+| --- | --- |
+| k1 | v1 |
+
+Target paragraph rewritten.
+
+Following paragraph.`,
       contains: [
         '- bullet one',
         '- bullet two',
@@ -677,6 +992,18 @@ Third paragraph of Gamma.`,
     fixture: FIX_ABOVE,
     apply: (b) => b.replace('Following paragraph.', 'Following paragraph rewritten.'),
     expect: {
+      exact: `# Above
+
+- bullet one
+- bullet two
+
+| K | V |
+| --- | --- |
+| k1 | v1 |
+
+Target paragraph to edit.
+
+Following paragraph rewritten.`,
       contains: ['Following paragraph rewritten.', 'Target paragraph to edit.'],
       notContains: ['Following paragraph.\n'],
       ordering: [
@@ -722,6 +1049,15 @@ Trailing.
     apply: (b) =>
       b.replace('Paragraph right before the list.', 'Pre-list paragraph rewritten.'),
     expect: {
+      exact: `# Adjacent
+
+Pre-list paragraph rewritten.
+
+- alpha
+- beta
+- gamma
+
+Trailing.`,
       contains: ['Pre-list paragraph rewritten.', '- alpha', '- beta', '- gamma'],
       notContains: ['Paragraph right before the list.'],
       ordering: [
@@ -746,6 +1082,15 @@ Trailing.
     apply: (b) =>
       b.replace('Paragraph right after the list.', 'Post-list paragraph rewritten.'),
     expect: {
+      exact: `# Adjacent
+
+- alpha
+- beta
+- gamma
+
+Post-list paragraph rewritten.
+
+Trailing.`,
       contains: ['Post-list paragraph rewritten.', '- alpha', '- beta', '- gamma'],
       notContains: ['Paragraph right after the list.'],
       ordering: [
@@ -762,6 +1107,7 @@ Trailing.
     fixture: FIX_LONG,
     apply: (b) => b.replace('Paragraph number 3 in the long doc.', 'Paragraph 3 rewritten.'),
     expect: {
+      exact: buildLongExpected({ 3: 'Paragraph 3 rewritten.' }),
       contains: [
         '# Long',
         'Paragraph number 1 in the long doc.',
@@ -782,6 +1128,7 @@ Trailing.
     fixture: FIX_LONG,
     apply: (b) => b.replace('Paragraph number 20 in the long doc.', 'Paragraph 20 rewritten.'),
     expect: {
+      exact: buildLongExpected({ 20: 'Paragraph 20 rewritten.' }),
       contains: ['Paragraph 20 rewritten.'],
       notContains: ['Paragraph number 20 in the long doc.'],
       ordering: [
@@ -796,6 +1143,7 @@ Trailing.
     fixture: FIX_LONG,
     apply: (b) => b.replace('Paragraph number 40 in the long doc.', 'Paragraph 40 rewritten.'),
     expect: {
+      exact: buildLongExpected({ 40: 'Paragraph 40 rewritten.' }),
       contains: ['Paragraph 40 rewritten.'],
       notContains: ['Paragraph number 40 in the long doc.'],
       ordering: [['Paragraph number 39 in the long doc.', 'Paragraph 40 rewritten.']],
@@ -819,6 +1167,11 @@ Trailing.
         .replace('Paragraph number 15 in the long doc.', 'P15 rewritten.')
         .replace('Paragraph number 30 in the long doc.', 'P30 rewritten.'),
     expect: {
+      exact: buildLongExpected({
+        5: 'P5 rewritten.',
+        15: 'P15 rewritten.',
+        30: 'P30 rewritten.',
+      }),
       contains: ['P5 rewritten.', 'P15 rewritten.', 'P30 rewritten.'],
       notContains: [
         'Paragraph number 5 in the long doc.',
@@ -844,6 +1197,13 @@ Trailing.
     fixture: FIX_SPECIAL,
     apply: (b) => b.replace('\u{1F916}', '\u{1F914}'),
     expect: {
+      exact: `# Special
+
+Line with emoji \u{1F914} in the middle.
+
+Japanese \u65E5\u672C\u8A9E sentence.
+
+Special chars & < > "quotes" 'apos' here.`,
       contains: ['Line with emoji \u{1F914} in the middle.'],
       notContains: ['\u{1F916}'],
       notMatches: [/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/, /(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/],
@@ -855,6 +1215,13 @@ Trailing.
     fixture: FIX_SPECIAL,
     apply: (b) => b.replace('\u65E5\u672C\u8A9E', '\u4E2D\u56FD\u8A9E'),
     expect: {
+      exact: `# Special
+
+Line with emoji \u{1F916} in the middle.
+
+Japanese \u4E2D\u56FD\u8A9E sentence.
+
+Special chars & < > "quotes" 'apos' here.`,
       contains: ['Japanese \u4E2D\u56FD\u8A9E sentence.'],
       notContains: ['\u65E5\u672C\u8A9E'],
     },
@@ -866,6 +1233,13 @@ Trailing.
     apply: (b) =>
       b.replace(`Special chars & < > "quotes" 'apos' here.`, `Special chars ONE two THREE.`),
     expect: {
+      exact: `# Special
+
+Line with emoji \u{1F916} in the middle.
+
+Japanese \u65E5\u672C\u8A9E sentence.
+
+Special chars ONE two THREE.`,
       contains: ['Special chars ONE two THREE.'],
       notContains: [`Special chars & < > "quotes"`],
       ordering: [
@@ -912,6 +1286,9 @@ Short.
         'This line has been replaced with a considerably longer body so that we can verify the delete + insert pair covers the full original line and the much longer replacement lands cleanly in the same slot.',
       ),
     expect: {
+      exact: `# Boundary
+
+This line has been replaced with a considerably longer body so that we can verify the delete + insert pair covers the full original line and the much longer replacement lands cleanly in the same slot.`,
       contains: ['considerably longer body'],
       notContains: ['Short.'],
       ordering: [['# Boundary', 'considerably longer body']],
@@ -925,6 +1302,17 @@ Short.
     fixture: FIX_PLAIN,
     apply: (b) => b.replace('# Beta', '# BetaPrime'),
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# BetaPrime
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.`,
       contains: ['# BetaPrime'],
       notContains: ['# Beta\n'],
     },
@@ -935,6 +1323,21 @@ Short.
     chain: true,
     apply: (b) => b.trimEnd() + '\n\n# Delta\n\nDelta body.\n',
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# BetaPrime
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.
+
+# Delta
+
+Delta body.`,
       // Expect both the prior edit AND this edit to be visible.
       contains: ['# BetaPrime', '# Delta', 'Delta body.'],
       ordering: [
@@ -950,6 +1353,21 @@ Short.
     chain: true,
     apply: (b) => b.replace('Third paragraph of Gamma.', 'Gamma after chain edits.'),
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# BetaPrime
+
+Second paragraph of Beta.
+
+# Gamma
+
+Gamma after chain edits.
+
+# Delta
+
+Delta body.`,
       contains: ['# BetaPrime', '# Delta', 'Gamma after chain edits.'],
       notContains: ['Third paragraph of Gamma.'],
       ordering: [
@@ -964,6 +1382,21 @@ Short.
     chain: true,
     apply: (b) => b.replace('Gamma after chain edits.', 'Third paragraph of Gamma.'),
     expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# BetaPrime
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.
+
+# Delta
+
+Delta body.`,
       contains: ['Third paragraph of Gamma.'],
       notContains: ['Gamma after chain edits.'],
     },
@@ -988,6 +1421,63 @@ Second paragraph of Beta.
 # Gamma
 
 Gamma CONCURRENT.`,
+    },
+  },
+
+  // ── Group H: No-op / minimal-edit regression coverage ──
+  {
+    title: 'H1: no-op edit — ours equals base, zero requests and body unchanged',
+    canvas: 'noop',
+    fixture: FIX_PLAIN,
+    // Identity edit: agent produces the exact same markdown it received.
+    apply: (b) => b,
+    expect: {
+      // Body must be identical to the fixture (after normalize).
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.`,
+      // No changes should be produced — the diff pipeline must short-circuit.
+      exactRequests: 0,
+    },
+  },
+  {
+    title: 'H2: whitespace-only edit — trailing spaces are trimmed, content preserved',
+    canvas: 'noop',
+    fixture: FIX_PLAIN,
+    // Add trailing spaces to a body line. normalize() strips trailing spaces
+    // on each line, so the `exact` check ignores this at the assertion layer,
+    // but the production pipeline should also emit at most a tiny diff (if
+    // any) since the visible content is unchanged.
+    apply: (b) => b.replace('First paragraph of Alpha.', 'First paragraph of Alpha.   '),
+    expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# Beta
+
+Second paragraph of Beta.
+
+# Gamma
+
+Third paragraph of Gamma.`,
+      contains: [
+        'First paragraph of Alpha.',
+        'Second paragraph of Beta.',
+        'Third paragraph of Gamma.',
+      ],
+      // Either the trailing whitespace round-trips as a no-op (0 requests)
+      // or requires a minimal delete+insert pair — bound the upper limit to
+      // keep this a true "minimal edit" regression check.
+      maxRequests: 4,
     },
   },
 ];
@@ -1054,13 +1544,14 @@ async function run() {
         'rt-edit-agent',
       );
 
-      if (diff.requests.length > 0) {
+      const requestCount = diff.requests.length;
+      if (requestCount > 0) {
         await client.batchUpdate(docId, diff.requests);
       }
 
       // Read back and verify.
       const after = await client.readMarkdown(docId);
-      const { pass, reasons } = verify(after, tc.expect);
+      const { pass, reasons } = verify(after, tc.expect, requestCount);
 
       if (pass) {
         console.log(`  ✓ ${label}`);

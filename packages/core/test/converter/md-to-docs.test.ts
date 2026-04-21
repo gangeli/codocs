@@ -20,16 +20,38 @@ describe('markdownToDocsRequests', () => {
     expect(
       paraStyle!.updateParagraphStyle!.paragraphStyle!.namedStyleType,
     ).toBe('HEADING_1');
+
+    // Range correctness: "My Title" is inserted at index 1 (length 8), so the
+    // paragraph-style range should cover the heading plus its implicit
+    // paragraph-terminator newline: [1, 1 + 8 + 1) = [1, 10).
+    const range = paraStyle!.updateParagraphStyle!.range!;
+    expect(range.startIndex).toBe(1);
+    expect(range.endIndex).toBe(10);
   });
 
   it('converts h2 and h3', () => {
-    const { requests } = markdownToDocsRequests('## Sub\n\n### Sub-sub');
+    const { text, requests } = markdownToDocsRequests('## Sub\n\n### Sub-sub');
+    expect(text).toBe('Sub\nSub-sub');
+
     const paraStyles = requests.filter((r) => r.updateParagraphStyle);
     const types = paraStyles.map(
       (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType,
     );
     expect(types).toContain('HEADING_2');
     expect(types).toContain('HEADING_3');
+
+    // Range correctness: H2 covers "Sub\n" at [1, 5); H3 covers "Sub-sub"
+    // (plus its implicit paragraph terminator) at [5, 13).
+    const h2 = paraStyles.find(
+      (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType === 'HEADING_2',
+    )!;
+    const h3 = paraStyles.find(
+      (r) => r.updateParagraphStyle!.paragraphStyle!.namedStyleType === 'HEADING_3',
+    )!;
+    expect(h2.updateParagraphStyle!.range!.startIndex).toBe(1);
+    expect(h2.updateParagraphStyle!.range!.endIndex).toBe(5);
+    expect(h3.updateParagraphStyle!.range!.startIndex).toBe(5);
+    expect(h3.updateParagraphStyle!.range!.endIndex).toBe(13);
   });
 
   it('converts bold text', () => {
@@ -51,6 +73,12 @@ describe('markdownToDocsRequests', () => {
       (r) => r.updateTextStyle?.textStyle?.italic === true,
     );
     expect(italicStyle).toBeDefined();
+    // Range correctness: "italic" starts at offset 6 in the plain text; with
+    // insertion at index 1 that's [7, 13). Length must be exactly 6.
+    const range = italicStyle!.updateTextStyle!.range!;
+    expect(range.startIndex).toBe(7);
+    expect(range.endIndex).toBe(13);
+    expect(range.endIndex! - range.startIndex!).toBe('italic'.length);
   });
 
   it('converts inline code', () => {
@@ -62,23 +90,57 @@ describe('markdownToDocsRequests', () => {
         'Courier New',
     );
     expect(codeStyle).toBeDefined();
+    // Range correctness: the Courier range must cover exactly "foo()" — 5
+    // characters at text offset 4, i.e. [5, 10) with insertion at index 1.
+    const range = codeStyle!.updateTextStyle!.range!;
+    expect(range.startIndex).toBe(5);
+    expect(range.endIndex).toBe(10);
+    expect(range.endIndex! - range.startIndex!).toBe('foo()'.length);
   });
 
   it('converts a code block', () => {
     const md = '```\nconst x = 1;\n```';
     const { text, requests } = markdownToDocsRequests(md);
-    expect(text).toContain('const x = 1;');
-    // Should have both text style (font) and paragraph style (shading)
+    expect(text).toBe('const x = 1;');
+
+    // Courier font style must cover the entire code content (plus its
+    // implicit paragraph terminator): "const x = 1;" is 12 chars at index 1,
+    // so the range is [1, 14).
     const fontReq = requests.find(
       (r) =>
         r.updateTextStyle?.textStyle?.weightedFontFamily?.fontFamily ===
         'Courier New',
     );
+    expect(fontReq).toBeDefined();
+    const fontRange = fontReq!.updateTextStyle!.range!;
+    expect(fontRange.startIndex).toBe(1);
+    expect(fontRange.endIndex).toBe(14);
+
+    // Shading paragraph-style request must cover the same range.
     const shadingReq = requests.find(
       (r) => r.updateParagraphStyle?.paragraphStyle?.shading,
     );
-    expect(fontReq).toBeDefined();
     expect(shadingReq).toBeDefined();
+    const shadingRange = shadingReq!.updateParagraphStyle!.range!;
+    expect(shadingRange.startIndex).toBe(1);
+    expect(shadingRange.endIndex).toBe(14);
+
+    // The code block paragraph must NOT be styled as a heading. Any
+    // updateParagraphStyle request whose range overlaps the code block must
+    // either have no namedStyleType (current behavior: only `shading`) or
+    // explicitly be NORMAL_TEXT.
+    const overlapping = requests.filter(
+      (r) =>
+        r.updateParagraphStyle &&
+        r.updateParagraphStyle.range!.startIndex! < 14 &&
+        r.updateParagraphStyle.range!.endIndex! > 1,
+    );
+    for (const ps of overlapping) {
+      const nst = ps.updateParagraphStyle!.paragraphStyle!.namedStyleType;
+      if (nst !== undefined) {
+        expect(nst).toBe('NORMAL_TEXT');
+      }
+    }
   });
 
   it('converts a link', () => {
@@ -90,6 +152,12 @@ describe('markdownToDocsRequests', () => {
       (r) => r.updateTextStyle?.textStyle?.link?.url === 'https://example.com',
     );
     expect(linkStyle).toBeDefined();
+    // Range correctness: link covers exactly "click here" — 10 chars at the
+    // insertion offset, so [1, 11).
+    const range = linkStyle!.updateTextStyle!.range!;
+    expect(range.startIndex).toBe(1);
+    expect(range.endIndex).toBe(11);
+    expect(range.endIndex! - range.startIndex!).toBe('click here'.length);
   });
 
   it('converts an unordered list', () => {
@@ -97,21 +165,45 @@ describe('markdownToDocsRequests', () => {
     const { text, requests } = markdownToDocsRequests(md);
     expect(text).toContain('item one');
     expect(text).toContain('item two');
+    expect(text).toContain('item three');
+
+    // Each item must appear as a separate paragraph: the inserted text
+    // joins them with exactly one newline per paragraph break (no blank
+    // lines between bullet items).
+    const insert = requests.find((r) => r.insertText);
+    expect(insert!.insertText!.text).toBe('item one\nitem two\nitem three');
+
     const bulletReqs = requests.filter((r) => r.createParagraphBullets);
     expect(bulletReqs.length).toBeGreaterThan(0);
     expect(
       bulletReqs[0].createParagraphBullets!.bulletPreset,
     ).toBe('BULLET_DISC_CIRCLE_SQUARE');
+
+    // The bullet range must span all three items. Inserted text length is
+    // "item one\nitem two\nitem three" = 28 chars at index 1; paragraph
+    // terminator gives an additional +1 for the last item, so the range
+    // should cover [1, 1 + 28) = [1, 29).
+    const range = bulletReqs[0].createParagraphBullets!.range!;
+    expect(range.startIndex).toBe(1);
+    expect(range.endIndex).toBe(29);
   });
 
   it('converts an ordered list', () => {
     const md = '1. first\n2. second';
-    const { requests } = markdownToDocsRequests(md);
+    const { text, requests } = markdownToDocsRequests(md);
+    expect(text).toBe('first\nsecond');
+
     const bulletReqs = requests.filter((r) => r.createParagraphBullets);
     expect(bulletReqs.length).toBeGreaterThan(0);
     expect(
       bulletReqs[0].createParagraphBullets!.bulletPreset,
     ).toBe('NUMBERED_DECIMAL_NESTED');
+
+    // Bullet range covers both items: "first\nsecond" is 12 chars at index 1,
+    // so [1, 13).
+    const range = bulletReqs[0].createParagraphBullets!.range!;
+    expect(range.startIndex).toBe(1);
+    expect(range.endIndex).toBe(13);
   });
 
   it('converts a task list (checkboxes) with BULLET_CHECKBOX preset', () => {
@@ -124,6 +216,27 @@ describe('markdownToDocsRequests', () => {
     const bulletReqs = requests.filter((r) => r.createParagraphBullets);
     expect(bulletReqs.length).toBe(1);
     expect(bulletReqs[0].createParagraphBullets!.bulletPreset).toBe('BULLET_CHECKBOX');
+
+    // The [x] item — "checked item" — must carry a strikethrough text-style
+    // request (Docs represents a checked checkbox by striking through the
+    // list-item text).
+    // The inserted text is "unchecked item\nchecked item\nanother unchecked";
+    // "checked item" starts at text offset 15, so with insertion at index 1
+    // the strikethrough range should be [16, 28) or cover that text.
+    const strikeReq = requests.find(
+      (r) => r.updateTextStyle?.textStyle?.strikethrough === true,
+    );
+    expect(strikeReq).toBeDefined();
+    const range = strikeReq!.updateTextStyle!.range!;
+    // Must start at or after the "checked item" text offset and must NOT
+    // extend past it.
+    const plain = 'unchecked item\nchecked item\nanother unchecked';
+    const checkedStart = plain.indexOf('checked item', plain.indexOf('\n'));
+    const checkedEnd = checkedStart + 'checked item'.length;
+    expect(range.startIndex).toBeGreaterThanOrEqual(1 + checkedStart);
+    expect(range.endIndex).toBeLessThanOrEqual(1 + checkedEnd + 1); // +1 tolerates paragraph terminator
+    // And must NOT cover the preceding "unchecked item" text.
+    expect(range.startIndex).toBeGreaterThan(1 + 'unchecked item'.length);
   });
 
   it('uses regular bullet preset for non-checkbox list items', () => {
@@ -153,9 +266,29 @@ describe('markdownToDocsRequests', () => {
 
   it('converts multiple paragraphs', () => {
     const md = 'First paragraph.\n\nSecond paragraph.';
-    const { text } = markdownToDocsRequests(md);
+    const { text, requests } = markdownToDocsRequests(md);
     expect(text).toContain('First paragraph.');
     expect(text).toContain('Second paragraph.');
+
+    // They must appear as two distinct paragraphs. In the Docs API a
+    // paragraph break is a single "\n" inside insertText — Docs itself
+    // implicitly appends the paragraph terminator. A CommonMark blank line
+    // between the two paragraphs should still collapse to exactly one "\n"
+    // in the inserted text (two distinct paragraphs, no blank-paragraph
+    // between them).
+    const insert = requests.find((r) => r.insertText);
+    expect(insert!.insertText!.text).toBe('First paragraph.\nSecond paragraph.');
+
+    // And there should be exactly one "\n" separating the two in the insert.
+    const parts = insert!.insertText!.text!.split('\n');
+    expect(parts).toEqual(['First paragraph.', 'Second paragraph.']);
+
+    // Each paragraph must get its own NORMAL_TEXT paragraph-style request.
+    const normals = requests.filter(
+      (r) =>
+        r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'NORMAL_TEXT',
+    );
+    expect(normals.length).toBe(2);
   });
 
   it('applies custom insertion offset', () => {
@@ -221,6 +354,43 @@ describe('markdownToDocsRequests', () => {
     const colWidthReqs = requests.filter((r) => r.updateTableColumnProperties);
     expect(colWidthReqs).toHaveLength(2);
   });
+
+  it(
+    'applies inline formatting (bold) inside a table cell at the cell range',
+    () => {
+      // A 2x2 table at index 1 with "**bold**" in cell (1,0). The insertText
+      // for that cell lands at the cell's start index; the bold range must
+      // fall entirely within the inserted-text span for that cell — NOT in
+      // the header row and NOT in a neighboring cell.
+      const md = '| A | B |\n| - | - |\n| **bold** | 42 |';
+      const { requests } = markdownToDocsRequests(md, 1);
+
+      // Find the data-cell insert carrying "bold" text.
+      const boldCellInsert = requests.find(
+        (r) => r.insertText && r.insertText.text === 'bold',
+      );
+      expect(boldCellInsert).toBeDefined();
+      const cellStart = boldCellInsert!.insertText!.location!.index!;
+      const cellEnd = cellStart + 'bold'.length;
+
+      // There are two bold requests in this fixture: the header "A"/"B"
+      // cells (each 1-char range) and the data-cell "bold" (4-char range).
+      // We want the one that lands on the data cell, i.e. whose range length
+      // is 4. TODAY this returns undefined — the data-cell bold request is
+      // never emitted.
+      const dataBold = requests.find(
+        (r) =>
+          r.updateTextStyle?.textStyle?.bold === true &&
+          r.updateTextStyle!.range!.endIndex! -
+            r.updateTextStyle!.range!.startIndex! ===
+            4,
+      );
+      expect(dataBold).toBeDefined();
+      const range = dataBold!.updateTextStyle!.range!;
+      expect(range.startIndex).toBe(cellStart);
+      expect(range.endIndex).toBe(cellEnd);
+    },
+  );
 
   // ── Style inheritance / reset tests ───────────────────────────
 
@@ -334,13 +504,171 @@ describe('markdownToDocsRequests', () => {
     expect(text).toContain('Before');
     expect(text).toContain('After');
 
-    // Should have both insertText (for text) and insertTable (for table)
-    const textInserts = requests.filter(
-      (r) => r.insertText && !r.insertTable,
+    // Find the two bookend inserts unambiguously by their text content.
+    const beforeInsert = requests.find(
+      (r) => r.insertText && r.insertText.text!.startsWith('Before'),
     );
-    const tableInserts = requests.filter((r) => r.insertTable);
-    expect(textInserts.length).toBeGreaterThanOrEqual(2); // "Before\n" + cell inserts + "After"
-    expect(tableInserts).toHaveLength(1);
+    const afterInsert = requests.find(
+      (r) => r.insertText && r.insertText.text === 'After',
+    );
+    const tableReq = requests.find((r) => r.insertTable);
+
+    expect(beforeInsert).toBeDefined();
+    expect(afterInsert).toBeDefined();
+    expect(tableReq).toBeDefined();
+
+    // The "Before" insert must land at an index strictly less than both the
+    // table location AND the "After" insert. Similarly the "After" insert
+    // must come strictly after the table. This is tighter than the old
+    // `>= 2` check, which merely counted requests.
+    const beforeIdx = beforeInsert!.insertText!.location!.index!;
+    const tableIdx = tableReq!.insertTable!.location!.index!;
+    const afterIdx = afterInsert!.insertText!.location!.index!;
+
+    expect(beforeIdx).toBeLessThan(tableIdx);
+    expect(tableIdx).toBeLessThan(afterIdx);
+    expect(beforeIdx).toBeLessThan(afterIdx);
+  });
+
+  // ── Unicode range correctness ───────────────────────────────────
+
+  it('bold range over text containing an emoji (🎉) accounts for UTF-16 surrogate pair', () => {
+    // Plain-text form: "Party is 🎉 on now". In UTF-16, 🎉 is a surrogate
+    // pair of length 2; Google Docs indices use UTF-16 code units. The bold
+    // span covers "is 🎉 on" (7 visible chars, 8 UTF-16 code units).
+    const md = 'Party **is 🎉 on** now';
+    const { text, requests } = markdownToDocsRequests(md);
+    expect(text).toBe('Party is 🎉 on now');
+
+    const boldReq = requests.find(
+      (r) => r.updateTextStyle?.textStyle?.bold === true,
+    );
+    expect(boldReq).toBeDefined();
+
+    const range = boldReq!.updateTextStyle!.range!;
+    const boldText = 'is 🎉 on';
+    const utf16Len = boldText.length; // JS .length is UTF-16 code units
+    expect(range.endIndex! - range.startIndex!).toBe(utf16Len);
+
+    // And the range must sit at the text offset of "is 🎉 on" inside the
+    // inserted plain text, offset by the insertion index of 1.
+    const plain = 'Party is 🎉 on now';
+    const boldStart = plain.indexOf(boldText);
+    expect(range.startIndex).toBe(1 + boldStart);
+    expect(range.endIndex).toBe(1 + boldStart + utf16Len);
+  });
+
+  it('bold range over CJK text uses correct indices', () => {
+    // CJK characters are single UTF-16 code units; 你好世界 is 4 code units.
+    const md = 'Chinese **你好世界** here';
+    const { text, requests } = markdownToDocsRequests(md);
+    expect(text).toBe('Chinese 你好世界 here');
+
+    const boldReq = requests.find(
+      (r) => r.updateTextStyle?.textStyle?.bold === true,
+    );
+    expect(boldReq).toBeDefined();
+
+    const range = boldReq!.updateTextStyle!.range!;
+    expect(range.endIndex! - range.startIndex!).toBe('你好世界'.length);
+
+    const plain = 'Chinese 你好世界 here';
+    const boldStart = plain.indexOf('你好世界');
+    expect(range.startIndex).toBe(1 + boldStart);
+    expect(range.endIndex).toBe(1 + boldStart + '你好世界'.length);
+  });
+
+  // ── Nested list ─────────────────────────────────────────────────
+
+  it('emits a 2-level nested bullet list as a single bullet request with tab-indented inner items', () => {
+    // Nesting is conveyed to Docs by tab prefixes on the inserted text
+    // (combined with a single createParagraphBullets over the whole list);
+    // multiple createParagraphBullets requests would flatten nesting.
+    const md = '- outer\n  - inner';
+    const { text, requests } = markdownToDocsRequests(md);
+
+    // Inner item is prefixed with a tab for level-1 nesting.
+    expect(text).toBe('outer\n\tinner');
+
+    const bulletReqs = requests.filter((r) => r.createParagraphBullets);
+    expect(bulletReqs).toHaveLength(1);
+    expect(bulletReqs[0].createParagraphBullets!.bulletPreset).toBe(
+      'BULLET_DISC_CIRCLE_SQUARE',
+    );
+
+    // Bullet range must cover both items: "outer\n\tinner" is 12 chars at
+    // index 1, so [1, 13).
+    const range = bulletReqs[0].createParagraphBullets!.range!;
+    expect(range.startIndex).toBe(1);
+    expect(range.endIndex).toBe(13);
+  });
+
+  // ── Blockquote ──────────────────────────────────────────────────
+
+  it('converts a blockquote to a single-cell table with NORMAL_TEXT paragraph style on the quote', () => {
+    const md = '> quoted text';
+    const { text, requests } = markdownToDocsRequests(md);
+    expect(text).toBe('quoted text');
+
+    // Blockquotes are implemented as a 1x1 table with a coloured left border
+    // containing the quote text.
+    const tableReq = requests.find((r) => r.insertTable);
+    expect(tableReq).toBeDefined();
+    expect(tableReq!.insertTable!.rows).toBe(1);
+    expect(tableReq!.insertTable!.columns).toBe(1);
+
+    // The quote-cell paragraph must be NORMAL_TEXT (not a heading or other
+    // named style).
+    const quotePara = requests.find(
+      (r) =>
+        r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'NORMAL_TEXT',
+    );
+    expect(quotePara).toBeDefined();
+
+    // The cell must have a coloured left border (the visual "quote bar").
+    const cellStyle = requests.find((r) => r.updateTableCellStyle);
+    expect(cellStyle).toBeDefined();
+    expect(
+      cellStyle!.updateTableCellStyle!.tableCellStyle!.borderLeft,
+    ).toBeDefined();
+  });
+
+  // ── Horizontal rule ────────────────────────────────────────────
+
+  it('converts a horizontal rule to a visible divider line in the inserted text', () => {
+    // HR is rendered as an em-dash run so the visual break survives in
+    // plain-text readbacks; the surrounding paragraphs keep NORMAL_TEXT
+    // paragraph style.
+    const md = 'Before\n\n---\n\nAfter';
+    const { text, requests } = markdownToDocsRequests(md);
+
+    // Exactly one insertText request carries all three paragraphs.
+    const insert = requests.find((r) => r.insertText);
+    expect(insert).toBeDefined();
+    expect(insert!.insertText!.text).toBe('Before\n———\nAfter');
+
+    // Both surrounding paragraphs are NORMAL_TEXT. (Two distinct
+    // NORMAL_TEXT requests — "Before" and "After".)
+    const normals = requests.filter(
+      (r) =>
+        r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'NORMAL_TEXT',
+    );
+    expect(normals.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // ── Determinism ────────────────────────────────────────────────
+
+  it('is deterministic: same markdown produces identical requests on repeated calls', () => {
+    const md =
+      '# Title\n\nBody with **bold** and *italic* and `code`.\n\n' +
+      '- one\n- two\n\n' +
+      '1. first\n2. second\n\n' +
+      '| A | B |\n| - | - |\n| 1 | 2 |\n\n' +
+      'After.';
+    const a = markdownToDocsRequests(md);
+    const b = markdownToDocsRequests(md);
+    expect(a.text).toBe(b.text);
+    expect(JSON.stringify(a.requests)).toBe(JSON.stringify(b.requests));
   });
 
   // ── Image embedding ──────────────────────────────────────────

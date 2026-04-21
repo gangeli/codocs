@@ -27,6 +27,12 @@ export interface TableSegment {
   type: 'table';
   /** Cell content by row (array of rows, each row an array of cell strings). */
   rows: string[][];
+  /**
+   * Per-cell inline-style requests, parallel to `rows`. Offsets are relative
+   * to the start of each cell's inserted text (0-based). `md-to-docs` shifts
+   * these to absolute document positions when the table is inserted.
+   */
+  cellStyles: docs_v1.Schema$Request[][][];
   /** Number of columns. */
   numColumns: number;
 }
@@ -151,10 +157,12 @@ function consolidateBullets(bullets: docs_v1.Schema$Request[]): docs_v1.Schema$R
     const prev = merged[merged.length - 1]?.createParagraphBullets;
     // Adjacent here means prev.endIndex is within 1 of cur.startIndex
     // (earlier passes may have already trimmed a trailing \n).
+    const prevEnd = prev?.range?.endIndex;
+    const curStart = cur?.range?.startIndex;
     const adjacent =
-      prev?.range?.endIndex !== undefined &&
-      cur?.range?.startIndex !== undefined &&
-      cur.range.startIndex - prev.range.endIndex <= 1;
+      prevEnd != null &&
+      curStart != null &&
+      curStart - prevEnd <= 1;
     if (prev && cur && adjacent) {
       prev.range!.endIndex = cur.range!.endIndex;
     } else {
@@ -546,32 +554,52 @@ function walkTable(node: Table, ctx: WalkContext) {
   // Flush any preceding text as its own segment
   flushTextSegment(ctx);
 
-  // Extract cell content
-  const rows = (node.children as TableRow[]).map((row) => {
-    return (row.children as TableCell[]).map((cell) => {
-      let text = '';
-      for (const child of cell.children as Content[]) {
-        if (child.type === 'text') text += child.value;
-        else if (child.type === 'inlineCode') text += (child as InlineCode).value;
-        else if ('children' in child) {
-          for (const gc of (child as any).children) {
-            if (gc.type === 'text') text += gc.value;
-            else if (gc.type === 'inlineCode') text += gc.value;
-          }
-        }
-      }
-      return text;
-    });
-  });
+  // Extract cell content WITH inline styles. Each cell gets walked into a
+  // fresh sub-context so its buf/styles are captured in isolation; the
+  // resulting style ranges are 0-based relative to the cell's text start,
+  // which md-to-docs then shifts to the cell's absolute doc index.
+  const rows: string[][] = [];
+  const cellStyles: docs_v1.Schema$Request[][][] = [];
+
+  for (const row of node.children as TableRow[]) {
+    const rowText: string[] = [];
+    const rowStyles: docs_v1.Schema$Request[][] = [];
+    for (const cell of row.children as TableCell[]) {
+      const savedBuf = ctx.buf;
+      const savedOffset = ctx.offset;
+      const savedStyles = ctx.styles;
+      const savedBullets = ctx.bullets;
+
+      ctx.buf = '';
+      ctx.offset = 0;
+      ctx.styles = [];
+      ctx.bullets = [];
+
+      walkChildren(cell.children as Content[], ctx, 0, false);
+
+      rowText.push(ctx.buf);
+      rowStyles.push(ctx.styles);
+
+      ctx.buf = savedBuf;
+      ctx.offset = savedOffset;
+      ctx.styles = savedStyles;
+      ctx.bullets = savedBullets;
+    }
+    rows.push(rowText);
+    cellStyles.push(rowStyles);
+  }
 
   const numColumns = rows.length > 0 ? Math.max(...rows.map((r) => r.length)) : 0;
 
   // Pad rows to numColumns
-  for (const row of rows) {
-    while (row.length < numColumns) row.push('');
+  for (let r = 0; r < rows.length; r++) {
+    while (rows[r].length < numColumns) {
+      rows[r].push('');
+      cellStyles[r].push([]);
+    }
   }
 
-  ctx.segments.push({ type: 'table', rows, numColumns });
+  ctx.segments.push({ type: 'table', rows, cellStyles, numColumns });
 }
 
 function emitHorizontalRule(ctx: WalkContext) {

@@ -384,6 +384,17 @@ function processTableSegment(
           text: cellText,
         },
       });
+
+      // Apply inline styles (bold/italic/strikethrough/link) captured
+      // inside this cell. Offsets are 0-based relative to cellText; shift
+      // them to the cell's absolute doc index.
+      const styles = segment.cellStyles[r]?.[c];
+      if (styles) {
+        for (const style of styles) {
+          adjustRequestIndex(style, cellContentIndex);
+          allStyles.push(style);
+        }
+      }
     }
   }
 
