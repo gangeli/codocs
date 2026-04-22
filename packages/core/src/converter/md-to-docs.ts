@@ -17,6 +17,54 @@ import type { DriveApi } from '../client/drive-api.js';
 /** Max image width in PT — matches the US Letter text column (page minus 1" margins). */
 const PAGE_WIDTH_PT = 468;
 
+/**
+ * Build the requests that clear the body in `replace` mode: reset
+ * paragraph styles + bullets BEFORE deleting content, so the surviving
+ * anchor paragraph at index 1 starts NORMAL_TEXT and bullet-free.
+ *
+ * Why the resets are needed: Docs always keeps at least one paragraph in
+ * a document, so a deleteContentRange covering [1, endIndex - 1) leaves
+ * the paragraph at index 1 in place. That paragraph retains every
+ * paragraph-level property the previous write set on it (heading style,
+ * list bullet, alignment, indents, spacing, borders…). Without the
+ * resets, those leak into the next write — e.g. a previous HEADING_1
+ * means plain text inserted afterwards reads back as `# Plain text`.
+ *
+ * Order: style + bullet resets first (they don't change indices), then
+ * the content delete. Returns [] when there's nothing to clear.
+ */
+function buildBodyResetRequests(endIndex: number): docs_v1.Schema$Request[] {
+  if (endIndex <= 2) return [];
+  const range = { startIndex: 1, endIndex: endIndex - 1 };
+  return [
+    {
+      updateParagraphStyle: {
+        range,
+        paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+        // Broad mask: anything a prior write could have set on the
+        // anchor paragraph. `namedStyleType` covers heading levels and
+        // title; the rest covers direct formatting that survives a
+        // content delete. headingId is included so heading bookmarks
+        // don't dangle on the now-NORMAL_TEXT paragraph.
+        fields:
+          'namedStyleType,headingId,direction,alignment,' +
+          'indentStart,indentEnd,indentFirstLine,' +
+          'spaceAbove,spaceBelow,lineSpacing,spacingMode,' +
+          'keepWithNext,keepLinesTogether,avoidWidowAndOrphan,' +
+          'shading,pageBreakBefore,' +
+          'borderBetween,borderTop,borderBottom,borderLeft,borderRight,' +
+          'tabStops',
+      },
+    },
+    {
+      deleteParagraphBullets: { range },
+    },
+    {
+      deleteContentRange: { range },
+    },
+  ];
+}
+
 export interface MdToDocsResult {
   /** The plain text that will be inserted (for text segments only). */
   text: string;
@@ -66,13 +114,10 @@ export function markdownToDocsRequests(
   const requests: docs_v1.Schema$Request[] = [];
   let fullText = '';
 
-  // 1. Optionally clear existing content
-  if (clearFirst && endIndex && endIndex > 1) {
-    requests.push({
-      deleteContentRange: {
-        range: { startIndex: 1, endIndex: endIndex - 1 },
-      },
-    });
+  // 1. Optionally clear existing content (and reset styles on the
+  //    surviving anchor paragraph). See buildBodyResetRequests for why.
+  if (clearFirst && endIndex) {
+    requests.push(...buildBodyResetRequests(endIndex));
   }
 
   // 2. Process segments in order, building requests and tracking position
@@ -151,12 +196,8 @@ export async function markdownToDocsRequestsAsync(
   const tempDriveFileIds: string[] = [];
   const mermaidImages: Array<{ fileId: string; hash: string; source: string }> = [];
 
-  if (clearFirst && endIndex && endIndex > 1) {
-    requests.push({
-      deleteContentRange: {
-        range: { startIndex: 1, endIndex: endIndex - 1 },
-      },
-    });
+  if (clearFirst && endIndex) {
+    requests.push(...buildBodyResetRequests(endIndex));
   }
 
   let docIndex = insertionIndex;

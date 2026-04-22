@@ -244,17 +244,59 @@ describe('markdownToDocsRequests', () => {
     }
   });
 
-  it('prepends a delete request when clearFirst is true', () => {
+  it('prepends reset + delete requests when clearFirst is true', () => {
     const { requests } = markdownToDocsRequests('Hello', 1, true, 50);
-    // The delete must be the FIRST request — if it landed after the
-    // insert, Docs would wipe the text we just wrote. The test name
-    // says "prepends", so pin the position, not just presence.
-    expect(requests[0].deleteContentRange).toBeDefined();
-    expect(requests[0].deleteContentRange!.range!.startIndex).toBe(1);
-    expect(requests[0].deleteContentRange!.range!.endIndex).toBe(49);
-    // And exactly one delete request is emitted (no stray duplicates).
+    // The reset trio must come BEFORE any insertText — anything else
+    // would either wipe the just-inserted text or fail to clear the
+    // residual style/bullet state on the surviving anchor paragraph.
+    // Order within the trio: paragraph-style reset, bullet clear,
+    // content delete. (Order of style/bullet doesn't strictly matter
+    // for indices, but the documented contract pins it.)
+    expect(requests[0].updateParagraphStyle).toBeDefined();
+    expect(requests[0].updateParagraphStyle!.range!.startIndex).toBe(1);
+    expect(requests[0].updateParagraphStyle!.range!.endIndex).toBe(49);
+    expect(
+      requests[0].updateParagraphStyle!.paragraphStyle!.namedStyleType,
+    ).toBe('NORMAL_TEXT');
+    // Field mask must include namedStyleType (the most common leak)
+    // and the bullet/heading-related properties.
+    const fields = requests[0].updateParagraphStyle!.fields ?? '';
+    expect(fields).toContain('namedStyleType');
+    expect(fields).toContain('headingId');
+    expect(fields).toContain('alignment');
+    expect(fields).toContain('indentStart');
+
+    expect(requests[1].deleteParagraphBullets).toBeDefined();
+    expect(requests[1].deleteParagraphBullets!.range!.startIndex).toBe(1);
+    expect(requests[1].deleteParagraphBullets!.range!.endIndex).toBe(49);
+
+    expect(requests[2].deleteContentRange).toBeDefined();
+    expect(requests[2].deleteContentRange!.range!.startIndex).toBe(1);
+    expect(requests[2].deleteContentRange!.range!.endIndex).toBe(49);
+
+    // Exactly one delete request — no stray duplicates.
     const deleteReqs = requests.filter((r) => r.deleteContentRange);
     expect(deleteReqs).toHaveLength(1);
+    const bulletClears = requests.filter((r) => r.deleteParagraphBullets);
+    expect(bulletClears).toHaveLength(1);
+  });
+
+  it('emits no reset block when the doc is essentially empty', () => {
+    // endIndex === 2 means the doc has only the implicit anchor
+    // newline — nothing to clear, and a degenerate [1, 1] range would
+    // be rejected by the API. The reset block must not fire.
+    const { requests } = markdownToDocsRequests('Hello', 1, true, 2);
+    expect(requests.find((r) => r.deleteContentRange)).toBeUndefined();
+    expect(requests.find((r) => r.deleteParagraphBullets)).toBeUndefined();
+    expect(
+      requests.find(
+        (r) =>
+          r.updateParagraphStyle?.paragraphStyle?.namedStyleType ===
+            'NORMAL_TEXT' &&
+          r.updateParagraphStyle?.range?.startIndex === 1 &&
+          r.updateParagraphStyle?.range?.endIndex === 1,
+      ),
+    ).toBeUndefined();
   });
 
   it('handles empty markdown', () => {
