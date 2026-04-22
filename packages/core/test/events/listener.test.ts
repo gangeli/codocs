@@ -52,6 +52,12 @@ describe('extractMentions', () => {
   it('returns empty for empty string', () => {
     expect(extractMentions('')).toEqual([]);
   });
+
+  it('returns duplicates when the same mention appears twice (no dedupe)', () => {
+    expect(
+      extractMentions('@alice@example.com then +alice@example.com again'),
+    ).toEqual(['alice@example.com', 'alice@example.com']);
+  });
 });
 
 describe('extractDocumentId', () => {

@@ -78,4 +78,13 @@ describe('SessionStore', () => {
   it('delete is a no-op for nonexistent session', () => {
     store.deleteSession('coder', 'doc-123');
   });
+
+  it('delete is idempotent when called twice', () => {
+    store.upsertSession('coder', 'doc-123', 'session-abc');
+    expect(() => {
+      store.deleteSession('coder', 'doc-123');
+      store.deleteSession('coder', 'doc-123');
+    }).not.toThrow();
+    expect(store.getSession('coder', 'doc-123')).toBeNull();
+  });
 });

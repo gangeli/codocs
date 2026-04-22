@@ -85,8 +85,10 @@ describe('token storage', () => {
   });
 
   it('clearTokens is idempotent', () => {
-    clearTokens();
-    clearTokens();
+    expect(() => {
+      clearTokens();
+      clearTokens();
+    }).not.toThrow();
   });
 
   it('writeTokens creates the file with mode 0o600', () => {
@@ -114,7 +116,9 @@ describe('github token storage', () => {
   });
 
   it('clearGitHubTokens is idempotent', () => {
-    clearGitHubTokens();
-    clearGitHubTokens();
+    expect(() => {
+      clearGitHubTokens();
+      clearGitHubTokens();
+    }).not.toThrow();
   });
 });

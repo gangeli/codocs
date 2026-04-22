@@ -114,7 +114,16 @@ describe('repair/checks', () => {
       const ctx = makeCtx(db, { targetDocIds: [BAD_DOC] });
       const issues = await targetDocIdWellformed.run(ctx);
       expect(issues[0].context).toMatchObject({ sessionId: session.id });
-      expect(issues[0].fixes.length).toBeGreaterThan(0);
+      expect(issues[0].fixes.map((f) => f.id)).toEqual([
+        'strip-docid-from-session',
+        'delete-session',
+      ]);
+    });
+
+    it('offers quit-program when the bad doc was not from a session', async () => {
+      const ctx = makeCtx(db, { targetDocIds: [BAD_DOC] });
+      const issues = await targetDocIdWellformed.run(ctx);
+      expect(issues[0].fixes.map((f) => f.id)).toEqual(['quit-program']);
     });
   });
 

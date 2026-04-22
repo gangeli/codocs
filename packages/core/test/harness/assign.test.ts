@@ -43,8 +43,7 @@ describe('buildFlatText', () => {
     const { text, offsets } = buildFlatText(doc.body);
 
     expect(text).toBe('Hello World');
-    expect(offsets[0]).toBe(1); // doc index starts at 1
-    expect(offsets[text.length - 1]).toBe(11);
+    expect(offsets).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 });
 

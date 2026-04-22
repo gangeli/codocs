@@ -55,6 +55,17 @@ describe('CodocsSessionStore', () => {
     it('returns false for unknown id', () => {
       expect(store.delete('does-not-exist')).toBe(false);
     });
+
+    it('only removes the targeted session — siblings survive', () => {
+      const a = store.upsert('/a', ['d1'], 'claude');
+      const b = store.upsert('/b', ['d2'], 'claude');
+
+      expect(store.delete(a.id)).toBe(true);
+
+      expect(store.get(a.id)).toBeNull();
+      expect(store.get(b.id)).not.toBeNull();
+      expect(store.listAll().map((s) => s.id)).toEqual([b.id]);
+    });
   });
 
   describe('upsert existing-session detection', () => {

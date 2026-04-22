@@ -54,6 +54,17 @@ describe('ChatTabStore', () => {
       expect(tab).toBeNull();
     });
 
+    it('isolates tabs by document id', () => {
+      store.create({
+        documentId: 'doc-1',
+        tabId: 't1',
+        title: 'only in doc-1',
+        agentName: 'planner',
+      });
+      expect(store.getByTab('doc-1', 't1')).not.toBeNull();
+      expect(store.getByTab('doc-2', 't1')).toBeNull();
+    });
+
     it('enforces unique document_id + tab_id', () => {
       store.create({
         documentId: 'doc-1',

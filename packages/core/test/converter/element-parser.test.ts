@@ -1002,6 +1002,48 @@ describe('element-parser edge cases', () => {
     expect(indexMap).toEqual([{ mdOffset: 0, docIndex: 1 }]);
   });
 
+  it('falls back to "image" alt text when title and description are undefined', () => {
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 3,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 2,
+                inlineObjectElement: { inlineObjectId: 'kix.img1' },
+              },
+              {
+                startIndex: 2,
+                endIndex: 3,
+                textRun: { content: '\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+          },
+        },
+      ],
+      {
+        inlineObjects: {
+          'kix.img1': {
+            inlineObjectProperties: {
+              embeddedObject: {
+                imageProperties: {
+                  sourceUri: 'https://example.com/anon.png',
+                },
+              },
+            },
+          },
+        },
+      },
+    );
+
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('![image](https://example.com/anon.png)\n');
+  });
+
   it('restores a mermaid code block when the image sourceUri matches a known fileId', () => {
     const doc = makeDoc(
       [

@@ -67,6 +67,22 @@ describe('repair/runner', () => {
     expect(result.message).toMatch(/boom/);
   });
 
+  it('applyFix passes through a successful result unchanged', async () => {
+    const ctx = makeCtx(db);
+    const okFix: Fix = {
+      id: 'ok',
+      label: 'o',
+      description: 'd',
+      destructive: false,
+      async apply() {
+        return { ok: true, message: 'done' };
+      },
+    };
+    const issue: Issue = { code: 'o', severity: 'info', title: 'o', detail: 'd', fixes: [] };
+    const result = await applyFix(okFix, ctx, issue);
+    expect(result).toEqual({ ok: true, message: 'done' });
+  });
+
   it('sortIssues orders by severity', () => {
     const issues: Issue[] = [
       { code: 'a', severity: 'info', title: 'a', detail: '', fixes: [] },
@@ -75,6 +91,24 @@ describe('repair/runner', () => {
     ];
     const sorted = sortIssues(issues);
     expect(sorted.map((i) => i.severity)).toEqual(['error', 'warning', 'info']);
+  });
+
+  it('sortIssues preserves relative order of equal-severity issues', () => {
+    const issues: Issue[] = [
+      { code: 'err-1', severity: 'error', title: 'e1', detail: '', fixes: [] },
+      { code: 'info-1', severity: 'info', title: 'i1', detail: '', fixes: [] },
+      { code: 'err-2', severity: 'error', title: 'e2', detail: '', fixes: [] },
+      { code: 'warn-1', severity: 'warning', title: 'w1', detail: '', fixes: [] },
+      { code: 'err-3', severity: 'error', title: 'e3', detail: '', fixes: [] },
+    ];
+    const sorted = sortIssues(issues);
+    expect(sorted.map((i) => i.code)).toEqual([
+      'err-1',
+      'err-2',
+      'err-3',
+      'warn-1',
+      'info-1',
+    ]);
   });
 
   it('converts check throws into internal-check-failed issues', async () => {

@@ -782,6 +782,9 @@ describe('AgentOrchestrator fork-per-comment', () => {
     // Both agent runs should be in flight simultaneously.
     expect(fr.inFlight()).toBe(2);
     expect(fr.calls.length).toBe(2);
+    // Each runner call got a distinct prompt — they correspond to the two
+    // different comment IDs rather than duplicating a single one.
+    expect(new Set(fr.calls.map((c) => c.prompt)).size).toBe(2);
 
     fr.releaseAll();
     await orchestrator.waitForIdle();
