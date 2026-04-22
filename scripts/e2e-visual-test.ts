@@ -47,7 +47,7 @@ const testCases: TestCase[] = [
 
   {
     title: 'Basic 2-column table',
-    expect: 'Header row should have dark blue background with white bold text. Both columns should have reasonable widths. Cell padding should provide breathing room.',
+    expect: 'Table should use booktabs rules: thick black rule above the header, thin black rule under the header, thick black rule at the bottom. No vertical lines, no header fill. Header text is bold black. Both columns have reasonable widths and cell padding.',
     markdown: `| Name | Value |
 | --- | --- |
 | Alpha | 100 |
@@ -86,7 +86,7 @@ const testCases: TestCase[] = [
 
   {
     title: 'Table with single column',
-    expect: 'Single column should take reasonable width (not full page). Header should still be styled with blue background and white text.',
+    expect: 'Single column should take reasonable width (not full page). Header should be bold black with the booktabs rule pattern above and below (no fill, no vertical borders).',
     markdown: `| Item |
 | --- |
 | Apple |

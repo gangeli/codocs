@@ -2,21 +2,34 @@
  * Table styling for Google Docs.
  *
  * Generates batchUpdate requests to style a table after it's been
- * created and filled with content.
+ * created and filled with content. The default style is "booktabs":
+ * three horizontal rules (thick top, thin under header, thick bottom)
+ * with no vertical lines and no header fill. Header text is bold black.
  */
 
 import type { docs_v1 } from 'googleapis';
 
 // ── Design tokens ──────────────────────────────────────────────
 
-/** Header background: a medium-dark blue that provides strong contrast. */
-const HEADER_BG: docs_v1.Schema$OptionalColor = {
-  color: { rgbColor: { red: 0.26, green: 0.52, blue: 0.78 } }, // #4285F2
+/** Invisible border used to suppress unwanted cell edges. */
+const INVISIBLE_BORDER: docs_v1.Schema$TableCellBorder = {
+  color: { color: {} },
+  width: { magnitude: 0, unit: 'PT' },
+  dashStyle: 'SOLID',
 };
 
-/** Header text color: white for contrast against the dark header. */
-const HEADER_TEXT_COLOR: docs_v1.Schema$OptionalColor = {
-  color: { rgbColor: { red: 1, green: 1, blue: 1 } },
+/** Top and bottom rule — 2pt solid black. */
+const THICK_RULE: docs_v1.Schema$TableCellBorder = {
+  color: { color: { rgbColor: { red: 0, green: 0, blue: 0 } } },
+  width: { magnitude: 2, unit: 'PT' },
+  dashStyle: 'SOLID',
+};
+
+/** Rule under the header row — 1pt solid black. */
+const THIN_RULE: docs_v1.Schema$TableCellBorder = {
+  color: { color: { rgbColor: { red: 0, green: 0, blue: 0 } } },
+  width: { magnitude: 1, unit: 'PT' },
+  dashStyle: 'SOLID',
 };
 
 /** Cell padding in points. */
@@ -52,9 +65,8 @@ export function styleTable(
 
   const requests: docs_v1.Schema$Request[] = [];
 
-  // ── Header row styling ─────────────────────────────────────
+  // ── Header row: bold text, no fill ─────────────────────────
 
-  // Bold + white text on header cells
   for (let c = 0; c < C; c++) {
     const headerText = rows[0][c];
     if (!headerText) continue;
@@ -65,16 +77,72 @@ export function styleTable(
           startIndex: idx,
           endIndex: idx + headerText.length,
         },
-        textStyle: {
-          bold: true,
-          foregroundColor: HEADER_TEXT_COLOR,
-        },
-        fields: 'bold,foregroundColor',
+        textStyle: { bold: true },
+        fields: 'bold',
       },
     });
   }
 
-  // Dark blue header background
+  // ── Booktabs borders ───────────────────────────────────────
+  // No vertical borders anywhere. No inner horizontal borders.
+  // Thick rules at top and bottom of table; thin rule under header.
+
+  // Suppress every vertical border.
+  requests.push({
+    updateTableCellStyle: {
+      tableRange: {
+        tableCellLocation: {
+          tableStartLocation: { index: tableStart },
+          rowIndex: 0,
+          columnIndex: 0,
+        },
+        rowSpan: R,
+        columnSpan: C,
+      },
+      tableCellStyle: {
+        borderLeft: INVISIBLE_BORDER,
+        borderRight: INVISIBLE_BORDER,
+      },
+      fields: 'borderLeft,borderRight',
+    },
+  });
+
+  // Suppress inner horizontal borders (everything except the three rules
+  // we set explicitly below).
+  if (R > 1) {
+    requests.push({
+      updateTableCellStyle: {
+        tableRange: {
+          tableCellLocation: {
+            tableStartLocation: { index: tableStart },
+            rowIndex: 1,
+            columnIndex: 0,
+          },
+          rowSpan: R - 1,
+          columnSpan: C,
+        },
+        tableCellStyle: { borderTop: INVISIBLE_BORDER },
+        fields: 'borderTop',
+      },
+    });
+    requests.push({
+      updateTableCellStyle: {
+        tableRange: {
+          tableCellLocation: {
+            tableStartLocation: { index: tableStart },
+            rowIndex: 0,
+            columnIndex: 0,
+          },
+          rowSpan: R - 1,
+          columnSpan: C,
+        },
+        tableCellStyle: { borderBottom: INVISIBLE_BORDER },
+        fields: 'borderBottom',
+      },
+    });
+  }
+
+  // Top rule (thick, above header).
   requests.push({
     updateTableCellStyle: {
       tableRange: {
@@ -86,10 +154,43 @@ export function styleTable(
         rowSpan: 1,
         columnSpan: C,
       },
-      tableCellStyle: {
-        backgroundColor: HEADER_BG,
+      tableCellStyle: { borderTop: THICK_RULE },
+      fields: 'borderTop',
+    },
+  });
+
+  // Rule under the header (thin).
+  requests.push({
+    updateTableCellStyle: {
+      tableRange: {
+        tableCellLocation: {
+          tableStartLocation: { index: tableStart },
+          rowIndex: 0,
+          columnIndex: 0,
+        },
+        rowSpan: 1,
+        columnSpan: C,
       },
-      fields: 'backgroundColor',
+      tableCellStyle: { borderBottom: THIN_RULE },
+      fields: 'borderBottom',
+    },
+  });
+
+  // Bottom rule (thick). For a 1-row table this intentionally overwrites the
+  // thin header-rule with a thick one, giving a top+bottom rule pair.
+  requests.push({
+    updateTableCellStyle: {
+      tableRange: {
+        tableCellLocation: {
+          tableStartLocation: { index: tableStart },
+          rowIndex: R - 1,
+          columnIndex: 0,
+        },
+        rowSpan: 1,
+        columnSpan: C,
+      },
+      tableCellStyle: { borderBottom: THICK_RULE },
+      fields: 'borderBottom',
     },
   });
 
@@ -179,11 +280,6 @@ const BLOCKQUOTE_RULE_WIDTH_PT = 3;
  * thick gray bar on the left, and pad the cell.
  */
 export function styleBlockquote(tableStart: number): docs_v1.Schema$Request[] {
-  const invisibleBorder: docs_v1.Schema$TableCellBorder = {
-    color: { color: {} },
-    width: { magnitude: 0, unit: 'PT' },
-    dashStyle: 'SOLID',
-  };
   const leftBorder: docs_v1.Schema$TableCellBorder = {
     color: BLOCKQUOTE_RULE_COLOR,
     width: { magnitude: BLOCKQUOTE_RULE_WIDTH_PT, unit: 'PT' },
@@ -203,9 +299,9 @@ export function styleBlockquote(tableStart: number): docs_v1.Schema$Request[] {
           columnSpan: 1,
         },
         tableCellStyle: {
-          borderTop: invisibleBorder,
-          borderRight: invisibleBorder,
-          borderBottom: invisibleBorder,
+          borderTop: INVISIBLE_BORDER,
+          borderRight: INVISIBLE_BORDER,
+          borderBottom: INVISIBLE_BORDER,
           borderLeft: leftBorder,
           paddingTop: { magnitude: CELL_PADDING_PT, unit: 'PT' },
           paddingBottom: { magnitude: CELL_PADDING_PT, unit: 'PT' },
@@ -256,15 +352,6 @@ function computeColumnWidths(rows: string[][], numColumns: number): number[] {
   }
 
   return weights;
-}
-
-/**
- * Check if a table is narrow enough to benefit from centering.
- * Returns true if total content width < 70% of page width.
- */
-function isNarrowTable(colWidths: number[]): boolean {
-  const total = colWidths.reduce((a, b) => a + b, 0);
-  return total < PAGE_WIDTH_PT * 0.7;
 }
 
 /**

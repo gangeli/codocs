@@ -377,8 +377,11 @@ async function run() {
   const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
   console.log(`Round-trip E2E Tests — ${timestamp}\n`);
 
-  // Create a fresh doc per test case to avoid formatting contamination
-  // (Google Docs retains paragraph/list styles even after content deletion).
+  // One doc per test case, looked up by title and reused across runs so
+  // docs don't accumulate in Drive. writeMarkdown('replace') now resets
+  // paragraph styles + bullets on the surviving anchor paragraph before
+  // inserting (see buildBodyResetRequests in md-to-docs.ts), so prior-
+  // run formatting doesn't leak into the next run.
   const folderName = 'Codocs Tests';
 
   let passed = 0;
@@ -390,8 +393,8 @@ async function run() {
     const label = `${i + 1}/${testCases.length} ${tc.title}`;
 
     try {
-      // Create a fresh doc for each test
-      const { docId } = await client.createDocInFolder(
+      // Reuse the doc if it exists in the test folder (lookup by title).
+      const { docId } = await client.findOrCreateDocInFolder(
         `RT ${i + 1}: ${tc.title}`,
         folderName,
       );
