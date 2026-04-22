@@ -27,7 +27,9 @@ export const DO_TYPO_FIX: EvalCase = {
     ],
     code: [
       { kind: 'git', assert: 'no-new-commits', label: 'no code commits' },
-      { kind: 'batch-update-count', equals: 1, label: 'doc was updated' },
+      // The typo-removal regex (doc axis above) already proves the doc
+      // was updated. No need to pin the exact batchUpdate count — an
+      // agent that makes two passes over the same edit is still correct.
     ],
   },
 };

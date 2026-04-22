@@ -270,19 +270,42 @@ async function walkMatching(root: string, pattern: string): Promise<string[]> {
 }
 
 function globToRegex(glob: string): RegExp {
-  // Escape regex metachars except * and /, then translate:
-  //   **  → .*   (across directories)
-  //   *   → [^/]*  (within one segment)
+  // Tokenize on '/' so '**' as a whole segment means "zero or more path
+  // components" (matching both `src/a.mjs` and `src/x/a.mjs` for `src/**/*`).
+  // Within a segment: '*' → [^/]*.
+  const segments = glob.split('/');
+  const parts = segments.map((seg) => {
+    if (seg === '**') return null; // sentinel — handled in join
+    let s = '';
+    for (const ch of seg) {
+      if (ch === '*') s += '[^/]*';
+      else if ('.+?()[]{}|^$\\'.includes(ch)) s += `\\${ch}`;
+      else s += ch;
+    }
+    return s;
+  });
+  // Join parts with '/'; around a '**' sentinel use an optional-slash form
+  // so the `**` can stand for zero path segments.
   let re = '';
-  for (let i = 0; i < glob.length; i += 1) {
-    const ch = glob[i];
-    if (ch === '*') {
-      if (glob[i + 1] === '*') { re += '.*'; i += 1; }
-      else re += '[^/]*';
-    } else if ('.+?()[]{}|^$\\'.includes(ch)) {
-      re += `\\${ch}`;
+  for (let i = 0; i < parts.length; i += 1) {
+    const cur = parts[i];
+    const nextIsStarStar = parts[i + 1] === null;
+    const prevWasStarStar = i > 0 && parts[i - 1] === null;
+    if (cur === null) {
+      // '**' contributes any-prefix; slash-joining handled by neighbors.
+      re += '.*';
     } else {
-      re += ch;
+      if (i === 0) {
+        re += cur;
+      } else if (prevWasStarStar) {
+        // No leading '/' — '**' already consumed optional prefix, but we
+        // still need to allow an optional separator between prefix and cur.
+        re = re.replace(/\.\*$/, '(?:.*/)?') + cur;
+      } else if (nextIsStarStar) {
+        re += '/' + cur;
+      } else {
+        re += '/' + cur;
+      }
     }
   }
   return new RegExp(`^${re}$`);
