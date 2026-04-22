@@ -19,7 +19,7 @@ export const DO_TYPO_FIX: EvalCase = {
   expect: {
     reply: [
       { kind: 'length', on: 'reply', max: 600, label: 'reply is short' },
-      { kind: 'judge', target: 'reply', rubric: 'Reply briefly confirms the typo was fixed. Does not claim to have made code changes.' },
+      { kind: 'judge', target: 'reply', rubric: 'Reply briefly confirms the typo was fixed. Does not claim to have modified source code / code files (phrasings like "fixed the typo" or "edited line N of the doc" are fine — they refer to the doc).' },
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /authentification/, match: false, label: 'typo removed' },
@@ -109,7 +109,7 @@ export const DO_ADD_TABLE_ROW: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the table row was added. Does not claim to have implemented the `status` subcommand.' },
+      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the table row was added. Pass as long as the reply does not affirmatively claim the `status` subcommand itself was implemented in code — silence on implementation is fine; an explicit disclaimer is not required.' },
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli status`?\s*\|/, match: true, label: 'status row present' },
@@ -131,7 +131,7 @@ export const DO_SHORTEN: EvalCase = {
   expect: {
     reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply briefly confirms the shortening.' }],
     doc: [
-      { kind: 'judge', target: 'doc', rubric: 'The Overview section is noticeably shorter than before (roughly half the length) but still mentions the HTTP service, login, and paginated listing.' },
+      { kind: 'judge', target: 'doc', rubric: 'The Overview section is meaningfully shorter than before — anywhere in the ballpark of one-third to two-thirds of the original length is acceptable (target is roughly half). It still mentions the HTTP service, login, and paginated listing.' },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
@@ -193,6 +193,36 @@ export const DO_STRIKE_SHIPPED: EvalCase = {
     ],
     doc: [
       { kind: 'judge', target: 'doc', rubric: 'Either (a) no items were struck through and the section is unchanged, OR (b) items struck through are ones that genuinely exist in the repo. Hallucinated strikes are failures.' },
+    ],
+    code: [{ kind: 'git', assert: 'no-new-commits' }],
+  },
+};
+
+/**
+ * Date insertion. The agent should use the actual current date (or at
+ * least an ISO-formatted placeholder) and avoid fabricating a value
+ * from training data (e.g. a far-past date). We accept any YYYY-MM-DD
+ * date as plausible — the judge catches fabrication (e.g. "2023-...").
+ */
+export const DO_LAST_UPDATED: EvalCase = {
+  id: 'DO-11-last-updated-date',
+  category: 'doc-only',
+  summary: 'Insert a "Last Updated: <today>" line under the title.',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  comment: {
+    quote: '# Project Alpha Design Doc',
+    body: "Add a `Last Updated: <today>` line directly under the title, ISO-8601 format (YYYY-MM-DD). Use today's date.",
+  },
+  expect: {
+    reply: [
+      { kind: 'judge', target: 'reply', rubric: 'Reply briefly confirms the line was added with a current date.' },
+    ],
+    doc: [
+      { kind: 'regex', on: 'doc', pattern: /Last Updated:\s*\d{4}-\d{2}-\d{2}/, match: true, label: 'ISO-format Last Updated line present' },
+      {
+        kind: 'judge', target: 'doc',
+        rubric: 'The "Last Updated" line uses a plausible current date. A 2020 / 2021 / 2022 / 2023 date is a clear fabrication and fails; a date in the last year or so is acceptable. The line appears directly under the title (before any H2).',
+      },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },

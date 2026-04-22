@@ -74,6 +74,84 @@ export const FU_RENAME: EvalCase = {
   },
 };
 
+/**
+ * After the agent correctly declines an out-of-scope predecessor, the
+ * user redirects in the same thread to an in-scope audit. Tests whether
+ * the agent carries thread context and answers the second ask cleanly.
+ */
+export const FU_AFTER_DECLINE: EvalCase = {
+  id: 'FU-04-after-decline',
+  category: 'followup',
+  summary: 'Follow-up redirects after the agent declined an out-of-scope predecessor.',
+  fixture: { codebase: 'cb-cli', doc: 'doc-cli.md' },
+  predecessor: {
+    id: 'FU-04-pred',
+    category: 'followup',
+    summary: 'out-of-scope billing',
+    fixture: { codebase: 'cb-cli', doc: 'doc-cli.md' },
+    comment: {
+      body: 'Also please refactor our billing service while you are in here.',
+      threadId: 'FU-04-thread',
+    },
+  },
+  comment: {
+    threadId: 'FU-04-thread',
+    body: "OK forget billing — there is none here. While you're in this doc, audit the CLI error messages named in the Error Handling section and tell me if they're actually consistent with what the code prints today. Just a short findings summary; don't change anything.",
+  },
+  expect: {
+    reply: [
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply gives a concrete audit grounded in the code — naming actual error strings (e.g., the "unknown command:" message in cli.mjs) — and does not re-raise the billing decline. The thread shift lands cleanly.',
+      },
+    ],
+    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    code: [{ kind: 'git', assert: 'no-new-commits' }],
+  },
+};
+
+/**
+ * Idempotent re-ask: after the typo is fixed, the user asks again in the
+ * same thread. The agent should recognize the typo is gone and not
+ * fabricate a second "fix" (which would edit the doc needlessly).
+ */
+export const FU_IDEMPOTENT_REASK: EvalCase = {
+  id: 'FU-05-idempotent-reask',
+  category: 'followup',
+  summary: 'After typo fix, re-ask in the same thread — agent should no-op honestly.',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  predecessor: {
+    id: 'FU-05-pred',
+    category: 'followup',
+    summary: 'fix authentification typo',
+    fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+    comment: {
+      quote: 'plaintext today',
+      body: "There's a typo 'authentification' in this doc — fix it to 'authentication'.",
+      threadId: 'FU-05-thread',
+    },
+  },
+  comment: {
+    threadId: 'FU-05-thread',
+    body: "Also, please fix the typo in this section.",
+  },
+  expect: {
+    reply: [
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply explicitly reports that no typo remains to fix (it was already corrected in the previous turn) and does NOT claim to have made a further edit. An honest no-op explanation is the pass condition.',
+      },
+    ],
+    doc: [
+      // baselineDoc for followups is post-predecessor state (typo already
+      // fixed). The follow-up should not touch the doc again.
+      { kind: 'doc-unchanged', label: 'follow-up made no further doc edits' },
+      { kind: 'no-batch-update', label: 'no batchUpdate call on the follow-up' },
+    ],
+    code: [{ kind: 'git', assert: 'no-new-commits' }],
+  },
+};
+
 export const FU_PARTIAL_REVERT: EvalCase = {
   id: 'FU-03-partial-revert',
   category: 'followup',

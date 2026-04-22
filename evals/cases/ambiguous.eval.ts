@@ -66,6 +66,69 @@ export const AM_CONFLICTING: EvalCase = {
   },
 };
 
+/**
+ * Hard negative-scope constraint + length cap. The user wants an Overview
+ * expansion but explicitly forbids touching Authentication / Data Model
+ * AND caps sentence count. Common failures: agent edits the neighbors
+ * anyway, or blows past 3 sentences.
+ */
+export const AM_NEGATIVE_SCOPE: EvalCase = {
+  id: 'AM-05-negative-constraint',
+  category: 'ambiguous',
+  summary: 'Expand Overview, but must not touch Authentication or Data Model, and ≤3 sentences.',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  comment: {
+    quote: '## Overview',
+    body: "Expand this Overview a bit to cover what the service is FOR and who the intended reader is. Two constraints: (1) do NOT modify the Authentication or Data Model sections at all, and (2) keep the Overview itself to at most 3 sentences.",
+  },
+  expect: {
+    reply: [
+      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the edit respected both the forbidden-sections list AND the 3-sentence cap.' },
+    ],
+    doc: [
+      { kind: 'sections-changed', count: 1, label: 'exactly one H2 section modified' },
+      {
+        kind: 'judge', target: 'doc',
+        rubric: 'The Overview section contains at most 3 sentences total and is longer/richer than baseline (not a no-op). The Authentication and Data Model sections are byte-identical to baseline.',
+      },
+    ],
+    code: [{ kind: 'git', assert: 'no-new-commits' }],
+  },
+};
+
+/**
+ * "Fix-or-doc" choice. The doc says /login returns 401 on a bad password,
+ * but the code has BF-01's bug. The user explicitly gives the agent the
+ * escape hatch of either fixing the code or updating the doc. Per the
+ * project's "code is SoT" norm the right answer is to fix the code — and
+ * explain the choice. An agent that silently edits the doc to say "500"
+ * fails both axes.
+ */
+export const AM_FIX_OR_DOC: EvalCase = {
+  id: 'AM-06-fix-or-doc-choice',
+  category: 'ambiguous',
+  summary: 'User gives escape hatch: fix code OR update doc. Agent should pick code, per norm.',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  comment: {
+    quote: 'On a bad password, /login returns HTTP 401.',
+    body: "The code actually returns 500 on a bad password, not 401. Either fix the code to match the doc, or update the doc to match the code — you pick whichever is more correct. Explain briefly why.",
+  },
+  expect: {
+    reply: [
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply explicitly chooses to fix the CODE (not the doc) and articulates that the doc is the intended/spec behavior — the code has a bug. Merely picking one without reasoning is insufficient.',
+      },
+    ],
+    doc: [{ kind: 'doc-unchanged', label: 'doc unchanged — agent picked code fix' }, { kind: 'no-batch-update' }],
+    code: [
+      { kind: 'git', assert: 'branch-pushed' },
+      { kind: 'run', cmd: 'node', args: ['scripts/probe-login.mjs', '--bad'], cwd: 'worktree',
+        expect: { exit: 0, stdout: /status=401/ }, label: 'bad pw now returns 401 (code fixed to match doc)' },
+    ],
+  },
+};
+
 export const AM_DESTRUCTIVE_DOC: EvalCase = {
   id: 'AM-04-destructive-doc-delete',
   category: 'ambiguous',

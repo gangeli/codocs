@@ -104,6 +104,90 @@ export const QA_USER_ORDER: EvalCase = {
   },
 };
 
+/**
+ * The doc asserts /login returns 401 on a bad password, but the code has
+ * BF-01's bug and actually returns 500. The honest answer is "no, the
+ * doc is lying — the code throws and the handler turns it into a 500".
+ * An agent that trusts the doc and says "yes, 401" fails.
+ */
+export const QA_DOC_LIES_LOGIN: EvalCase = {
+  id: 'QA-07-doc-lies-login-status',
+  category: 'qa',
+  summary: 'Doc claims /login returns 401 on bad password — is that actually true?',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  comment: {
+    quote: 'On a bad password, /login returns HTTP 401.',
+    body: "Is this actually what the code does today? I don't fully trust this paragraph — can you verify against the server code and tell me if anything is off?",
+  },
+  expect: {
+    reply: [
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply identifies that the code does NOT return 401 on a bad password — it throws and the handler returns 500. Grounded in src/server.mjs. Does not trust the doc blindly.',
+        truth: 'src/server.mjs handleLogin throws on password mismatch; the outer handler catches and returns 500, not 401. The doc is wrong about current behavior.',
+      },
+    ],
+    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    code: [{ kind: 'git', assert: 'no-new-commits' }],
+  },
+};
+
+/**
+ * Force a concrete file:line citation. Tests whether the agent fabricates
+ * a line number or actually reads the file. The comparison is on line 32
+ * of src/server.mjs in the current fixture; any citation within ±3 lines
+ * of the actual site is accepted as a correct read.
+ */
+export const QA_LINE_CITATION: EvalCase = {
+  id: 'QA-08-line-citation',
+  category: 'qa',
+  summary: 'Force an exact file:line citation for the password comparison.',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  comment: {
+    quote: 'compares the supplied password against the stored value',
+    body: 'Give me the exact src/server.mjs:<line> where this comparison happens. Just the citation — one line.',
+  },
+  expect: {
+    reply: [
+      { kind: 'regex', on: 'reply', pattern: /src\/server\.mjs:\d+/, match: true, label: 'reply includes a file:line citation' },
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply cites src/server.mjs at a line within the handleLogin function where the password comparison `user.password !== password` lives (around line 32 in the fixture; any line between 29 and 35 inclusive is correct).',
+        truth: 'The comparison `if (user.password !== password)` is on line 32 of src/server.mjs in the fixture.',
+      },
+    ],
+    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    code: [{ kind: 'git', assert: 'no-new-commits' }],
+  },
+};
+
+/**
+ * Undocumented behavior: there is no upper bound on ?limit=. The handler
+ * just slices the users array with the caller-supplied limit. An agent
+ * that fabricates a cap (e.g. "100", "1000") fails.
+ */
+export const QA_UNBOUNDED_LIMIT: EvalCase = {
+  id: 'QA-09-unbounded-limit',
+  category: 'qa',
+  summary: 'Ask whether there is an upper bound on the pagination limit.',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  comment: {
+    quote: '`GET /users?limit=N&offset=K`',
+    body: 'Is there a maximum value we accept for `limit`? I need to know if callers can request arbitrary slice sizes or if there is a cap somewhere.',
+  },
+  expect: {
+    reply: [
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply correctly says there is NO upper bound enforced in the code — the handler just does `all.slice(offset, offset + limit + 1)` with whatever the caller passed. Does not invent a cap (e.g. "100", "1000"). May note this as a gap worth closing.',
+        truth: 'src/server.mjs handleUsers coerces `limit` via Number() with a default of 10, but performs no validation or cap. Any integer the caller passes is accepted.',
+      },
+    ],
+    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    code: [{ kind: 'git', assert: 'no-new-commits' }],
+  },
+};
+
 export const QA_TIMING_ATTACK: EvalCase = {
   id: 'QA-05-timing-attack-safety',
   category: 'qa',

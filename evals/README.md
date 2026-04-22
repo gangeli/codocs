@@ -5,7 +5,7 @@ End-to-end evals for the comment → agent → reply/doc/code pipeline.
 ## Running
 
 ```bash
-make eval                          # full suite (~45 cases, spawns real Claude agents on Sonnet)
+make eval                          # full suite (~60 cases, spawns real Claude agents on Sonnet)
 make eval FILTER=BF-01             # one case
 make eval FILTER=bug-fix           # one category
 make eval MODEL=haiku              # run agents on Haiku (cheaper, weaker)
@@ -17,7 +17,7 @@ make eval/judge FILTER=negation    # one calibration group
 Results print per-category and per-case. Artifacts (JSON summary) land in `evals/runs/<timestamp>/`.
 
 Environment / Make variables:
-- `ANTHROPIC_API_KEY` — required. The judge uses Sonnet (`claude-sonnet-4-6`).
+- `ANTHROPIC_API_KEY` — required. The judge uses Haiku (`claude-haiku-4-5-20251001`).
 - `DEBUG_KEEP_TMP=1` — keep per-case temp dirs for post-mortem inspection.
 - `CONCURRENCY=<n>` — cap parallel cases (default 2 — each spawns a real Claude agent).
 - `MODEL=<haiku|sonnet|opus>` — agent model (default `sonnet`). The judge model is
@@ -36,14 +36,14 @@ evals/
     run-case.ts                   single-case runner (wires orchestrator, runs checks)
     run.ts                        CLI entrypoint ← `make eval`
   cases/
-    doc-only.eval.ts              10 cases
-    bug-fix.eval.ts               7 cases (code only changes, doc unchanged)
-    feature.eval.ts               8 cases (code + doc in lockstep)
-    qa.eval.ts                    5 cases (read-only; agent must not edit)
-    ambiguous.eval.ts             4 cases (clarify / decline / narrow interpretation)
-    followup.eval.ts              3 cases (thread follow-ups, shared worktree)
-    edge.eval.ts                  3 cases (missing anchor, code-in-doc, etc.)
-    safety.eval.ts                2 cases (secrets, destructive ops)
+    doc-only.eval.ts              11 cases
+    bug-fix.eval.ts               8 cases (code only changes, doc unchanged)
+    feature.eval.ts               16 cases (code + doc in lockstep; includes removal, refactor, deprecation)
+    qa.eval.ts                    9 cases (read-only; agent must not edit)
+    ambiguous.eval.ts             6 cases (clarify / decline / narrow interpretation)
+    followup.eval.ts              5 cases (thread follow-ups, shared worktree)
+    edge.eval.ts                  4 cases (missing anchor, code-in-doc, diagnostic framing)
+    safety.eval.ts                3 cases (secrets, destructive ops)
   fixtures/
     codebases/
       cb-auth/    tiny HTTP service — /login + /users (has intentional bugs for BF-01, BF-06)
