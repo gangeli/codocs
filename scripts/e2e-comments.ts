@@ -14,9 +14,13 @@
  *                                        worktree torn down afterwards.
  *   TC2  two sequential doc edits      — each comment runs in its OWN
  *                                        worktree; the second sees the
- *                                        first's changes.
+ *                                        first's changes; no session-
+ *                                        fork fallback fires.
  *   TC3  code-change comment           — agent creates a source file,
  *                                        orchestrator commits + pushes.
+ *   TC4  concurrent code-change pair   — two comments fired together
+ *                                        land in two isolated worktrees
+ *                                        with no file cross-contamination.
  *
  * Usage:
  *   npx tsx scripts/e2e-comments.ts
@@ -157,11 +161,11 @@ class FakeDocsClient {
   async batchUpdate(docId: string, requests: unknown[]): Promise<void> {
     this.batchUpdateCalls.push({ docId, requests });
     this.log.push({ method: 'batchUpdate', args: [docId, requests.length] });
-    // Pull the agent's just-written markdown as the new doc state. The
-    // orchestrator only calls batchUpdate when the design-doc.md
-    // changed, so this update is always meaningful.
-    const latest = this.runner?.lastDesignDocMarkdown;
-    if (latest != null) this.markdown = latest;
+    // Pull the agent's just-written markdown as the new doc state. FIFO
+    // ordering keeps the sequential tests honest; concurrent tests
+    // avoid doc changes, so the queue isn't drained there.
+    const next = this.runner?.designDocQueue.shift();
+    if (next != null) this.markdown = next;
   }
 
   async replyToComment(docId: string, commentId: string, content: string): Promise<string> {
@@ -192,7 +196,16 @@ class RecordingRunner implements AgentRunner {
   readonly name = 'recording';
   workingDirectories: string[] = [];
   promptHistory: string[] = [];
-  /** Last design-doc.md content read from the worktree after the agent ran. */
+  /**
+   * Most recent design-doc.md captured across all runs (FIFO-drained by
+   * FakeDocsClient.batchUpdate). Ordering works for the sequential
+   * tests because each comment's run->batchUpdate pair is serialized
+   * through its own processComment call; under true concurrency the
+   * queue can interleave, but the concurrent test (TC4) makes no doc
+   * changes so batchUpdate never fires.
+   */
+  designDocQueue: string[] = [];
+  /** Back-compat: last captured content, convenient for single-shot checks. */
   lastDesignDocMarkdown: string | null = null;
 
   constructor(private inner: AgentRunner) {}
@@ -201,16 +214,14 @@ class RecordingRunner implements AgentRunner {
     if (opts?.workingDirectory) this.workingDirectories.push(opts.workingDirectory);
     this.promptHistory.push(prompt);
     const result = await this.inner.run(prompt, sessionId, opts);
-    // After the agent completes, capture whatever it wrote to the design
-    // doc snapshot — the orchestrator's next step is to apply that via
-    // batchUpdate, and the FakeDocsClient uses this value as the new
-    // canonical doc state.
     if (opts?.workingDirectory) {
       const designPath = join(opts.workingDirectory, '.codocs', 'design-doc.md');
       try {
-        this.lastDesignDocMarkdown = await readFile(designPath, 'utf-8');
+        const md = await readFile(designPath, 'utf-8');
+        this.designDocQueue.push(md);
+        this.lastDesignDocMarkdown = md;
       } catch {
-        this.lastDesignDocMarkdown = null;
+        // file may not exist in unusual error paths; ignore
       }
     }
     return result;
@@ -571,6 +582,84 @@ const TC3: TestCase = {
   },
 };
 
+const TC4: TestCase = {
+  title: 'TC4  concurrent comments: isolated worktrees, no cross-contamination',
+  fn: async ({ orchestrator, runner, repoRoot, docId, expect }) => {
+    // Two code-change comments fired simultaneously. Both agents should
+    // work in distinct worktrees and produce distinct files without
+    // seeing each other's work. Doc state isn't asserted — the agents
+    // shouldn't touch the doc, and the FIFO design-doc queue would be
+    // racy under concurrency anyway.
+    const [aResult, bResult] = await Promise.all([
+      orchestrator.handleComment(
+        makeCommentEvent(
+          docId,
+          'Create a new file at src/alpha.ts whose only contents are: export const ALPHA_MARKER = "alpha-marker-v1";',
+          { id: 'comment-concurrent-a' },
+        ),
+      ),
+      orchestrator.handleComment(
+        makeCommentEvent(
+          docId,
+          'Create a new file at src/beta.ts whose only contents are: export const BETA_MARKER = "beta-marker-v1";',
+          { id: 'comment-concurrent-b' },
+        ),
+      ),
+    ]);
+    // handleComment returns immediately with empty editSummary in
+    // fork-mode; real work finishes during waitForIdle.
+    void aResult;
+    void bResult;
+    await orchestrator.waitForIdle();
+
+    // Two distinct worktrees were used.
+    const uniqueWorktrees = new Set(runner.workingDirectories);
+    expect(
+      uniqueWorktrees.size === 2,
+      `exactly two distinct worktrees (saw ${uniqueWorktrees.size}, total runs: ${runner.workingDirectories.length})`,
+    );
+    expect(
+      runner.workingDirectories.length === 2,
+      `no retry-with-fresh-session fallback (runs: ${runner.workingDirectories.length})`,
+    );
+
+    // Both worktrees are retained (each had a code change).
+    const wts = await listWorktrees(repoRoot);
+    expect(wts.length === 2, `two worktrees retained (saw ${wts.length}: ${JSON.stringify(wts)})`);
+
+    // Each worktree contains its OWN file and NOT the other's file.
+    // This is the isolation invariant.
+    const worktreePaths = [...uniqueWorktrees];
+    const findings: Array<{ path: string; hasAlpha: boolean; hasBeta: boolean }> = [];
+    for (const wt of worktreePaths) {
+      const alphaExists = existsSync(join(wt, 'src', 'alpha.ts'));
+      const betaExists = existsSync(join(wt, 'src', 'beta.ts'));
+      findings.push({ path: wt, hasAlpha: alphaExists, hasBeta: betaExists });
+    }
+    const alphaOnly = findings.filter((f) => f.hasAlpha && !f.hasBeta);
+    const betaOnly = findings.filter((f) => f.hasBeta && !f.hasAlpha);
+    expect(alphaOnly.length === 1, `exactly one worktree contains alpha.ts but not beta.ts (saw ${JSON.stringify(findings)})`);
+    expect(betaOnly.length === 1, `exactly one worktree contains beta.ts but not alpha.ts (saw ${JSON.stringify(findings)})`);
+
+    // Each worktree has a commit on its own branch.
+    for (const wt of worktreePaths) {
+      const branch = await git(wt, 'rev-parse', '--abbrev-ref', 'HEAD');
+      const log = await git(wt, 'log', '--oneline', `main..${branch}`);
+      expect(
+        log.trim().length > 0,
+        `worktree ${branch} has at least one commit beyond main`,
+      );
+    }
+
+    // Both branches are distinct.
+    const branches: string[] = [];
+    for (const wt of worktreePaths) {
+      branches.push(await git(wt, 'rev-parse', '--abbrev-ref', 'HEAD'));
+    }
+    expect(new Set(branches).size === 2, `distinct branches per comment (saw ${JSON.stringify(branches)})`);
+  },
+};
+
 // ── Main ─────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -595,7 +684,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const all: TestCase[] = [TC1, TC2, TC3];
+  const all: TestCase[] = [TC1, TC2, TC3, TC4];
   const selected = filters.length
     ? all.filter((t) => filters.some((f) => t.title.toLowerCase().includes(f)))
     : all;
