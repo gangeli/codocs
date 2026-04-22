@@ -9,6 +9,7 @@ import {
   writeTokens,
   clearTokens,
   tokensPath,
+  configPath,
   readGitHubTokens,
   writeGitHubTokens,
   clearGitHubTokens,
@@ -57,6 +58,12 @@ describe('config storage', () => {
     writeConfig({ client_id: 'old', client_secret: 'old' });
     writeConfig({ client_id: 'new', client_secret: 'new' });
     expect(readConfig()).toEqual({ client_id: 'new', client_secret: 'new' });
+  });
+
+  it('writeConfig creates the file with mode 0o600', () => {
+    writeConfig({ client_id: 'a', client_secret: 'b' });
+    const mode = statSync(configPath()).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 });
 

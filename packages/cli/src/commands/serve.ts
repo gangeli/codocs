@@ -56,7 +56,7 @@ function isAutoModeAvailable(): boolean {
 }
 import { App, Welcome, Generating, createInitialState, getStandalonePermissions, type TuiStateRef, type ActivityEvent, type WelcomeChoice } from '../tui/index.js';
 
-function isAgentType(value: string): value is AgentType {
+export function isAgentType(value: string): value is AgentType {
   return value in AGENT_RUNNERS;
 }
 
@@ -68,7 +68,7 @@ const AGENT_RUNNERS: Record<AgentType, () => AgentRunner> = {
   opencode: () => new OpenCodeRunner(),
 };
 
-function fallbackDocName(): string {
+export function fallbackDocName(): string {
   const now = new Date();
   const date = now.toISOString().slice(0, 10);
   return `Codocs ${date}`;
@@ -140,7 +140,7 @@ function printAuthRequired(): void {
   );
 }
 
-function formatCommentEvent(event: CommentEvent): string {
+export function formatCommentEvent(event: CommentEvent): string {
   const parts: string[] = [];
   const time = event.eventTime
     ? new Date(event.eventTime).toLocaleTimeString()
@@ -238,7 +238,7 @@ function handleMetaRestart(
  * Build restart args: take the original args, strip any existing --resume,
  * and add --resume <sessionId>. Preserves all other flags including --meta.
  */
-function buildRestartArgs(originalArgs: string[], sessionId: string): string[] {
+export function buildRestartArgs(originalArgs: string[], sessionId: string): string[] {
   const args: string[] = [];
   let skipNext = false;
 
@@ -1099,7 +1099,7 @@ export function registerServeCommand(program: Command) {
     );
 }
 
-function extractDocId(input: string): string {
+export function extractDocId(input: string): string {
   const match = input.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
   return match ? match[1] : input;
 }

@@ -43,10 +43,12 @@ describe('addComment', () => {
 
   it('creates a comment with agent prefix', async () => {
     const api = createMockDriveApi();
-    await addComment(api as any, 'doc-1', {
+    const id = await addComment(api as any, 'doc-1', {
       content: 'Review this',
       agent: { name: 'reviewer' },
     });
+    expect(id).toBe('comment-123');
+    expect(api.createComment).toHaveBeenCalledTimes(1);
     expect(api.createComment).toHaveBeenCalledWith(
       'doc-1',
       '[reviewer]: Review this',
@@ -56,10 +58,12 @@ describe('addComment', () => {
 
   it('creates a comment with quoted text anchor', async () => {
     const api = createMockDriveApi();
-    await addComment(api as any, 'doc-1', {
+    const id = await addComment(api as any, 'doc-1', {
       content: 'Fix this',
       quotedText: 'buggy code here',
     });
+    expect(id).toBe('comment-123');
+    expect(api.createComment).toHaveBeenCalledTimes(1);
     expect(api.createComment).toHaveBeenCalledWith(
       'doc-1',
       'Fix this',
@@ -69,11 +73,13 @@ describe('addComment', () => {
 
   it('combines agent prefix and quotedText anchor', async () => {
     const api = createMockDriveApi();
-    await addComment(api as any, 'doc-1', {
+    const id = await addComment(api as any, 'doc-1', {
       content: 'hi',
       agent: { name: 'planner' },
       quotedText: 'World',
     });
+    expect(id).toBe('comment-123');
+    expect(api.createComment).toHaveBeenCalledTimes(1);
     expect(api.createComment).toHaveBeenCalledWith(
       'doc-1',
       '[planner]: hi',
@@ -87,10 +93,12 @@ describe('addComment', () => {
   it('escapes special characters in quotedText anchor safely via JSON.stringify', async () => {
     const api = createMockDriveApi();
     const special = '"\n\\';
-    await addComment(api as any, 'doc-1', {
+    const id = await addComment(api as any, 'doc-1', {
       content: 'Check',
       quotedText: special,
     });
+    expect(id).toBe('comment-123');
+    expect(api.createComment).toHaveBeenCalledTimes(1);
     const [, , anchor] = api.createComment.mock.calls[0];
     expect(() => JSON.parse(anchor)).not.toThrow();
     expect(JSON.parse(anchor)).toEqual({ r: 0, a: [{ txt: special }] });
@@ -109,9 +117,11 @@ describe('listComments', () => {
     expect(comments[0].author).toBe('Service Account');
     expect(comments[0].quotedText).toBe('some quoted text');
     expect(comments[0].resolved).toBe(false);
+    expect(comments[0].createdTime).toBe('2026-04-08T00:00:00Z');
 
     expect(comments[1].resolved).toBe(true);
     expect(comments[1].quotedText).toBeUndefined();
+    expect(comments[1].createdTime).toBe('2026-04-08T01:00:00Z');
   });
 });
 

@@ -408,6 +408,33 @@ describe('markdownToDocsRequests', () => {
     expect(cellByText('D')!.insertText!.location!.index).toBe(12);
   });
 
+  it('3x3 table cell inserts use correct indices (row stride = 2*C + 1)', () => {
+    // Inserts emit in reverse row-major order, so each inserted cell sees
+    // zero preceding content. Index = tableStart + 3 + row * (2*C + 1) + 2*col
+    // with tableStart = 2 (table inserted at index 1, +1 table-header offset).
+    // For C = 3: row stride = 7.
+    //   Row 0:  5,  7,  9
+    //   Row 1: 12, 14, 16
+    //   Row 2: 19, 21, 23
+    // A regression where stride = 2*C (=6) would place row 1 at 11 and row 2
+    // at 17 — caught directly by these assertions.
+    const md = '| a | b | c |\n| - | - | - |\n| d | e | f |\n| g | h | i |';
+    const { requests } = markdownToDocsRequests(md, 1);
+
+    const cellInserts = requests.filter((r) => r.insertText);
+    const cellByText = (t: string) => cellInserts.find((r) => r.insertText!.text === t);
+
+    expect(cellByText('a')!.insertText!.location!.index).toBe(5);
+    expect(cellByText('b')!.insertText!.location!.index).toBe(7);
+    expect(cellByText('c')!.insertText!.location!.index).toBe(9);
+    expect(cellByText('d')!.insertText!.location!.index).toBe(12);
+    expect(cellByText('e')!.insertText!.location!.index).toBe(14);
+    expect(cellByText('f')!.insertText!.location!.index).toBe(16);
+    expect(cellByText('g')!.insertText!.location!.index).toBe(19);
+    expect(cellByText('h')!.insertText!.location!.index).toBe(21);
+    expect(cellByText('i')!.insertText!.location!.index).toBe(23);
+  });
+
   it('converts a markdown table to an insertTable request', () => {
     const md = '| Name | Value |\n| --- | --- |\n| foo | 42 |';
     const { requests } = markdownToDocsRequests(md);
@@ -1037,6 +1064,56 @@ describe('markdownToDocsRequests', () => {
     expect(driveApi.uploadTempImage).not.toHaveBeenCalled();
     expect(result.tempDriveFileIds).toEqual([]);
     expect(result.mermaidImages).toEqual([]);
+  });
+
+  it('async path is deterministic for a mermaid block (mocked renderer)', async () => {
+    // The mermaid path is the most likely source of non-determinism in the
+    // async pipeline because it involves hashing/uploading image bytes.
+    // Mock the renderer so we're testing pipeline determinism, not mermaid-cli.
+    const md =
+      '# T\n\n' +
+      '```mermaid\ngraph TD; A-->B\n```\n\n' +
+      'Text between.\n\n' +
+      '```mermaid\ngraph LR; X-->Y\n```\n';
+    const mermaidMod = await import('../../src/converter/mermaid-renderer.js');
+    let counter = 0;
+    const renderSpy = vi
+      .spyOn(mermaidMod, 'renderMermaidToPng')
+      .mockImplementation(async () => {
+        counter++;
+        // Return the SAME bytes regardless of call order so both runs agree.
+        return { png: Buffer.from([0x89, 0x50, 0x4e, 0x47]), width: 100, height: 50 };
+      });
+    let uploadCounter = 0;
+    const driveApi = {
+      uploadTempImage: vi.fn(async () => {
+        uploadCounter++;
+        return {
+          fileId: `FID_${uploadCounter}`,
+          downloadUrl: `https://drive.google.com/uc?id=FID_${uploadCounter}`,
+        };
+      }),
+    } as any;
+
+    try {
+      const a = await markdownToDocsRequestsAsync(md, 1, false, undefined, {
+        driveApi,
+        documentId: 'doc-1',
+      });
+      // Reset counters so run B uses the same starting IDs as run A did.
+      uploadCounter = 0;
+      counter = 0;
+      const b = await markdownToDocsRequestsAsync(md, 1, false, undefined, {
+        driveApi,
+        documentId: 'doc-1',
+      });
+      expect(a.text).toBe(b.text);
+      expect(a.requests).toEqual(b.requests);
+      expect(a.tempDriveFileIds).toEqual(b.tempDriveFileIds);
+      expect(a.mermaidImages).toEqual(b.mermaidImages);
+    } finally {
+      renderSpy.mockRestore();
+    }
   });
 
   it('async path passes the mermaid Drive fileId through so readback can disambiguate', async () => {

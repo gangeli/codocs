@@ -46,7 +46,7 @@ export function registerCommentCommand(program: Command) {
     );
 }
 
-function extractDocId(input: string): string {
+export function extractDocId(input: string): string {
   const match = input.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
   return match ? match[1] : input;
 }

@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { metaRestartShutdown, type MetaRestartShutdownCtx } from '../../src/commands/meta-restart.js';
+import {
+  buildRestartArgs,
+  extractDocId,
+  formatCommentEvent,
+  isAgentType,
+  fallbackDocName,
+} from '../../src/commands/serve.js';
+import type { CommentEvent } from '@codocs/core';
 
 /**
  * Build a minimal ctx suitable for exercising metaRestartShutdown. Records
@@ -121,5 +129,137 @@ describe('metaRestartShutdown', () => {
     expect(cancelIdleCalled()).toBe(true);
     expect(listenerClosed()).toBe(true);
     expect(dbClosed()).toBe(true);
+  });
+});
+
+describe('buildRestartArgs', () => {
+  it('appends --resume <sessionId> when no existing --resume is present', () => {
+    const out = buildRestartArgs(['--debug', '--meta'], 'sess-1');
+    expect(out).toEqual(['--debug', '--meta', '--resume', 'sess-1']);
+  });
+
+  it('strips an existing --resume <value> and replaces with the new one', () => {
+    const out = buildRestartArgs(['--resume', 'old-sess', '--debug'], 'sess-new');
+    expect(out).toEqual(['--debug', '--resume', 'sess-new']);
+  });
+
+  it('strips --resume=value form', () => {
+    const out = buildRestartArgs(['--resume=old', '--debug'], 'sess-new');
+    expect(out).toEqual(['--debug', '--resume', 'sess-new']);
+  });
+
+  it('handles --resume at the end with no following value', () => {
+    const out = buildRestartArgs(['--debug', '--resume'], 'sess-new');
+    expect(out).toEqual(['--debug', '--resume', 'sess-new']);
+  });
+
+  it('treats --resume immediately followed by another --flag as valueless', () => {
+    const out = buildRestartArgs(['--resume', '--meta'], 'sess-new');
+    // '--meta' starts with '--', so it's not the value of --resume; keep it.
+    expect(out).toEqual(['--meta', '--resume', 'sess-new']);
+  });
+
+  it('preserves non-resume args in order', () => {
+    const out = buildRestartArgs(
+      ['doc-abc', '--agent', 'claude', '--debug'],
+      'sess-new',
+    );
+    expect(out).toEqual(['doc-abc', '--agent', 'claude', '--debug', '--resume', 'sess-new']);
+  });
+});
+
+describe('extractDocId (serve)', () => {
+  it('returns input unchanged when not a URL', () => {
+    expect(extractDocId('raw-id-123')).toBe('raw-id-123');
+  });
+
+  it('extracts from a /document/d/<id>/edit URL', () => {
+    expect(
+      extractDocId('https://docs.google.com/document/d/abc_-123/edit'),
+    ).toBe('abc_-123');
+  });
+});
+
+describe('isAgentType', () => {
+  it('returns true for known agents', () => {
+    expect(isAgentType('claude')).toBe(true);
+    expect(isAgentType('codex')).toBe(true);
+    expect(isAgentType('cursor')).toBe(true);
+    expect(isAgentType('opencode')).toBe(true);
+  });
+
+  it('returns false for unknown values', () => {
+    expect(isAgentType('gpt-5')).toBe(false);
+    expect(isAgentType('')).toBe(false);
+  });
+});
+
+describe('fallbackDocName', () => {
+  it('returns "Codocs YYYY-MM-DD" using today', () => {
+    const name = fallbackDocName();
+    expect(name).toMatch(/^Codocs \d{4}-\d{2}-\d{2}$/);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(name).toBe(`Codocs ${today}`);
+  });
+});
+
+describe('formatCommentEvent', () => {
+  function makeEvent(overrides: Partial<CommentEvent['comment']> = {}): CommentEvent {
+    return {
+      eventType: 'google.workspace.drive.comment.v3.created',
+      documentId: 'doc-abc',
+      eventTime: '2026-04-09T12:34:56.000Z',
+      comment: {
+        id: 'c1',
+        author: 'Alice',
+        content: 'Hello world',
+        mentions: [],
+        ...overrides,
+      },
+    };
+  }
+
+  it('includes doc ID, author, and content', () => {
+    const out = formatCommentEvent(makeEvent());
+    expect(out).toContain('doc-abc');
+    expect(out).toContain('Author: Alice');
+    expect(out).toContain('Content: Hello world');
+  });
+
+  it('includes quotedText when present', () => {
+    const out = formatCommentEvent(makeEvent({ quotedText: 'snippet' }));
+    expect(out).toContain('On: "snippet"');
+  });
+
+  it('omits quotedText line when absent', () => {
+    const out = formatCommentEvent(makeEvent());
+    expect(out).not.toContain('On:');
+  });
+
+  it('includes mentions when present', () => {
+    const out = formatCommentEvent(
+      makeEvent({ mentions: ['alice@example.com', 'bob@example.com'] }),
+    );
+    expect(out).toContain('Mentions: alice@example.com, bob@example.com');
+  });
+
+  it('omits mentions when empty', () => {
+    const out = formatCommentEvent(makeEvent());
+    expect(out).not.toContain('Mentions:');
+  });
+
+  it('falls back to "Unknown" author when missing', () => {
+    const out = formatCommentEvent(makeEvent({ author: undefined }));
+    expect(out).toContain('Author: Unknown');
+  });
+
+  it('renders "unknown time" when eventTime is missing', () => {
+    const out = formatCommentEvent({
+      eventType: 't',
+      documentId: 'doc-x',
+      eventTime: '',
+      comment: { id: 'c', content: 'x', mentions: [], author: 'A' },
+    });
+    expect(out).toContain('unknown time');
   });
 });

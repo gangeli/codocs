@@ -133,7 +133,10 @@ describe('ChatTabStore', () => {
       store.create({ documentId: 'doc-2', tabId: 'tab-3', title: 'Other doc', agentName: 'a' });
 
       const tabs = store.getActiveByDocument('doc-1');
-      expect(tabs).toHaveLength(2);
+      expect(tabs.map((t) => t.tabId).sort()).toEqual(['tab-1', 'tab-2']);
+      for (const tab of tabs) {
+        expect(tab.documentId).toBe('doc-1');
+      }
     });
 
     it('excludes archived tabs', () => {
@@ -145,6 +148,20 @@ describe('ChatTabStore', () => {
       const tabs = store.getActiveByDocument('doc-1');
       expect(tabs).toHaveLength(1);
       expect(tabs[0].tabId).toBe('tab-2');
+    });
+
+    it('returns tabs newest-first (created_at DESC)', () => {
+      const olderId = store.create({
+        documentId: 'doc-1',
+        tabId: 'older',
+        title: 'Older',
+        agentName: 'a',
+      });
+      db.run("UPDATE chat_tabs SET created_at = '2020-01-01 00:00:00' WHERE id = ?", [olderId]);
+      store.create({ documentId: 'doc-1', tabId: 'newer', title: 'Newer', agentName: 'b' });
+
+      const tabs = store.getActiveByDocument('doc-1');
+      expect(tabs.map((t) => t.tabId)).toEqual(['newer', 'older']);
     });
   });
 

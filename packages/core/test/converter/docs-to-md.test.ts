@@ -138,7 +138,7 @@ describe('docsToMarkdown', () => {
     // the serialized output (matches fixture ordering).
     const firstPlanner = md.indexOf('<!-- agent:planner -->');
     const firstCoder = md.indexOf('<!-- agent:coder -->');
-    expect(firstPlanner).toBeGreaterThanOrEqual(0);
+    expect(firstPlanner).toBeGreaterThan(-1);
     expect(firstCoder).toBeGreaterThan(firstPlanner);
   });
 
@@ -414,6 +414,61 @@ describe('docsToMarkdown', () => {
     );
     const md = docsToMarkdown(doc);
     expect(md).toBe('```\nconst x = 1;\n```\n');
+  });
+
+  it('does NOT fence a paragraph with mixed monospace + normal runs', () => {
+    // [normal, monospace, normal] — isCodeBlockLine requires EVERY run with
+    // content to be monospace. Mixed runs should render inline.
+    const doc = {
+      documentId: 'test',
+      title: 'Test',
+      body: {
+        content: [
+          {
+            startIndex: 0,
+            endIndex: 1,
+            sectionBreak: { sectionStyle: { sectionType: 'CONTINUOUS' } },
+          },
+          {
+            startIndex: 1,
+            endIndex: 20,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 1,
+                  endIndex: 6,
+                  textRun: { content: 'Run ', textStyle: {} },
+                },
+                {
+                  startIndex: 6,
+                  endIndex: 13,
+                  textRun: {
+                    content: 'thisFn',
+                    textStyle: {
+                      weightedFontFamily: { fontFamily: 'Courier New' },
+                    },
+                  },
+                },
+                {
+                  startIndex: 13,
+                  endIndex: 20,
+                  textRun: { content: ' later.\n', textStyle: {} },
+                },
+              ],
+              paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            },
+          },
+        ],
+      },
+      namedRanges: {},
+      lists: {},
+      inlineObjects: {},
+    };
+    const md = docsToMarkdown(doc);
+    expect(md).not.toContain('```');
+    expect(md).toContain('Run ');
+    expect(md).toContain('thisFn');
+    expect(md).toContain(' later.');
   });
 
   it('does not fence a paragraph with only shading (no monospace font)', () => {

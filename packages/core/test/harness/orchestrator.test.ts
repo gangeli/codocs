@@ -390,6 +390,7 @@ describe('AgentOrchestrator E2E', () => {
     await orchestrator.handleComment(makeCommentEvent());
     await orchestrator.waitForIdle();
     const firstRunCall = callLog.find((c) => c.method === 'agentRun');
+    expect(firstRunCall).toBeDefined();
     expect(firstRunCall!.args[0]).toBe('new'); // new session
 
     callLog.length = 0;
@@ -398,6 +399,7 @@ describe('AgentOrchestrator E2E', () => {
     await orchestrator.handleComment(makeCommentEvent());
     await orchestrator.waitForIdle();
     const secondRunCall = callLog.find((c) => c.method === 'agentRun');
+    expect(secondRunCall).toBeDefined();
     expect(secondRunCall!.args[0]).toBe('resume'); // resumed session
   });
 
@@ -444,6 +446,7 @@ describe('AgentOrchestrator E2E', () => {
     await orchestrator.waitForIdle();
 
     const agentCall = callLog.find((c) => c.method === 'agentRun');
+    expect(agentCall).toBeDefined();
     expect(agentCall!.args[1]).toHaveProperty('model', 'haiku');
   });
 
@@ -465,6 +468,7 @@ describe('AgentOrchestrator E2E', () => {
     await orchestrator.waitForIdle();
 
     const agentCall = callLog.find((c) => c.method === 'agentRun');
+    expect(agentCall).toBeDefined();
     expect(agentCall!.args[1]).toHaveProperty('model', undefined);
   });
 

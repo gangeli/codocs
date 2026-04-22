@@ -43,14 +43,6 @@ describe('extractSubscriptionFromResponse', () => {
     ).toThrow('Invalid subscription name');
   });
 
-  it('accepts a name of "operations" with no trailing slash (startsWith is strict)', () => {
-    const result = extractSubscriptionFromResponse({ name: 'operations' });
-    expect(result.name).toBe('operations');
-    expect(result.targetResource).toBe('');
-    expect(result.eventTypes).toEqual([]);
-    expect(result.expireTime).toBe('');
-  });
-
   it('throws for missing name', () => {
     expect(() => extractSubscriptionFromResponse({})).toThrow(
       'Invalid subscription name',
@@ -199,6 +191,35 @@ describe('ensureSubscription', () => {
 
     expect(mockSubscriptionsDelete).not.toHaveBeenCalled();
     expect(mockSubscriptionsCreate).toHaveBeenCalledTimes(1);
+    expect(mockSubscriptionsCreate).toHaveBeenCalledWith({
+      requestBody: {
+        targetResource: `//drive.googleapis.com/files/${docId}`,
+        eventTypes: requiredEventTypes,
+        notificationEndpoint: { pubsubTopic },
+        payloadOptions: { includeResource: true },
+      },
+    });
     expect(result.name).toBe('subscriptions/brand-new');
+  });
+
+  it('filters the list by targetResource for this doc', async () => {
+    mockSubscriptionsList.mockResolvedValue({ data: { subscriptions: [] } });
+    mockSubscriptionsCreate.mockResolvedValue({
+      data: {
+        done: true,
+        response: {
+          name: 'subscriptions/x',
+          targetResource: `//drive.googleapis.com/files/${docId}`,
+          eventTypes: requiredEventTypes,
+          expireTime: new Date(Date.now() + 86400_000).toISOString(),
+        },
+      },
+    });
+
+    await ensureSubscription(auth, docId, pubsubTopic);
+
+    expect(mockSubscriptionsList).toHaveBeenCalledWith({
+      filter: `target_resource="//drive.googleapis.com/files/${docId}"`,
+    });
   });
 });

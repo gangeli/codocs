@@ -1,10 +1,54 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { Message } from '@google-cloud/pubsub';
+
+// Capture the most recent fake subscription so tests can drive messages/errors.
+let currentSubscription: FakeSubscription | null = null;
+
+class FakeSubscription extends EventEmitter {
+  subName: string;
+  closed = false;
+  constructor(name: string) {
+    super();
+    this.subName = name;
+    currentSubscription = this;
+  }
+  async close() {
+    this.closed = true;
+  }
+}
+
+const pubsubCtorSpy = vi.fn();
+
+vi.mock('@google-cloud/pubsub', () => ({
+  PubSub: class {
+    constructor(opts: any) {
+      pubsubCtorSpy(opts);
+    }
+    subscription(name: string) {
+      return new FakeSubscription(name);
+    }
+  },
+}));
+
+const getCommentMock = vi.fn();
+vi.mock('../../src/client/drive-api.js', () => ({
+  DriveApi: class {
+    getComment = getCommentMock;
+  },
+}));
+vi.mock('../../src/auth/index.js', () => ({
+  createAuth: () => ({}),
+}));
+
 import {
   extractMentions,
   extractDocumentId,
   parseEventStub,
+  listenForComments,
+  type PubSubAuth,
 } from '../../src/events/listener.js';
+import type { CommentEvent } from '../../src/types.js';
 
 function makeMessage(
   attributes: Record<string, string>,
@@ -197,5 +241,260 @@ describe('parseEventStub', () => {
     const result = parseEventStub(msg);
     expect(result).not.toBeNull();
     expect(result!.documentId).toBe('doc456');
+  });
+});
+
+describe('listenForComments', () => {
+  const auth: PubSubAuth = {
+    clientId: 'client-id-abc',
+    clientSecret: 'secret',
+    refreshToken: 'refresh',
+  };
+
+  beforeEach(() => {
+    pubsubCtorSpy.mockReset();
+    getCommentMock.mockReset();
+    currentSubscription = null;
+  });
+
+  function makePubsubMessage(opts: {
+    attributes: Record<string, string>;
+    data?: Buffer | Record<string, any>;
+  }): Message & { ackCount: number } {
+    const data = Buffer.isBuffer(opts.data)
+      ? opts.data
+      : Buffer.from(JSON.stringify(opts.data ?? {}));
+    const msg: any = {
+      id: 'msg-1',
+      publishTime: { toISOString: () => '2026-04-09T00:00:00.000Z' },
+      attributes: opts.attributes,
+      data,
+      ackCount: 0,
+      ack() {
+        this.ackCount++;
+      },
+    };
+    return msg;
+  }
+
+  it('resolves full subscription name when a bare name is given', () => {
+    const handle = listenForComments('proj-1', 'my-sub', auth, () => {});
+    expect(currentSubscription!.subName).toBe('projects/proj-1/subscriptions/my-sub');
+    handle.close();
+  });
+
+  it('passes a fully-qualified subscription name through unchanged', () => {
+    const handle = listenForComments(
+      'proj-1',
+      'projects/other/subscriptions/full-sub',
+      auth,
+      () => {},
+    );
+    expect(currentSubscription!.subName).toBe('projects/other/subscriptions/full-sub');
+    handle.close();
+  });
+
+  it('invokes onComment for a human-authored comment and acks the message', async () => {
+    const events: CommentEvent[] = [];
+    getCommentMock.mockResolvedValue({
+      id: 'c1',
+      content: 'Please review',
+      author: { displayName: 'Alice', emailAddress: 'alice@example.com' },
+      createdTime: '2026-04-09T00:00:00.000Z',
+      quotedFileContent: { value: 'quoted snippet' },
+      replies: [],
+    });
+
+    const handle = listenForComments(
+      'proj-1',
+      'sub-1',
+      auth,
+      (e) => events.push(e),
+      undefined,
+      { botEmails: ['bot@example.com'] },
+    );
+    const msg = makePubsubMessage({
+      attributes: {
+        'ce-type': 'google.workspace.drive.comment.v3.created',
+        'ce-time': '2026-04-09T00:00:00.000Z',
+        'ce-subject': 'googleapis.com/drive/v3/files/doc-1',
+      },
+      data: { comment: { id: 'c1' } },
+    });
+    currentSubscription!.emit('message', msg);
+    // handler is async — wait for microtasks + the getComment promise.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(getCommentMock).toHaveBeenCalledWith('doc-1', 'c1');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      eventType: 'google.workspace.drive.comment.v3.created',
+      documentId: 'doc-1',
+      comment: {
+        id: 'c1',
+        content: 'Please review',
+        author: 'Alice',
+        quotedText: 'quoted snippet',
+        createdTime: '2026-04-09T00:00:00.000Z',
+        mentions: [],
+      },
+      eventTime: '2026-04-09T00:00:00.000Z',
+      thread: undefined,
+    });
+    expect((msg as any).ackCount).toBe(1);
+    handle.close();
+  });
+
+  it('skips bot-authored comments but still acks', async () => {
+    const events: CommentEvent[] = [];
+    getCommentMock.mockResolvedValue({
+      id: 'c2',
+      content: '🤔',
+      author: { displayName: 'Bot', emailAddress: 'bot@example.com' },
+      replies: [],
+    });
+
+    const handle = listenForComments(
+      'proj-1',
+      'sub-1',
+      auth,
+      (e) => events.push(e),
+      undefined,
+      { botEmails: ['bot@example.com'] },
+    );
+    const msg = makePubsubMessage({
+      attributes: {
+        'ce-type': 'google.workspace.drive.comment.v3.created',
+        'ce-subject': 'googleapis.com/drive/v3/files/doc-1',
+      },
+      data: { comment: { id: 'c2' } },
+    });
+    currentSubscription!.emit('message', msg);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(events).toHaveLength(0);
+    expect((msg as any).ackCount).toBe(1);
+    handle.close();
+  });
+
+  it('ignores non-comment events and acks', async () => {
+    const events: CommentEvent[] = [];
+    const handle = listenForComments(
+      'proj-1',
+      'sub-1',
+      auth,
+      (e) => events.push(e),
+    );
+    const msg = makePubsubMessage({
+      attributes: { 'ce-type': 'google.workspace.drive.file.v3.updated' },
+    });
+    currentSubscription!.emit('message', msg);
+    await new Promise((r) => setImmediate(r));
+
+    expect(events).toHaveLength(0);
+    expect(getCommentMock).not.toHaveBeenCalled();
+    expect((msg as any).ackCount).toBe(1);
+    handle.close();
+  });
+
+  it('falls back to a stub CommentEvent when Drive getComment fails', async () => {
+    const events: CommentEvent[] = [];
+    getCommentMock.mockRejectedValue(new Error('boom'));
+
+    const handle = listenForComments(
+      'proj-1',
+      'sub-1',
+      auth,
+      (e) => events.push(e),
+    );
+    const msg = makePubsubMessage({
+      attributes: {
+        'ce-type': 'google.workspace.drive.comment.v3.created',
+        'ce-subject': 'googleapis.com/drive/v3/files/doc-f',
+      },
+      data: { comment: { id: 'cf' } },
+    });
+    currentSubscription!.emit('message', msg);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(events).toHaveLength(1);
+    expect(events[0].documentId).toBe('doc-f');
+    expect(events[0].comment.id).toBe('cf');
+    expect(events[0].comment.content).toBeUndefined();
+    expect((msg as any).ackCount).toBe(1);
+    handle.close();
+  });
+
+  it('forwards subscription errors to onError', () => {
+    const errs: Error[] = [];
+    const handle = listenForComments(
+      'proj-1',
+      'sub-1',
+      auth,
+      () => {},
+      (e) => errs.push(e),
+    );
+    const err = new Error('subscription failed');
+    currentSubscription!.emit('error', err);
+    expect(errs).toEqual([err]);
+    handle.close();
+  });
+
+  it('close() removes listeners and closes the subscription', async () => {
+    const handle = listenForComments('proj-1', 'sub-1', auth, () => {});
+    const sub = currentSubscription!;
+    expect(sub.listenerCount('message')).toBe(1);
+    expect(sub.listenerCount('error')).toBe(1);
+
+    await handle.close();
+
+    expect(sub.listenerCount('message')).toBe(0);
+    expect(sub.listenerCount('error')).toBe(0);
+    expect(sub.closed).toBe(true);
+  });
+
+  it('treats tracked own-reply IDs as bot and suppresses the event', async () => {
+    const events: CommentEvent[] = [];
+    // Comment whose last reply has id 'reply-self-1' — the tracker says
+    // it's one of ours, so the classifier should mark as bot.
+    getCommentMock.mockResolvedValue({
+      id: 'c3',
+      content: 'Hello',
+      author: { displayName: 'Gabor', emailAddress: 'user@example.com' },
+      replies: [
+        {
+          id: 'reply-self-1',
+          content: '🤔',
+          author: { displayName: 'Gabor', emailAddress: 'user@example.com' },
+        },
+      ],
+    });
+
+    const tracker = { has: (id: string) => id === 'reply-self-1' };
+    const handle = listenForComments(
+      'proj-1',
+      'sub-1',
+      auth,
+      (e) => events.push(e),
+      undefined,
+      { replyTracker: tracker },
+    );
+    const msg = makePubsubMessage({
+      attributes: {
+        'ce-type': 'google.workspace.drive.reply.v3.created',
+        'ce-subject': 'googleapis.com/drive/v3/files/doc-r',
+      },
+      data: { comment: { id: 'c3' } },
+    });
+    currentSubscription!.emit('message', msg);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(events).toHaveLength(0);
+    expect((msg as any).ackCount).toBe(1);
+    handle.close();
   });
 });

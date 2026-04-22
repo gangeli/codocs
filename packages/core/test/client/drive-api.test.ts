@@ -41,20 +41,27 @@ function createDriveApi(stubs: Record<string, any>): DriveApi {
 describe('DriveApi.removePermission', () => {
   it('finds and deletes the matching permission', async () => {
     const deleteFn = vi.fn(async () => {});
+    const listFn = vi.fn(async () => ({
+      data: {
+        permissions: [
+          { id: 'perm-1', emailAddress: 'other@example.com' },
+          { id: 'perm-2', emailAddress: 'bot@project.iam.gserviceaccount.com' },
+        ],
+      },
+    }));
     const api = createDriveApi({
-      permissionsList: vi.fn(async () => ({
-        data: {
-          permissions: [
-            { id: 'perm-1', emailAddress: 'other@example.com' },
-            { id: 'perm-2', emailAddress: 'bot@project.iam.gserviceaccount.com' },
-          ],
-        },
-      })),
+      permissionsList: listFn,
       permissionsDelete: deleteFn,
     });
 
     await api.removePermission('doc-1', 'bot@project.iam.gserviceaccount.com');
 
+    expect(listFn).toHaveBeenCalledTimes(1);
+    expect(listFn).toHaveBeenCalledWith({
+      fileId: 'doc-1',
+      fields: 'permissions(id,emailAddress)',
+    });
+    expect(deleteFn).toHaveBeenCalledTimes(1);
     expect(deleteFn).toHaveBeenCalledWith({
       fileId: 'doc-1',
       permissionId: 'perm-2',
@@ -188,6 +195,7 @@ describe('DriveApi.resolveComment', () => {
     expect(arg.fileId).toBe('file-1');
     expect(arg.commentId).toBe('comment-1');
     expect(arg.requestBody.action).toBe('resolve');
+    expect(arg.requestBody.content).toBe('Resolved');
   });
 });
 
@@ -280,6 +288,7 @@ describe('DriveApi.listComments', () => {
     const api = createDriveApi({ commentsList });
 
     expect(await api.listComments('file-1')).toEqual([]);
+    expect(commentsList).toHaveBeenCalledTimes(1);
   });
 });
 

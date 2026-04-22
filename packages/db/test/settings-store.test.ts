@@ -63,6 +63,25 @@ describe('SettingsStore', () => {
     expect(loaded.defaultModel).toEqual({ claude: 'opus' });
   });
 
+  it('saveAll accumulates keys across calls (merge, not replace)', () => {
+    store.saveAll('/test', { alpha: 1 });
+    store.saveAll('/test', { beta: 2 });
+
+    expect(store.getAll('/test')).toEqual({
+      alpha: JSON.stringify(1),
+      beta: JSON.stringify(2),
+    });
+  });
+
+  it('loadAll filters accumulated keys to those present in defaults', () => {
+    store.saveAll('/test', { alpha: 1 });
+    store.saveAll('/test', { beta: 2 });
+
+    const defaults = { alpha: 0 };
+    const loaded = store.loadAll('/test', defaults);
+    expect(loaded).toEqual({ alpha: 1 });
+  });
+
   describe('direct get/set/getAll', () => {
     it('set writes a raw value readable by get', () => {
       store.set('/a', 'theme', '"dark"');

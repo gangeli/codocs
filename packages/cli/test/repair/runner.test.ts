@@ -111,6 +111,50 @@ describe('repair/runner', () => {
     ]);
   });
 
+  it('runChecks returns issues from a reporting check and applyFix then runs their apply()', async () => {
+    const ctx = makeCtx(db);
+    let applyCalled = 0;
+    let applyReceivedIssue: Issue | undefined;
+    const fix: Fix = {
+      id: 'mock-fix',
+      label: 'mock',
+      description: 'd',
+      destructive: false,
+      async apply(_ctx, issue) {
+        applyCalled++;
+        applyReceivedIssue = issue;
+        return { ok: true, message: 'applied' };
+      },
+    };
+    const reporting: Check = {
+      id: 'mock-check',
+      description: 'x',
+      scope: 'both',
+      async run() {
+        return [
+          {
+            code: 'mock-issue',
+            severity: 'error',
+            title: 'broken',
+            detail: 'detail',
+            fixes: [fix],
+          },
+        ];
+      },
+    };
+
+    const issues = await runChecks([reporting], ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('mock-issue');
+    expect(issues[0].fixes).toEqual([fix]);
+    expect(applyCalled).toBe(0);
+
+    const result = await applyFix(fix, ctx, issues[0]);
+    expect(result).toEqual({ ok: true, message: 'applied' });
+    expect(applyCalled).toBe(1);
+    expect(applyReceivedIssue).toBe(issues[0]);
+  });
+
   it('converts check throws into internal-check-failed issues', async () => {
     const ctx = makeCtx(db);
     const throwing: Check = {

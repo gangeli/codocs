@@ -41,6 +41,23 @@ describe('SessionStore', () => {
     expect(result!.sessionId).toBe('session-new');
   });
 
+  it('preserves created_at across upserts', () => {
+    store.upsertSession('coder', 'doc-123', 'session-old');
+    db.run(
+      `UPDATE agent_sessions SET created_at = '2020-01-01 00:00:00'
+       WHERE agent_name = ? AND document_id = ?`,
+      ['coder', 'doc-123'],
+    );
+    const before = store.getSession('coder', 'doc-123')!;
+    expect(before.createdAt).toBe('2020-01-01 00:00:00');
+
+    store.upsertSession('coder', 'doc-123', 'session-new');
+    const after = store.getSession('coder', 'doc-123')!;
+
+    expect(after.createdAt).toBe(before.createdAt);
+    expect(after.sessionId).toBe('session-new');
+  });
+
   it('maintains separate sessions per agent per document', () => {
     store.upsertSession('coder', 'doc-1', 'session-1');
     store.upsertSession('reviewer', 'doc-1', 'session-2');

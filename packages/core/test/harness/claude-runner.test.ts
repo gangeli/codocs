@@ -75,6 +75,7 @@ describe('ClaudeRunner', () => {
     const spawnCall = (child_process.spawn as any).mock.calls[0];
     const args: string[] = spawnCall[1];
     const modelIdx = args.indexOf('--model');
+    expect(modelIdx).toBeGreaterThan(-1);
     expect(args[modelIdx + 1]).toBe('claude-sonnet-4-6');
   });
 

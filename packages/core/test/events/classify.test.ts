@@ -26,7 +26,7 @@ describe('classifyComment', () => {
       makeComment({ author: { displayName: 'Codocs Bot', emailAddress: BOT_EMAILS[0] } }),
       { botEmails: BOT_EMAILS },
     );
-    expect(result.type).toBe('bot');
+    expect(result).toEqual({ type: 'bot', author: 'Codocs Bot' });
   });
 
   it('classifies based on the last non-action reply, not the root comment', () => {
@@ -62,6 +62,23 @@ describe('classifyComment', () => {
     const result = classifyComment(comment, { botEmails: BOT_EMAILS });
     expect(result.type).toBe('bot');
   });
+
+  it.each(['resolve', 'reopen', 'deleted'])(
+    'skips an %s action reply sandwiched before a non-action reply',
+    (action) => {
+      // [Bot non-action, Human action, Human non-action]
+      // Filter must skip r2 and pick r3 — not simply take "last reply".
+      const comment = makeComment({
+        replies: [
+          { id: 'r1', content: 'Done', author: { displayName: 'Bot', emailAddress: BOT_EMAILS[0] } },
+          { id: 'r2', content: '', action, author: { displayName: 'Human', emailAddress: 'human@example.com' } },
+          { id: 'r3', content: 'Actually, change it', author: { displayName: 'Human', emailAddress: 'human@example.com' } },
+        ],
+      });
+      const result = classifyComment(comment, { botEmails: BOT_EMAILS });
+      expect(result).toEqual({ type: 'human', author: 'Human' });
+    },
+  );
 
   it('returns human when email is missing but displayName is present', () => {
     const comment = makeComment({ author: { displayName: 'Anonymous' } });

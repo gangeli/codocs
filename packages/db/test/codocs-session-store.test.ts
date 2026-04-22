@@ -40,8 +40,14 @@ describe('CodocsSessionStore', () => {
       const s = store.upsert('/a', ['old-id'], 'claude');
       store.setDocIds(s.id, ['new-id-1', 'new-id-2']);
       const after = store.get(s.id);
-      // upsert + setDocIds both sort JSON arrays
-      expect(after!.docIds.sort()).toEqual(['new-id-1', 'new-id-2']);
+      expect(after!.docIds).toEqual(['new-id-1', 'new-id-2']);
+    });
+
+    it('stores doc IDs in sorted order (reorder hook)', () => {
+      const s = store.upsert('/a', ['old-id'], 'claude');
+      store.setDocIds(s.id, ['zebra', 'apple', 'mango']);
+      const after = store.get(s.id);
+      expect(after!.docIds).toEqual(['apple', 'mango', 'zebra']);
     });
   });
 
@@ -140,7 +146,7 @@ describe('CodocsSessionStore', () => {
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(created.id);
       expect(fetched!.directory).toBe('/a');
-      expect(fetched!.docIds.sort()).toEqual(['d1', 'd2']);
+      expect(fetched!.docIds).toEqual(['d1', 'd2']);
       expect(fetched!.docTitle).toBe('Title');
       expect(fetched!.agentType).toBe('claude');
       expect(typeof fetched!.createdAt).toBe('string');

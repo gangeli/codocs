@@ -88,6 +88,33 @@ describe('repair/checks', () => {
       expect(issues[0].context).toMatchObject({ missing: ['gcp_project_id', 'pubsub_topic'] });
     });
 
+    it('reports only gcp_project_id when pubsub_topic is set but gcp_project_id is missing', async () => {
+      const ctx = makeCtx(db, {
+        config: { client_id: 'x', client_secret: 'x', pubsub_topic: 't' } as any,
+      });
+      const issues = await configHasGcp.run(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].context).toEqual({ missing: ['gcp_project_id'] });
+    });
+
+    it('reports only pubsub_topic when gcp_project_id is set but pubsub_topic is missing', async () => {
+      const ctx = makeCtx(db, {
+        config: { client_id: 'x', client_secret: 'x', gcp_project_id: 'p' } as any,
+      });
+      const issues = await configHasGcp.run(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].context).toEqual({ missing: ['pubsub_topic'] });
+    });
+
+    it('treats empty-string values as missing', async () => {
+      const ctx = makeCtx(db, {
+        config: { client_id: 'x', client_secret: 'x', gcp_project_id: '', pubsub_topic: '' },
+      });
+      const issues = await configHasGcp.run(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].context).toEqual({ missing: ['gcp_project_id', 'pubsub_topic'] });
+    });
+
     it('passes when everything is set', async () => {
       const ctx = makeCtx(db);
       expect(await configHasGcp.run(ctx)).toEqual([]);

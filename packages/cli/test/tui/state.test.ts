@@ -9,7 +9,7 @@ import {
 describe('createInitialState', () => {
   it('matches the full default shape (autoModeAvailable=false, githubConnected=false)', () => {
     const state = createInitialState('doc-123');
-    expect(state).toMatchObject({
+    expect(state).toEqual({
       docUrl: 'https://docs.google.com/document/d/doc-123/edit',
       docTitle: 'doc-123...',
       connected: false,
@@ -20,6 +20,7 @@ describe('createInitialState', () => {
         commentCount: 0,
         totalCost: 0,
         budget: 1.0,
+        startTime: expect.any(Date),
       },
       settings: {
         maxAgents: 3,
@@ -39,9 +40,8 @@ describe('createInitialState', () => {
       agentType: 'claude',
       autoModeAvailable: false,
       githubConnected: false,
+      runnerCapabilities: undefined,
     });
-    expect(state.stats.startTime).toBeInstanceOf(Date);
-    expect(state.runnerCapabilities).toBeUndefined();
   });
 
   it('uses auto permission mode when autoModeAvailable=true', () => {
