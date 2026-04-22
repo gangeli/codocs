@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": "..",
+    "paths": {
+      "@codocs/core": ["packages/core/src/index.ts"],
+      "@codocs/db": ["packages/db/src/index.ts"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

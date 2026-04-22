@@ -7,9 +7,13 @@
     "build": "npm run build --workspaces",
     "build:binary": "bun build packages/cli/src/index.ts --compile --outfile dist/codocs",
     "test": "npm run test --workspaces",
-    "typecheck": "npm run typecheck --workspaces"
+    "typecheck": "npm run typecheck --workspaces",
+    "eval": "tsx evals/harness/run.ts",
+    "eval:judge": "tsx evals/judge-calibration/run.ts"
   },
   "devDependencies": {
-    "react-devtools-core": "^7.0.1"
+    "@anthropic-ai/sdk": "^0.90.0",
+    "react-devtools-core": "^7.0.1",
+    "tsx": "^4.0.0"
   }
 }

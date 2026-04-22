@@ -1,0 +1,7 @@
+{
+  "name": "cb-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": { "cb-cli": "./src/cli.mjs" }
+}

@@ -2,7 +2,13 @@
 # script drops a binary at ~/.bun/bin) are visible to recipes.
 export PATH := $(HOME)/.bun/bin:$(PATH)
 
-.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/rendering e2e/roundtrip e2e/agents e2e/comments deps
+# Source .env (gitignored) into recipes via the shell so we don't have
+# to constrain its format to make's stricter `include` syntax. Use this
+# prefix in any recipe that needs API keys etc.; bash will parse quotes,
+# exports, comments, the works.
+LOAD_ENV := set -a; [ -f .env ] && . ./.env; set +a;
+
+.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/rendering e2e/roundtrip e2e/agents e2e/comments eval eval/judge deps
 
 all: codocs
 
@@ -84,6 +90,19 @@ e2e/agents: build
 
 e2e/comments: build
 	npx tsx scripts/e2e-comments.ts
+
+# Run the end-to-end eval suite. Pass FILTER=<substring> to run a subset,
+# CONCURRENCY=<n> to cap parallel cases (default 2 because each case spawns
+# a real Claude agent). Results print a per-category breakdown; detailed
+# per-case artifacts land in evals/runs/<timestamp>/.
+eval: build
+	@$(LOAD_ENV) npx tsx evals/harness/run.ts $(if $(FILTER),--filter=$(FILTER),) $(if $(CONCURRENCY),--concurrency=$(CONCURRENCY),)
+
+# Calibrate the judge prompt against a fixed set of (rubric, response,
+# expected-verdict) fixtures. Does NOT spawn Claude agents — only the
+# judge model. Fast feedback loop when iterating on the judge prompt.
+eval/judge: deps
+	@$(LOAD_ENV) npx tsx evals/judge-calibration/run.ts $(if $(FILTER),--filter=$(FILTER),) $(if $(SAMPLES),--samples=$(SAMPLES),)
 
 clean:
 	rm -rf packages/core/dist packages/db/dist packages/cli/dist dist codocs
