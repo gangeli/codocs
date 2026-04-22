@@ -224,6 +224,13 @@ export async function runCase(tc: EvalCase, opts: RunCaseOptions = {}): Promise<
       await orchestrator.waitForIdle();
     }
 
+    // Snapshot the doc state the main turn starts from. For plain cases
+    // this equals initialMarkdown; for follow-ups it reflects the
+    // predecessor's effect, which is what checks and the judge should
+    // compare against.
+    const preMainDoc = docsClient.markdown;
+    const preMainBatchUpdateCount = docsClient.batchUpdateCalls.length;
+
     // Main comment event.
     const commentId = tc.comment.threadId ?? `${tc.id}-main`;
     await orchestrator.handleComment(
@@ -233,9 +240,9 @@ export async function runCase(tc: EvalCase, opts: RunCaseOptions = {}): Promise<
 
     const ctx: RunContext = {
       finalDoc: docsClient.markdown,
-      baselineDoc: initialMarkdown,
+      baselineDoc: preMainDoc,
       reply: getLastReplyForComment(docsClient, commentId),
-      batchUpdateCount: docsClient.batchUpdateCalls.length,
+      batchUpdateCount: docsClient.batchUpdateCalls.length - preMainBatchUpdateCount,
       worktreePath: pickWorktree(runner.workingDirectories, tc.comment.threadId != null),
       repoRoot,
       originPath,

@@ -41,77 +41,59 @@ function formatThread(thread: ThreadMessage[]): string {
 }
 
 export function buildPrompt(ctx: PromptContext): string {
+  const isFollowup = !!(ctx.thread && ctx.thread.length > 1) || !!ctx.existingPR;
+
   const threadSection = ctx.thread && ctx.thread.length > 1
-    ? `This is a reply in an ongoing conversation. Full thread:\n\n${formatThread(ctx.thread)}\n\nThe latest message (respond to this):\n> ${ctx.commentText}`
-    : `A user left this comment on the document:\n> ${ctx.commentText}`;
+    ? `This is a reply in an ongoing thread. Full history:\n\n${formatThread(ctx.thread)}\n\nLatest message (respond to this):\n> ${ctx.commentText}`
+    : `A user left this comment on the doc:\n> ${ctx.commentText}`;
 
   const quoteSection = ctx.quotedText
-    ? `\n\nThe comment was placed on this highlighted text:\n> ${ctx.quotedText}`
+    ? `\n\nHighlighted text the comment is anchored to:\n> ${ctx.quotedText}`
     : '';
 
   const prSection = ctx.existingPR
-    ? `\n\nThis thread already has a draft PR open: #${ctx.existingPR.number} (${ctx.existingPR.url}). Previous changes are on the branch; build on top of them.`
+    ? `\n\nThis thread already has draft PR #${ctx.existingPR.number} (${ctx.existingPR.url}) — build on top of the branch.`
     : '';
 
-  const codeSection = ctx.codeEnabled
-    ? `
-### When the comment asks the software to behave differently
+  const codeLine = ctx.codeEnabled
+    ? `- **Code change** — any request for different software behavior (bug fix, feature, refactor), regardless of phrasing ("fix file X" or "when the build fails, show a banner"): edit source files in the working directory. Do NOT commit, push, or delete files — the system opens a draft PR afterward.`
+    : `- **Code change** — code edits are disabled this run. Reply explaining what would need to change; don't edit source files.`;
 
-Modify source files in the working directory. This covers bug fixes, new features, behavior changes, refactors, and new components — regardless of whether the user phrased the request in implementation terms ("modify file X") or product terms ("when the build fails, show a banner"). If the request would require new code to produce the information or behavior it describes, it's a code change. The system will commit, push, and open a draft PR after you finish.
+  const followupLine = isFollowup
+    ? `\n- **Thread reply** — this is a follow-up. Re-read the files before editing; your prior context is stale and the doc/code already reflect earlier turns. If the request is to revert, tighten, or rename something from a prior turn, locate and actually edit the current content on disk.`
+    : '';
 
-Do NOT create commits yourself. Do NOT push. Do NOT delete or move files outside what the comment asks for.
-`
-    : `
-### Code changes are disabled for this run
-
-You cannot modify source files. If the comment asks for software behavior changes, reply explaining that code modifications are not enabled and describe what would need to change.
-`;
-
-  return `You are agent "${ctx.agentName}" responding to a comment on a shared Google Doc. The doc is the project's design doc — a high-level description of the software that collaborators critique and evolve through comments.
+  return `You are agent "${ctx.agentName}", replying to a comment on a shared design doc in Google Docs. The doc describes the software; collaborators critique and evolve it via comments.
 
 ${threadSection}${quoteSection}${prSection}
 
-Your working directory is: ${ctx.workingDirectory}
+Working directory: ${ctx.workingDirectory}
+Design doc file: ${ctx.designDocPath}
 
-The current state of the design doc is in this markdown file: ${ctx.designDocPath}
-${codeSection}
-## How to respond
+## What to do
 
-The comment might ask for a documentation change, a software change, both, or neither. Do whatever the comment actually calls for — you don't need to announce which kind it is. The system detects what you did from what changed on disk.
+Just do what the comment calls for — don't classify out loud. The system detects outcomes from disk side effects.
 
-### When the comment is about the document's content
+- **Doc edit** — reword, restructure, or correct descriptions of *existing* behavior: use Edit/Write on ${ctx.designDocPath}. Reading alone isn't a change.
+${codeLine}
+- **Both**: do both in the same run.${ctx.codeEnabled ? '' : ' (Code is disabled.)'}
+- **Question or discussion**: answer in the text output and change nothing on disk — no doc edit, no code edit, not even opportunistic fixes of unrelated bugs you notice while reading. A question ("is X safe?", "how does Y work?", "which of these are implemented?") calls for an answer, not action. Reading and investigating files to find the answer is fine; the reply is the deliverable — don't also record your findings into the doc or codebase unless the comment asked for that.
+- **Open-ended brainstorm** ("let's discuss…"): write \`{"title": "<~40 chars>"}\` to ${ctx.chatMarkerPath} and stop. Don't also edit.${followupLine}
 
-Edit ${ctx.designDocPath} directly with the Edit or Write tool. This covers rewording, restructuring, fixing inaccuracies about *existing* behavior, or trimming stale content. Reading the file and describing the change is not enough — actually write the change. Changes to this file will be merged back into the Google Doc.
+Prose describing behavior does not build the behavior. If a doc update would describe something the code doesn't yet do, that's a code change (do the code, or reply that code changes aren't enabled).
 
-Do NOT use doc edits to describe features or behaviors that don't yet exist in the code. If the comment asks for the doc to describe new behavior, that behavior needs to be built first (a code change), and the doc update should reflect what the code does after the change.
-${ctx.codeEnabled ? `
-### When the comment asks for both
+## Before you edit
 
-Do both in this run. Modify source files AND update ${ctx.designDocPath} to reflect the new behavior. The PR and the doc update happen together.
-` : ''}
-### When the comment is just a question or discussion
+- **Verify the anchor.** If the highlighted/quoted text is not present in the current doc, say so in the reply and make no edit. Don't invent a section to expand.
+- **Narrow the interpretation.** For a vague request ("make it better") with no clear target, either ask one concrete clarifying question OR make a single narrow change and name it in one sentence. Never ship a sweeping rewrite.
 
-Answer in your text output and change nothing on disk.
+## Don't silently comply with risky requests
 
-### When the comment opens a genuinely multi-turn discussion
+Push back in the reply — and don't produce the change — when the ask is to delete or truncate production data, remove or bypass a security/auth check, or embed secrets/credentials in source. Offer a safer alternative (migration with backup, dry-run, env-gated test bypass, secrets via env vars) and wait for confirmation.
 
-If the comment is clearly a "let's discuss…", brainstorming, or open-ended design exploration — with no concrete change being requested — escalate to a chat tab by writing a JSON file to ${ctx.chatMarkerPath} with this exact shape:
+## Reply
 
-\`\`\`json
-{"title": "<short topic, ~40 chars>"}
-\`\`\`
-
-Then stop. Don't also edit the doc or change code in the same run.
-
-## Watch out for
-
-A comment phrased like "add a section about X to the doc" is a code change when X is information the software doesn't currently produce (e.g., "note build failures at the top of the doc" — that's a feature, not a doc edit). Adding a paragraph that describes a feature does not build the feature.
-
-## Reply format
-
-Write a brief summary of what you did as your text output. It will be posted as a reply on the Google Doc comment. Keep it concise and avoid formatting that renders poorly in a plain comment (tables, large code blocks). Don't narrate that you're replying to a comment or editing the doc — the viewer sees both the comment and the resulting changes.
-
-For architecture diagrams, data flows, or relationships inside the design doc, use mermaid fenced blocks (\`\`\`mermaid). They render as images in the Google Doc. Prefer mermaid over ASCII art.
+Plain-text summary of what you did, posted as the Google Doc reply. Keep it short. Cover every surface you touched, and note when one was intentionally left alone (e.g., "doc unchanged"). Avoid tables and large code blocks. For diagrams inside the doc itself, use \`\`\`mermaid fences.
 `;
 }
 

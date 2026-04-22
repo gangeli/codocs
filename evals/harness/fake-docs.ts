@@ -76,8 +76,12 @@ export class FakeDocsClient {
 
   async batchUpdate(docId: string, requests: unknown[]): Promise<void> {
     this.batchUpdateCalls.push({ docId, requests });
-    const next = this.runner?.designDocQueue.shift();
-    if (next != null) this.markdown = next;
+    // Use the latest design-doc snapshot the agent produced. A queue
+    // would drift out of alignment whenever a turn invokes the agent
+    // more than once (session-resume retry, conflict resolution) — each
+    // extra run pushes a snapshot but does not add a batchUpdate call.
+    const latest = this.runner?.lastDesignDocMarkdown;
+    if (latest != null) this.markdown = latest;
   }
 
   async replyToComment(_docId: string, commentId: string, content: string): Promise<string> {
@@ -107,7 +111,6 @@ export class RecordingRunner implements AgentRunner {
   readonly name = 'recording';
   workingDirectories: string[] = [];
   promptHistory: string[] = [];
-  designDocQueue: string[] = [];
   lastDesignDocMarkdown: string | null = null;
 
   constructor(private inner: AgentRunner) {}
@@ -119,9 +122,7 @@ export class RecordingRunner implements AgentRunner {
     if (opts?.workingDirectory) {
       const designPath = join(opts.workingDirectory, '.codocs', 'design-doc.md');
       try {
-        const md = await readFile(designPath, 'utf-8');
-        this.designDocQueue.push(md);
-        this.lastDesignDocMarkdown = md;
+        this.lastDesignDocMarkdown = await readFile(designPath, 'utf-8');
       } catch { /* file absent on some error paths */ }
     }
     return result;
