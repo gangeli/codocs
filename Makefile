@@ -2,7 +2,7 @@
 # script drops a binary at ~/.bun/bin) are visible to recipes.
 export PATH := $(HOME)/.bun/bin:$(PATH)
 
-.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/rendering e2e/roundtrip e2e/agents deps
+.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/rendering e2e/roundtrip e2e/agents e2e/comments deps
 
 all: codocs
 
@@ -70,7 +70,7 @@ gcloud-auth:
 infra: gcloud-auth
 	cd terraform && terraform init -upgrade && terraform apply
 
-e2e: e2e/rendering e2e/roundtrip e2e/agents
+e2e: e2e/rendering e2e/roundtrip e2e/agents e2e/comments
 
 e2e/rendering: build
 	npx tsx scripts/e2e-visual-test.ts
@@ -81,6 +81,9 @@ e2e/roundtrip: build
 
 e2e/agents: build
 	npx tsx scripts/e2e-agents.ts $(if $(filter 0,$(QUOTA)),,--quota)
+
+e2e/comments: build
+	npx tsx scripts/e2e-comments.ts
 
 clean:
 	rm -rf packages/core/dist packages/db/dist packages/cli/dist dist codocs
