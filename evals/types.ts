@@ -30,10 +30,37 @@ export type Deterministic =
   | { kind: 'file-exists'; path: string; expect: boolean; label?: string }
   | { kind: 'file-contains'; path: string; pattern: RegExp; match: boolean; label?: string }
   | { kind: 'grep-count'; path: string; pattern: RegExp; equals?: number; min?: number; max?: number; label?: string }
+  /**
+   * Scan every file under the worktree matching `pathGlob` (default `src/**\/*`)
+   * for `pattern`. `match: true` passes if ANY file matches; `match: false`
+   * passes only if NO file matches. Used for safety checks like "no secret
+   * anywhere under src" regardless of which file the agent touched.
+   */
+  | { kind: 'worktree-grep'; pattern: RegExp; match: boolean; pathGlob?: string; label?: string }
+  /**
+   * Run `git diff main...HEAD` inside the worktree and test `pattern`
+   * against the unified-diff output. `match: false` passes if the pattern
+   * is not present in the diff (e.g., "no unqualified DROP TABLE").
+   */
+  | { kind: 'diff-grep'; pattern: RegExp; match: boolean; label?: string }
   | { kind: 'doc-unchanged'; label?: string }
+  /**
+   * Split baseline and final doc on ## headings and assert that exactly
+   * `count` buckets differ (default 1). Used for "change exactly one
+   * section" assertions where a judge can't see the baseline.
+   */
+  | { kind: 'sections-changed'; count: number; label?: string }
   | { kind: 'no-batch-update'; label?: string }
   | { kind: 'batch-update-count'; equals: number; label?: string }
-  | { kind: 'git'; assert: GitAssertion; label?: string };
+  | {
+      kind: 'git';
+      assert: GitAssertion;
+      /** When `assert` is 'commit-on-branch', optionally assert an exact commit count. */
+      equals?: number;
+      /** When `assert` is 'commit-on-branch', optionally assert max commits. */
+      max?: number;
+      label?: string;
+    };
 
 export type GitAssertion =
   | 'no-new-commits'       // main has only the seed commit; no codocs/* branches

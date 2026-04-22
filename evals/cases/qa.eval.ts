@@ -76,6 +76,34 @@ export const QA_SUMMARIZE_OPEN: EvalCase = {
   },
 };
 
+/**
+ * Answerable ONLY by reading the code — the doc does not describe the
+ * iteration order. Correct answer: GET /users returns users in Map
+ * insertion order (alice, bob, carol). An agent that answers "sorted
+ * alphabetically" or "unspecified" without reading db.mjs fails.
+ */
+export const QA_USER_ORDER: EvalCase = {
+  id: 'QA-06-user-order',
+  category: 'qa',
+  summary: 'Question answerable only by reading the code (user iteration order).',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  comment: {
+    quote: '`GET /users?limit=N&offset=K`',
+    body: "In what order does GET /users return usernames? Is that stable, or does it depend on Map internals? I'm debugging a pagination test.",
+  },
+  expect: {
+    reply: [
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply says the order is Map insertion order (concretely: alice, bob, carol from db.mjs) and notes it is stable for a given input (JS Map iteration order is insertion-order). Does not claim alphabetical sort, does not say "unspecified".',
+        truth: 'src/db.mjs seeds USERS = new Map([["alice",...],["bob",...],["carol",...]]); listUsers returns [...USERS.keys()] — insertion order. JS Map iteration order is insertion-order by spec, so this is stable.',
+      },
+    ],
+    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    code: [{ kind: 'git', assert: 'no-new-commits' }],
+  },
+};
+
 export const QA_TIMING_ATTACK: EvalCase = {
   id: 'QA-05-timing-attack-safety',
   category: 'qa',

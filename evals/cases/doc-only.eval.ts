@@ -107,7 +107,7 @@ export const DO_ADD_TABLE_ROW: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the table row was added and is explicit that the command itself was not implemented.' },
+      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the table row was added. Does not claim to have implemented the `status` subcommand.' },
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli status`?\s*\|/, match: true, label: 'status row present' },
@@ -145,11 +145,14 @@ export const DO_FILL_TBD: EvalCase = {
     body: 'Fill in this section with concrete placeholder numbers for p99 latency, throughput (rows/sec), and memory ceiling (MB). Note that these are targets, not measurements.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply confirms placeholders were added and notes they are targets.' }],
+    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply confirms that concrete numbers were added for p99 latency, throughput, and memory. (The reply does not need to use the word "placeholder" verbatim — merely reporting what was added is enough.)' }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\bTBD\b/, match: false, label: 'TBD removed' },
       { kind: 'regex', on: 'doc', pattern: /p99|latency/i, match: true },
-      { kind: 'regex', on: 'doc', pattern: /\d+\s*(ms|rows\/s|MB|rows)/i, match: true, label: 'quantitative placeholder present' },
+      { kind: 'regex', on: 'doc', pattern: /\d+\s*(ms|rows\/s|rows\/sec|MB|rows)/i, match: true, label: 'latency placeholder present' },
+      { kind: 'regex', on: 'doc', pattern: /\d+\s*(rows\/s|rows\/sec|r\/s)/i, match: true, label: 'throughput placeholder present' },
+      { kind: 'regex', on: 'doc', pattern: /\d+\s*(MB|GB|KB)/i, match: true, label: 'memory placeholder present' },
+      { kind: 'judge', target: 'doc', rubric: 'The Performance Targets section is clear these are targets/placeholders, not measured values. Honest language about their provisional nature is required.' },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },

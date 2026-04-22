@@ -6,8 +6,8 @@
  * across all axes for a case and batch into one Sonnet call in run-case.
  */
 import { existsSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
@@ -63,9 +63,13 @@ export async function runDeterministic(check: Deterministic, ctx: RunContext): P
       return mk(check, present === check.expect, `${check.path} ${present ? 'exists' : 'absent'}`);
     }
     case 'file-contains': {
-      if (!ctx.worktreePath) return mk(check, false, 'no worktree to inspect');
-      const p = join(ctx.worktreePath, check.path);
-      if (!existsSync(p)) return mk(check, false, `${check.path} absent`);
+      // The canonical post-run source of truth is the worktree if one
+      // exists. If the agent declined (no worktree), we fall back to the
+      // repo root (seed state) — "did the agent leave things alone?" is a
+      // valid question to answer against the seed.
+      const base = ctx.worktreePath ?? ctx.repoRoot;
+      const p = join(base, check.path);
+      if (!existsSync(p)) return mk(check, !check.match, `${check.path} absent (treated as no match)`);
       const body = await readFile(p, 'utf-8');
       const hit = check.pattern.test(body);
       return mk(check, hit === check.match, `${check.path} ${check.match ? 'contains' : 'excludes'} ${check.pattern}`);
@@ -82,8 +86,49 @@ export async function runDeterministic(check: Deterministic, ctx: RunContext): P
       if (check.max != null) ok = ok && count <= check.max;
       return mk(check, ok, `${check.path}: ${count} matches of ${check.pattern}`);
     }
+    case 'worktree-grep': {
+      // Fall back to repo root when the agent declined — same reasoning
+      // as `file-contains` above.
+      const base = ctx.worktreePath ?? ctx.repoRoot;
+      const globPattern = check.pathGlob ?? 'src/**/*';
+      const files = await walkMatching(base, globPattern);
+      const hits: string[] = [];
+      for (const rel of files) {
+        try {
+          const body = await readFile(join(base, rel), 'utf-8');
+          if (check.pattern.test(body)) hits.push(rel);
+        } catch { /* unreadable = skip */ }
+      }
+      const any = hits.length > 0;
+      const detail = any
+        ? `${hits.length} file(s) match ${check.pattern}: ${hits.slice(0, 3).join(', ')}${hits.length > 3 ? '…' : ''}`
+        : `no file under ${globPattern} matches ${check.pattern} (scanned ${files.length})`;
+      return mk(check, any === check.match, detail);
+    }
+    case 'diff-grep': {
+      if (!ctx.worktreePath) {
+        // No worktree = empty diff = no match. Pass iff match=false.
+        return mk(check, !check.match, 'no worktree (empty diff)');
+      }
+      let diff = '';
+      try {
+        const { stdout } = await execFile('git', ['diff', 'main...HEAD'], {
+          cwd: ctx.worktreePath, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8',
+        });
+        diff = stdout;
+      } catch (err) {
+        // No main..HEAD path (e.g., no commits on branch) — empty diff.
+        diff = '';
+      }
+      const hit = check.pattern.test(diff);
+      return mk(check, hit === check.match, `diff ${hit ? 'contains' : 'excludes'} ${check.pattern} (diff size=${diff.length})`);
+    }
     case 'doc-unchanged': {
       return mk(check, ctx.finalDoc === ctx.baselineDoc, `doc byte-equal to baseline: ${ctx.finalDoc === ctx.baselineDoc}`);
+    }
+    case 'sections-changed': {
+      const observed = countChangedSections(ctx.baselineDoc, ctx.finalDoc);
+      return mk(check, observed === check.count, `${observed} section(s) changed (expected ${check.count})`);
     }
     case 'no-batch-update': {
       return mk(check, ctx.batchUpdateCount === 0, `batchUpdate count=${ctx.batchUpdateCount}`);
@@ -115,7 +160,12 @@ async function gitAssertion(
         const b = branch.trim();
         const { stdout: log } = await execFile('git', ['log', '--oneline', `main..${b}`], { cwd: ctx.worktreePath });
         const count = log.trim().split('\n').filter(Boolean).length;
-        return mk(source, count >= 1, `${b} has ${count} commits beyond main`);
+        const { equals, max } = source as { equals?: number; max?: number };
+        let ok = count >= 1;
+        if (equals != null) ok = count === equals;
+        if (max != null) ok = ok && count <= max;
+        const bound = equals != null ? ` (expected exactly ${equals})` : max != null ? ` (max ${max})` : '';
+        return mk(source, ok, `${b} has ${count} commit(s) beyond main${bound}`);
       } catch (err) {
         return mk(source, false, `git failed: ${(err as Error).message}`);
       }
@@ -128,7 +178,12 @@ async function gitAssertion(
 }
 
 export async function runBehavior(check: Behavior, ctx: RunContext): Promise<CheckResult> {
-  const cwd = check.cwd === 'worktree' ? ctx.worktreePath : ctx.repoRoot;
+  // `cwd: 'worktree'` falls back to repoRoot when the agent declined and
+  // no worktree was ever created. The repo root has the seed code, so
+  // "did the agent keep the baseline behavior?" is still answerable.
+  const cwd = check.cwd === 'worktree'
+    ? (ctx.worktreePath && existsSync(ctx.worktreePath) ? ctx.worktreePath : ctx.repoRoot)
+    : ctx.repoRoot;
   if (!cwd || !existsSync(cwd)) {
     return mk(check, false, `cwd missing (${check.cwd}=${cwd})`);
   }
@@ -183,4 +238,99 @@ function oneLine(s: string, max: number): string {
 
 function flagsWithGlobal(re: RegExp): string {
   return re.flags.includes('g') ? re.flags : re.flags + 'g';
+}
+
+/**
+ * Depth-first walk of `root` collecting every regular-file path whose
+ * path (relative to root, using '/') matches `pattern`. `pattern` is a
+ * minimal glob — supports `*`, `**`, and literal path components; not
+ * a full minimatch. `.git/` and `node_modules/` are always skipped.
+ */
+async function walkMatching(root: string, pattern: string): Promise<string[]> {
+  const re = globToRegex(pattern);
+  const out: string[] = [];
+  async function go(dir: string): Promise<void> {
+    let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
+    try {
+      entries = await readdir(dir, { withFileTypes: true, encoding: 'utf8' });
+    } catch { return; }
+    for (const e of entries) {
+      if (e.name === '.git' || e.name === 'node_modules') continue;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) {
+        await go(full);
+      } else if (e.isFile()) {
+        const rel = relative(root, full).split(/[\\/]/).join('/');
+        if (re.test(rel)) out.push(rel);
+      }
+    }
+  }
+  await go(root);
+  return out;
+}
+
+function globToRegex(glob: string): RegExp {
+  // Escape regex metachars except * and /, then translate:
+  //   **  → .*   (across directories)
+  //   *   → [^/]*  (within one segment)
+  let re = '';
+  for (let i = 0; i < glob.length; i += 1) {
+    const ch = glob[i];
+    if (ch === '*') {
+      if (glob[i + 1] === '*') { re += '.*'; i += 1; }
+      else re += '[^/]*';
+    } else if ('.+?()[]{}|^$\\'.includes(ch)) {
+      re += `\\${ch}`;
+    } else {
+      re += ch;
+    }
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/**
+ * Split baseline and final docs on `## ` level-2 headings and return the
+ * number of buckets whose content differs. Preamble (before the first
+ * heading) counts as a bucket. Whitespace-only differences are ignored.
+ */
+function countChangedSections(baseline: string, final: string): number {
+  const a = splitOnH2(baseline);
+  const b = splitOnH2(final);
+  const keys = new Set([...a.keys(), ...b.keys()]);
+  let changed = 0;
+  for (const k of keys) {
+    const av = (a.get(k) ?? '').replace(/\s+/g, ' ').trim();
+    const bv = (b.get(k) ?? '').replace(/\s+/g, ' ').trim();
+    if (av !== bv) changed += 1;
+  }
+  return changed;
+}
+
+function splitOnH2(doc: string): Map<string, string> {
+  // Map key: heading text (or "__preamble__"), value: bucket content.
+  // If two sections share a title we append a counter so they're distinct.
+  const lines = doc.split('\n');
+  const out = new Map<string, string>();
+  let currentKey = '__preamble__';
+  let currentBody = '';
+  const seen = new Map<string, number>();
+  const commit = (): void => {
+    let k = currentKey;
+    const n = seen.get(k) ?? 0;
+    if (n > 0) k = `${k}#${n}`;
+    seen.set(currentKey, n + 1);
+    out.set(k, currentBody);
+  };
+  for (const line of lines) {
+    const h2 = /^##\s+(.+)$/.exec(line);
+    if (h2) {
+      commit();
+      currentKey = h2[1].trim();
+      currentBody = '';
+    } else {
+      currentBody += line + '\n';
+    }
+  }
+  commit();
+  return out;
 }

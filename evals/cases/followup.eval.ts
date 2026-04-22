@@ -101,6 +101,10 @@ export const FU_PARTIAL_REVERT: EvalCase = {
     code: [
       { kind: 'run', cmd: 'node', args: ['src/cli.mjs', 'status'], cwd: 'worktree',
         expect: { exit: 0, stdout: /ok/ }, label: 'status still works' },
+      // The follow-up is doc-only — the code branch should still have
+      // exactly the one commit the predecessor landed. A second commit
+      // means the agent re-touched the code unnecessarily.
+      { kind: 'git', assert: 'commit-on-branch', equals: 1, label: 'exactly one commit on branch (no extra code churn)' },
     ],
   },
 };

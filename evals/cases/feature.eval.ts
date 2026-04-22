@@ -70,8 +70,9 @@ export const F_DOCTOR: EvalCase = {
     ],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
+      // Accept both `process.version` ("v25.2.1") and `process.versions.node` ("25.2.1").
       { kind: 'run', cmd: 'node', args: ['src/cli.mjs', 'doctor'], cwd: 'worktree',
-        expect: { exit: 0, stdout: /node=v\d+/ } },
+        expect: { exit: 0, stdout: /node=v?\d+/ } },
     ],
   },
 };
@@ -93,7 +94,10 @@ export const F_RATE_LIMIT_STUB: EvalCase = {
     code: [
       { kind: 'git', assert: 'branch-pushed' },
       { kind: 'file-exists', path: 'src/rate-limit.mjs', expect: true },
-      { kind: 'file-contains', path: 'src/server.mjs', pattern: /rateLimit/, match: false, label: 'not wired into server' },
+      // Accept a commented-out TODO hint; only fail if server.mjs actually
+      // imports or calls rateLimit.
+      { kind: 'file-contains', path: 'src/server.mjs', pattern: /import\s+[^;]*\brateLimit\b/, match: false, label: 'rateLimit not imported into server' },
+      { kind: 'file-contains', path: 'src/server.mjs', pattern: /\brateLimit\s*\(/, match: false, label: 'rateLimit() not invoked in server' },
     ],
   },
 };

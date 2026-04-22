@@ -56,7 +56,11 @@ export const AM_CONFLICTING: EvalCase = {
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /50\s*ms/, match: true, label: '50ms present in doc' },
-      { kind: 'regex', on: 'doc', pattern: /\b500\s*ms\b/, match: false, label: '500ms NOT present' },
+      {
+        kind: 'judge', target: 'doc',
+        rubric: 'The Performance Targets section states 50ms (not 500ms) as the p99 latency target. Mentioning 500ms in prose as a rejected alternative is OK; making 500ms the stated target is NOT.',
+        truth: 'The correct target is 50ms. The agent may narrate that 500ms was considered and rejected, but the authoritative value in the doc must be 50ms.',
+      },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },

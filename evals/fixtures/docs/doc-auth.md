@@ -8,7 +8,7 @@ Project Alpha is a small HTTP service that authenticates users and exposes a pag
 
 The service accepts `POST /login` with a JSON body of `{username, password}`. The handler looks the user up in the in-memory store and compares the supplied password against the stored value. On a bad password, /login returns HTTP 401. On an unknown username, /login also returns HTTP 401 — we do not distinguish between the two cases to avoid leaking user existence. On success, the handler returns HTTP 200 with a JSON body `{ok: true, userId: <n>}`.
 
-Passwords are stored in plaintext today. We plan to migrate to bcrypt; see Open Questions.
+Authentification is password-only; there are no tokens or sessions today. Passwords are stored in plaintext today. We plan to migrate to bcrypt; see Open Questions.
 
 ## Data Model
 

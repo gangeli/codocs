@@ -19,7 +19,12 @@ export const ED_NO_QUOTE: EvalCase = {
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /PII/i, match: true, label: 'PII caveat landed' },
-      { kind: 'judge', target: 'doc', rubric: 'Exactly ONE section was modified to mention PII; the other sections are byte-identical to baseline.' },
+      // Deterministic: split baseline/final on ## headings; exactly one
+      // section should differ. Replaces an unreliable "other sections
+      // are byte-identical to baseline" judge rubric (the judge never
+      // sees the baseline, and with the enriched artifact it now does
+      // — but the deterministic check is cheaper and unambiguous).
+      { kind: 'sections-changed', count: 1, label: 'exactly one H2 section modified' },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },

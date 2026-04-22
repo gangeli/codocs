@@ -21,11 +21,15 @@ import {
 import { openDatabase, QueueStore, CodeTaskStore } from '@codocs/db';
 
 import { existsSync } from 'node:fs';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { EvalCase, CaseResult, CheckResult, Judge, Check } from '../types.js';
 import { FakeDocsClient, RecordingRunner, getLastReplyForComment } from './fake-docs.js';
 import { hydrate, teardown } from './hydrate.js';
 import { runDeterministic, runBehavior, type RunContext } from './scorers.js';
 import { batchJudge, type JudgeItem } from './judge.js';
+
+const execFile = promisify(execFileCb);
 
 function makeCommentEvent(docId: string, body: string, quotedText: string | undefined, id: string): CommentEvent {
   return {
@@ -60,29 +64,116 @@ function memorySessionStore(): SessionStore {
 
 /**
  * Render a check's target artifact (for the judge). Kept in run-case rather
- * than scorers.ts because it depends on RunContext + baseline diffs.
+ * than scorers.ts because it depends on RunContext + baseline diffs + git.
+ *
+ * Judge targets expose progressively more context:
+ *   'reply'    — just the agent's reply text.
+ *   'doc'      — final doc + baseline + what changed (headings touched).
+ *                The judge sees before/after so it can reason about
+ *                "section X was preserved" / "section Y was reworded".
+ *   'diff'     — doc diff PLUS code diff (git diff main...HEAD) PLUS a
+ *                list of committed files, so safety / change-shape
+ *                rubrics can look at what actually landed on disk.
+ *   'behavior' — post-run file listing for the worktree and any code
+ *                diff. For exit-code / stdout rubrics prefer a `run`
+ *                behavior check.
  */
-function renderJudgeArtifact(judge: Judge, ctx: RunContext): string {
+async function renderJudgeArtifact(judge: Judge, ctx: RunContext): Promise<string> {
   switch (judge.target) {
     case 'reply':
       return ctx.reply ?? '(no reply posted)';
     case 'doc':
-      return ctx.finalDoc;
+      return renderDocArtifact(ctx);
     case 'diff':
-      return simpleDiff(ctx.baselineDoc, ctx.finalDoc);
+      return renderDiffArtifact(ctx);
     case 'behavior':
-      // For behavior, we expose the post-run worktree state as a
-      // concise file listing so the judge can reason about it. For
-      // rich behavior (stdout/exit codes) use a `run` check instead.
-      return `(worktree path: ${ctx.worktreePath ?? 'none'})`;
+      return renderBehaviorArtifact(ctx);
   }
 }
 
-function simpleDiff(a: string, b: string): string {
-  if (a === b) return '(no changes)';
-  // Small, human-readable shape: before/after. The doc is small enough
-  // that giving the judge both halves beats re-implementing unified diff.
-  return `--- before ---\n${a}\n--- after ---\n${b}`;
+function renderDocArtifact(ctx: RunContext): string {
+  if (ctx.baselineDoc === ctx.finalDoc) {
+    return [
+      '<DOC_STATE>unchanged from baseline</DOC_STATE>',
+      '<FINAL_DOC>',
+      ctx.finalDoc,
+      '</FINAL_DOC>',
+    ].join('\n');
+  }
+  return [
+    '<BASELINE_DOC>',
+    ctx.baselineDoc,
+    '</BASELINE_DOC>',
+    '<FINAL_DOC>',
+    ctx.finalDoc,
+    '</FINAL_DOC>',
+    '<NOTE>The doc was modified. Judge the FINAL_DOC against the rubric; use BASELINE_DOC only to verify claims like "section X preserved" or "only Y was changed".</NOTE>',
+  ].join('\n');
+}
+
+async function renderDiffArtifact(ctx: RunContext): Promise<string> {
+  const parts: string[] = [];
+  if (ctx.baselineDoc === ctx.finalDoc) {
+    parts.push('<DOC_DIFF>(no doc changes)</DOC_DIFF>');
+  } else {
+    parts.push('<DOC_DIFF>');
+    parts.push(`--- baseline\n+++ final`);
+    parts.push(unifiedDiffApprox(ctx.baselineDoc, ctx.finalDoc));
+    parts.push('</DOC_DIFF>');
+  }
+  const code = await getCodeContext(ctx);
+  parts.push(code);
+  return parts.join('\n');
+}
+
+async function renderBehaviorArtifact(ctx: RunContext): Promise<string> {
+  return [
+    `<WORKTREE_PATH>${ctx.worktreePath ?? 'none'}</WORKTREE_PATH>`,
+    await getCodeContext(ctx),
+    '<NOTE>For exit codes / stdout assertions prefer a `run` behavior check over the judge.</NOTE>',
+  ].join('\n');
+}
+
+async function getCodeContext(ctx: RunContext): Promise<string> {
+  if (!ctx.worktreePath || !existsSync(ctx.worktreePath)) {
+    return '<CODE_DIFF>(no worktree — no code changes)</CODE_DIFF>';
+  }
+  let diff = '';
+  let files: string[] = [];
+  try {
+    const { stdout } = await execFile('git', ['diff', 'main...HEAD'], {
+      cwd: ctx.worktreePath, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8',
+    });
+    diff = stdout;
+  } catch { /* no commits yet */ }
+  try {
+    const { stdout } = await execFile('git', ['diff', '--name-status', 'main...HEAD'], {
+      cwd: ctx.worktreePath, maxBuffer: 1 * 1024 * 1024, encoding: 'utf8',
+    });
+    files = stdout.split('\n').filter(Boolean);
+  } catch { /* ditto */ }
+  const trimmed = diff.length > 8000 ? diff.slice(0, 8000) + '\n…(truncated)…' : diff;
+  return [
+    '<COMMITTED_FILES>',
+    files.length === 0 ? '(no committed changes)' : files.join('\n'),
+    '</COMMITTED_FILES>',
+    '<CODE_DIFF>',
+    trimmed || '(empty)',
+    '</CODE_DIFF>',
+  ].join('\n');
+}
+
+function unifiedDiffApprox(a: string, b: string): string {
+  // Minimal diff: mark every distinct line with '-' from a and '+' from b.
+  // Enough signal for the judge without shipping a real diff algorithm.
+  const aLines = a.split('\n');
+  const bLines = b.split('\n');
+  const setA = new Set(aLines);
+  const setB = new Set(bLines);
+  const out: string[] = [];
+  for (const l of aLines) if (!setB.has(l)) out.push(`- ${l}`);
+  for (const l of bLines) if (!setA.has(l)) out.push(`+ ${l}`);
+  return out.slice(0, 400).join('\n');
 }
 
 export interface RunCaseOptions {
@@ -162,7 +253,7 @@ export async function runCase(tc: EvalCase, opts: RunCaseOptions = {}): Promise<
         const id = `${axisKey[0]}${i}`;
         judgeItems.push({
           axisKey, idx: i,
-          item: { id, judge: chk, artifact: renderJudgeArtifact(chk, ctx) },
+          item: { id, judge: chk, artifact: await renderJudgeArtifact(chk, ctx) },
         });
         axisResults[i] = { check: chk, passed: false, detail: 'pending judge' };
       }

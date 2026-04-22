@@ -56,7 +56,7 @@ export const BF_TRANSFORM_DROP: EvalCase = {
     code: [
       { kind: 'git', assert: 'branch-pushed' },
       { kind: 'run', cmd: 'node', args: ['scripts/probe-transform.mjs'], cwd: 'worktree',
-        expect: { exit: 0, stdout: /kept=3 dropped=0/ }, label: 'all 3 rows preserved' },
+        expect: { exit: 0, stdout: /kept=4 dropped=0 emails_all_string=true/ }, label: 'all 4 rows preserved (incl. missing-key row)' },
     ],
   },
 };
@@ -141,10 +141,16 @@ export const BF_PAGINATION: EvalCase = {
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
-      { kind: 'run', cmd: 'node', args: ['scripts/probe-users.mjs', '1'], cwd: 'worktree',
-        expect: { exit: 0, stdout: /count=1/ }, label: 'limit=1 returns 1' },
-      { kind: 'run', cmd: 'node', args: ['scripts/probe-users.mjs', '2'], cwd: 'worktree',
-        expect: { exit: 0, stdout: /count=2/ }, label: 'limit=2 returns 2' },
+      // `db.mjs` seeds 3 users: alice, bob, carol — enough for limit=2 to
+      // discriminate (fixed: 2 items starting at alice; buggy: 3 items).
+      { kind: 'run', cmd: 'node', args: ['scripts/probe-users.mjs', '1', '0'], cwd: 'worktree',
+        expect: { exit: 0, stdout: /count=1 first=alice/ }, label: 'limit=1 offset=0 → 1 item starting at alice' },
+      { kind: 'run', cmd: 'node', args: ['scripts/probe-users.mjs', '2', '0'], cwd: 'worktree',
+        expect: { exit: 0, stdout: /count=2 first=alice/ }, label: 'limit=2 offset=0 → 2 items' },
+      { kind: 'run', cmd: 'node', args: ['scripts/probe-users.mjs', '1', '1'], cwd: 'worktree',
+        expect: { exit: 0, stdout: /count=1 first=bob/ }, label: 'limit=1 offset=1 → 1 item starting at bob' },
+      { kind: 'run', cmd: 'node', args: ['scripts/probe-users.mjs', '10', '0'], cwd: 'worktree',
+        expect: { exit: 0, stdout: /count=3/ }, label: 'limit=10 over 3 users → 3 items (no over-slice)' },
     ],
   },
 };
@@ -165,6 +171,33 @@ export const BF_INGEST_EMPTY: EvalCase = {
       { kind: 'git', assert: 'branch-pushed' },
       { kind: 'run', cmd: 'node', args: ['scripts/probe-ingest.mjs'], cwd: 'worktree',
         expect: { exit: 0, stdout: /rows=0/ }, label: 'empty CSV → rows=0, exit 0' },
+    ],
+  },
+};
+
+/**
+ * Undocumented bug: `deploy` emits a stray tab in front of its output line.
+ * The doc is silent about this — it's a real-world "fix code; don't touch
+ * the doc because it never made a claim either way" case.
+ */
+export const BF_DEPLOY_WHITESPACE: EvalCase = {
+  id: 'BF-08-deploy-whitespace',
+  category: 'bug-fix',
+  summary: 'deploy prints its output with a stray leading tab; doc is silent. Clean the code.',
+  fixture: { codebase: 'cb-cli', doc: 'doc-cli.md' },
+  comment: {
+    body: "`cb-cli deploy --env prod` prints `\\tdeploying to prod` — there's an unwanted leading tab before `deploying`. Clean it up. The doc doesn't claim anything specific about whitespace, so don't touch the doc.",
+  },
+  expect: {
+    reply: [
+      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the whitespace fix in code and explicitly notes the doc did not need an update.' },
+    ],
+    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    code: [
+      { kind: 'git', assert: 'branch-pushed' },
+      { kind: 'run', cmd: 'node', args: ['src/cli.mjs', 'deploy', '--env', 'prod'], cwd: 'worktree',
+        expect: { exit: 0, stdout: /^deploying to prod/m }, label: 'no leading whitespace in deploy output' },
+      { kind: 'file-contains', path: 'src/commands/deploy.mjs', pattern: /\\t|^\s+deploying/, match: false, label: 'source no longer prefixes a tab' },
     ],
   },
 };
