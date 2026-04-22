@@ -257,6 +257,70 @@ function buildLongExpected(edits: Record<number, string>): string {
   return parts.join('\n\n');
 }
 
+/**
+ * Extended builder for the 40-paragraph long fixture: supports deletes
+ * (skip certain paragraphs) and inserts (additional paragraphs after
+ * a given index). Used by L2/L3.
+ */
+function buildLongExpectedEx(opts: {
+  edits?: Record<number, string>;
+  deletes?: Set<number>;
+  insertsAfter?: Record<number, string[]>;
+}): string {
+  const parts = [`# Long`];
+  for (let i = 1; i <= 40; i++) {
+    if (opts.deletes?.has(i)) continue;
+    parts.push(opts.edits?.[i] ?? `Paragraph number ${i} in the long doc.`);
+    const add = opts.insertsAfter?.[i];
+    if (add) parts.push(...add);
+  }
+  return parts.join('\n\n');
+}
+
+// ── L-group mega-doc fixture ────────────────────────────────
+
+// 200-paragraph doc with H1 every 30 paragraphs, a 5-row table
+// (header + 4 data rows) placed after paragraph 80, and a 10-item
+// bullet list placed after paragraph 165. Designed to stress
+// indexMap interpolation across a long body and exercise all three
+// hunk routers (line-diff, table, list-append) in one diff.
+function makeMegaFixture(): string {
+  const parts: string[] = [`# Section 1`];
+  for (let i = 1; i <= 200; i++) {
+    parts.push(`Mega paragraph ${i}.`);
+    if (i === 80) {
+      parts.push(
+        `| MC1 | MC2 |\n| --- | --- |\n| r1a | r1b |\n| r2a | r2b |\n| r3a | r3b |\n| r4a | r4b |`,
+      );
+    }
+    if (i === 165) {
+      const items: string[] = [];
+      for (let j = 1; j <= 10; j++) items.push(`- mega-list item ${j}`);
+      parts.push(items.join('\n'));
+    }
+    if (i % 30 === 0 && i < 200) {
+      parts.push(`# Section ${Math.floor(i / 30) + 1}`);
+    }
+  }
+  return parts.join('\n\n') + '\n';
+}
+const FIX_MEGA = makeMegaFixture();
+
+// 100-paragraph single-section fixture, for L4 (edit near tail).
+function makeSingleSectionLong(): string {
+  const parts: string[] = [`# Long Section`];
+  for (let i = 1; i <= 100; i++) parts.push(`L4 paragraph ${i}.`);
+  return parts.join('\n\n') + '\n';
+}
+const FIX_L4 = makeSingleSectionLong();
+function buildL4Expected(edits: Record<number, string>): string {
+  const parts = [`# Long Section`];
+  for (let i = 1; i <= 100; i++) {
+    parts.push(edits[i] ?? `L4 paragraph ${i}.`);
+  }
+  return parts.join('\n\n');
+}
+
 // ── Test cases ───────────────────────────────────────────────
 
 const tests: EditTestCase[] = [
@@ -1478,6 +1542,540 @@ Third paragraph of Gamma.`,
       // or requires a minimal delete+insert pair — bound the upper limit to
       // keep this a true "minimal edit" regression check.
       maxRequests: 4,
+    },
+  },
+
+  // ── Group L: Long-document stress ──
+  {
+    title: 'L1: mega-doc (200 paras + headings + table + list) — one para, one cell, one list item',
+    canvas: 'mega',
+    fixture: FIX_MEGA,
+    apply: (b) =>
+      b
+        .replace('Mega paragraph 50.', 'Mega paragraph 50 EDITED.')
+        .replace('| r2a | r2b |', '| R2A | r2b |')
+        .replace('- mega-list item 5', '- mega-list item FIVE'),
+    expect: {
+      contains: [
+        '# Section 1',
+        '# Section 2',
+        '# Section 7',
+        'Mega paragraph 1.',
+        'Mega paragraph 50 EDITED.',
+        'Mega paragraph 200.',
+        '| MC1 | MC2 |',
+        '- mega-list item FIVE',
+        '- mega-list item 10',
+      ],
+      notContains: [
+        'Mega paragraph 50.',
+        '| r2a | r2b |',
+        '- mega-list item 5\n',
+      ],
+      matches: [
+        /\|\s*R2A\s*\|\s*r2b\s*\|/,
+      ],
+      ordering: [
+        ['# Section 1', 'Mega paragraph 1.'],
+        ['Mega paragraph 49.', 'Mega paragraph 50 EDITED.'],
+        ['Mega paragraph 50 EDITED.', 'Mega paragraph 51.'],
+        ['Mega paragraph 80.', '| MC1 | MC2 |'],
+        ['| R2A | r2b |', '| r3a | r3b |'],
+        ['Mega paragraph 165.', '- mega-list item 1'],
+        ['- mega-list item 4', '- mega-list item FIVE'],
+        ['- mega-list item FIVE', '- mega-list item 6'],
+      ],
+    },
+  },
+  {
+    title: 'L2: delete 10 consecutive paragraphs (15-24) from long doc',
+    canvas: 'long-del',
+    fixture: FIX_LONG,
+    apply: (b) => {
+      let r = b;
+      for (let i = 15; i <= 24; i++) {
+        r = r.replace(`\n\nParagraph number ${i} in the long doc.`, '');
+      }
+      return r;
+    },
+    expect: {
+      exact: buildLongExpectedEx({
+        deletes: new Set([15, 16, 17, 18, 19, 20, 21, 22, 23, 24]),
+      }),
+      contains: [
+        'Paragraph number 14 in the long doc.',
+        'Paragraph number 25 in the long doc.',
+      ],
+      notContains: [
+        'Paragraph number 15 in the long doc.',
+        'Paragraph number 20 in the long doc.',
+        'Paragraph number 24 in the long doc.',
+      ],
+      ordering: [
+        ['Paragraph number 14 in the long doc.', 'Paragraph number 25 in the long doc.'],
+      ],
+    },
+  },
+  {
+    title: 'L3: insert 10 consecutive new paragraphs between #20 and #21',
+    canvas: 'long-ins',
+    fixture: FIX_LONG,
+    apply: (b) => {
+      const inserted: string[] = [];
+      for (let i = 1; i <= 10; i++) inserted.push(`New inserted paragraph ${i}.`);
+      return b.replace(
+        'Paragraph number 20 in the long doc.',
+        'Paragraph number 20 in the long doc.\n\n' + inserted.join('\n\n'),
+      );
+    },
+    expect: {
+      exact: buildLongExpectedEx({
+        insertsAfter: {
+          20: Array.from({ length: 10 }, (_, i) => `New inserted paragraph ${i + 1}.`),
+        },
+      }),
+      contains: [
+        'New inserted paragraph 1.',
+        'New inserted paragraph 10.',
+        'Paragraph number 21 in the long doc.',
+      ],
+      ordering: [
+        ['Paragraph number 20 in the long doc.', 'New inserted paragraph 1.'],
+        ['New inserted paragraph 10.', 'Paragraph number 21 in the long doc.'],
+      ],
+    },
+  },
+  {
+    title: 'L4: replace paragraph #95 in a 100-paragraph single section',
+    canvas: 'l4',
+    fixture: FIX_L4,
+    apply: (b) => b.replace('L4 paragraph 95.', 'L4 paragraph 95 rewritten.'),
+    expect: {
+      exact: buildL4Expected({ 95: 'L4 paragraph 95 rewritten.' }),
+      contains: ['L4 paragraph 95 rewritten.', 'L4 paragraph 100.'],
+      notContains: ['L4 paragraph 95.'],
+      ordering: [
+        ['L4 paragraph 94.', 'L4 paragraph 95 rewritten.'],
+        ['L4 paragraph 95 rewritten.', 'L4 paragraph 96.'],
+      ],
+    },
+  },
+
+  // ── Group M: Heterogeneous context (paragraph next to rich elements) ──
+  {
+    title: 'M1 (H1): paragraph sandwiched between list (above) and table (below)',
+    canvas: 'sandwich',
+    fixture: `# Sandwich
+
+- bullet alpha
+- bullet beta
+
+Middle paragraph sandwiched here.
+
+| K | V |
+| --- | --- |
+| k1 | v1 |
+
+Trailing paragraph.
+`,
+    apply: (b) =>
+      b.replace('Middle paragraph sandwiched here.', 'Middle paragraph rewritten.'),
+    expect: {
+      exact: `# Sandwich
+
+- bullet alpha
+- bullet beta
+
+Middle paragraph rewritten.
+
+| K | V |
+| --- | --- |
+| k1 | v1 |
+
+Trailing paragraph.`,
+      contains: ['- bullet alpha', '- bullet beta', 'Middle paragraph rewritten.'],
+      notContains: ['Middle paragraph sandwiched here.'],
+      matches: [/\|\s*k1\s*\|\s*v1\s*\|/],
+      ordering: [
+        ['- bullet beta', 'Middle paragraph rewritten.'],
+        ['Middle paragraph rewritten.', '| K | V |'],
+        ['| k1 | v1 |', 'Trailing paragraph.'],
+      ],
+    },
+  },
+  {
+    title: 'M2 (H2): edit a line inside a fenced code block',
+    canvas: 'fence',
+    fixture:
+      '# Code\n\nBefore code.\n\n' +
+      '```python\n' +
+      'def hello():\n' +
+      '    # this comment looks like a heading\n' +
+      '    print("hello")\n' +
+      '```\n' +
+      '\nAfter code.\n',
+    apply: (b) => b.replace('print("hello")', 'print("world")'),
+    expect: {
+      contains: ['# Code', 'Before code.', 'print("world")', 'After code.'],
+      notContains: ['print("hello")'],
+      ordering: [
+        ['Before code.', 'print("world")'],
+        ['print("world")', 'After code.'],
+      ],
+    },
+  },
+  {
+    title: 'M3 (H3): edit content inside a blockquote',
+    canvas: 'blockquote',
+    fixture: `# Quoted
+
+Before quote.
+
+> This is a quoted line.
+
+After quote.
+`,
+    apply: (b) =>
+      b.replace('This is a quoted line.', 'This is the quoted line rewritten.'),
+    expect: {
+      contains: ['# Quoted', 'Before quote.', 'This is the quoted line rewritten.', 'After quote.'],
+      notContains: ['This is a quoted line.'],
+      ordering: [
+        ['Before quote.', 'This is the quoted line rewritten.'],
+        ['This is the quoted line rewritten.', 'After quote.'],
+      ],
+    },
+  },
+  {
+    title: 'M4 (H4): edit a sub-bullet in a nested list',
+    canvas: 'nested',
+    fixture: `# Nested
+
+- outer
+  - inner one
+  - inner two
+- outer two
+`,
+    apply: (b) => b.replace('inner one', 'inner uno'),
+    expect: {
+      contains: ['# Nested', 'outer', 'inner uno', 'inner two', 'outer two'],
+      notContains: ['inner one'],
+      ordering: [
+        ['inner uno', 'inner two'],
+        ['inner two', 'outer two'],
+      ],
+    },
+  },
+  {
+    title: 'M5 (H5): append an item to an ordered list (1. items, not -)',
+    canvas: 'ordered',
+    fixture: `# Ordered
+
+1. apple
+2. banana
+3. cherry
+`,
+    apply: (b) => b.replace('3. cherry', '3. cherry\n4. date'),
+    expect: {
+      contains: ['apple', 'banana', 'cherry', 'date'],
+      ordering: [
+        ['apple', 'banana'],
+        ['banana', 'cherry'],
+        ['cherry', 'date'],
+      ],
+      // Ensure we still have an ordered list (each item numbered 1–4).
+      matches: [/1\.\s*apple/, /4\.\s*date/],
+    },
+  },
+  {
+    title: 'M6 (H6): horizontal rule preserved when editing adjacent paragraph',
+    canvas: 'hr',
+    fixture: `# HR
+
+First paragraph.
+
+---
+
+Second paragraph.
+`,
+    apply: (b) => b.replace('Second paragraph.', 'Second paragraph rewritten.'),
+    expect: {
+      contains: ['# HR', 'First paragraph.', 'Second paragraph rewritten.'],
+      notContains: ['Second paragraph.\n'],
+      ordering: [
+        ['First paragraph.', 'Second paragraph rewritten.'],
+      ],
+      // HR should survive — either as "---" or the em-dash form Docs uses.
+      custom: (n) => {
+        const hasHr = /(?:^|\n)(?:---|—{2,}|\*\*\*)\s*(?:\n|$)/.test(n);
+        return {
+          pass: hasHr,
+          reason: `expected a horizontal-rule marker (--- or em-dashes) to survive; got:\n${n.slice(0, 400)}`,
+        };
+      },
+    },
+  },
+
+  // ── Group X: Edge / corner cases ──
+  {
+    title: 'X1 (E1): duplicate section headings — edit second occurrence',
+    canvas: 'dup-headings',
+    fixture: `# Notes
+
+First notes body.
+
+# Other
+
+Other body here.
+
+# Notes
+
+Second notes body.
+`,
+    apply: (b) => b.replace('Second notes body.', 'Second notes body rewritten.'),
+    expect: {
+      exact: `# Notes
+
+First notes body.
+
+# Other
+
+Other body here.
+
+# Notes
+
+Second notes body rewritten.`,
+      contains: ['First notes body.', 'Second notes body rewritten.', 'Other body here.'],
+      notContains: ['Second notes body.\n'],
+      ordering: [
+        ['First notes body.', '# Other'],
+        ['# Other', 'Second notes body rewritten.'],
+      ],
+    },
+  },
+  {
+    title: 'X2 (E2): edit preamble content (before first heading)',
+    canvas: 'preamble',
+    fixture: `Intro paragraph.
+
+# Section
+
+Body.
+`,
+    apply: (b) => b.replace('Intro paragraph.', 'Intro rewritten.'),
+    expect: {
+      exact: `Intro rewritten.
+
+# Section
+
+Body.`,
+      contains: ['Intro rewritten.', '# Section', 'Body.'],
+      notContains: ['Intro paragraph.'],
+      ordering: [
+        ['Intro rewritten.', '# Section'],
+        ['# Section', 'Body.'],
+      ],
+    },
+  },
+  {
+    title: 'X3 (E3): document with only a preamble (no headings) — edit one paragraph',
+    canvas: 'no-heading',
+    fixture: `Plain paragraph one.
+
+Plain paragraph two.
+
+Plain paragraph three.
+`,
+    apply: (b) => b.replace('Plain paragraph two.', 'Plain paragraph TWO rewritten.'),
+    expect: {
+      exact: `Plain paragraph one.
+
+Plain paragraph TWO rewritten.
+
+Plain paragraph three.`,
+      contains: ['Plain paragraph one.', 'Plain paragraph TWO rewritten.', 'Plain paragraph three.'],
+      notContains: ['Plain paragraph two.'],
+      ordering: [
+        ['Plain paragraph one.', 'Plain paragraph TWO rewritten.'],
+        ['Plain paragraph TWO rewritten.', 'Plain paragraph three.'],
+      ],
+    },
+  },
+  {
+    title: 'X4 (E4): formatting-only variant (same rendered runs) should be a no-op',
+    canvas: 'semantic-noop',
+    fixture: `# SemNoop
+
+Line with **bold one** **bold two** adjacent runs.
+`,
+    // Re-render the two adjacent bold runs as a single merged run. Both
+    // forms map to the same text runs in Docs ("bold one" and "bold two"
+    // bolded, separated by a space), so the normalization gate should
+    // detect equivalence and emit zero requests.
+    apply: (b) => b.replace('**bold one** **bold two**', '**bold one bold two**'),
+    expect: {
+      // End body must still contain both words, bolded. Either markdown
+      // form is acceptable after the round-trip.
+      contains: ['# SemNoop', 'bold one', 'bold two'],
+      // Must not have mangled the text into something else.
+      matches: [/\*\*[^*]*bold one[^*]*bold two[^*]*\*\*|\*\*bold one\*\*\s+\*\*bold two\*\*/],
+      exactRequests: 0,
+    },
+  },
+  {
+    title: 'X5 (E5): character-identical no-op on rich content — zero requests',
+    canvas: 'noop-rich',
+    fixture: FIX_RICH,
+    apply: (b) => b,
+    expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| a | b |
+| c | d |
+
+End paragraph.`,
+      exactRequests: 0,
+    },
+  },
+
+  // ── Group K: Feature combinations ──
+  {
+    title: 'K1 (C1): cell edit + row add in a single diff',
+    canvas: 'table-combo',
+    fixture: FIX_RICH,
+    apply: (b) =>
+      b
+        .replace('| a | b |', '| A | b |')
+        .replace('| c | d |', '| c | d |\n| e | f |'),
+    expect: {
+      exact: `# Rich
+
+Some **bold word** and *italic word* and \`inline code\` and [link](https://example.com).
+
+- apple
+- banana
+- cherry
+
+| Col1 | Col2 |
+| --- | --- |
+| A | b |
+| c | d |
+| e | f |
+
+End paragraph.`,
+      matches: [/\|\s*A\s*\|\s*b\s*\|/, /\|\s*e\s*\|\s*f\s*\|/],
+      ordering: [
+        ['| A | b |', '| c | d |'],
+        ['| c | d |', '| e | f |'],
+      ],
+    },
+  },
+  {
+    title: 'K2 (C2): rename a heading AND edit its body in one diff',
+    canvas: 'rename-plus-body',
+    fixture: FIX_PLAIN,
+    apply: (b) =>
+      b
+        .replace('# Beta', '# BetaPrime')
+        .replace('Second paragraph of Beta.', 'Beta body rewritten.'),
+    expect: {
+      exact: `# Alpha
+
+First paragraph of Alpha.
+
+# BetaPrime
+
+Beta body rewritten.
+
+# Gamma
+
+Third paragraph of Gamma.`,
+      contains: ['# BetaPrime', 'Beta body rewritten.'],
+      notContains: ['# Beta\n', 'Second paragraph of Beta.'],
+      ordering: [
+        ['# Alpha', '# BetaPrime'],
+        ['# BetaPrime', 'Beta body rewritten.'],
+        ['Beta body rewritten.', '# Gamma'],
+      ],
+    },
+  },
+  {
+    title: 'K3 (C3): convert a plain paragraph to a bullet list item',
+    canvas: 'para-to-bullet',
+    fixture: `# Convert
+
+Some text.
+
+Next paragraph.
+`,
+    apply: (b) => b.replace('Some text.', '- Some text.'),
+    expect: {
+      exact: `# Convert
+
+- Some text.
+
+Next paragraph.`,
+      contains: ['# Convert', '- Some text.', 'Next paragraph.'],
+      notMatches: [/^Some text\.$/m],
+      ordering: [
+        ['# Convert', '- Some text.'],
+        ['- Some text.', 'Next paragraph.'],
+      ],
+    },
+  },
+  {
+    title: 'K4 (C4): delete a whole section that contains a table',
+    canvas: 'section-with-table',
+    fixture: `# Keep
+
+Keep body.
+
+# DropMe
+
+Drop intro line.
+
+| kk | vv |
+| --- | --- |
+| x | y |
+| p | q |
+
+Drop trailing line.
+
+# Tail
+
+Tail body.
+`,
+    apply: (b) =>
+      b.replace(
+        '\n\n# DropMe\n\nDrop intro line.\n\n| kk | vv |\n| --- | --- |\n| x | y |\n| p | q |\n\nDrop trailing line.',
+        '',
+      ),
+    expect: {
+      exact: `# Keep
+
+Keep body.
+
+# Tail
+
+Tail body.`,
+      contains: ['# Keep', '# Tail', 'Keep body.', 'Tail body.'],
+      notContains: [
+        '# DropMe',
+        'Drop intro line.',
+        'Drop trailing line.',
+        '| kk | vv |',
+        '| x | y |',
+        '| p | q |',
+      ],
+      ordering: [['# Keep', '# Tail']],
     },
   },
 ];
