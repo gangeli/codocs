@@ -8,6 +8,13 @@
  * to produce real side effects on real worktrees, and those side effects
  * are asserted post-hoc.
  *
+ * IMPORTANT: `FakeDocsClient.batchUpdate` does NOT apply the Docs API
+ * `requests` payload. It records the call and substitutes the agent's
+ * captured `.codocs/design-doc.md` as the new doc state. That means
+ * these tests prove "the orchestrator called batchUpdate with a non-
+ * empty request list," but NOT that the requests are semantically
+ * correct — diff/request generation is covered by diff.test.ts.
+ *
  * Test scenarios:
  *   TC1  single doc-edit comment       — agent writes to design-doc.md,
  *                                        orchestrator calls batchUpdate,
@@ -276,7 +283,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  *
  * Returns the absolute path to the working repo.
  */
-async function createTempRepo(): Promise<{ workdir: string; repoRoot: string }> {
+async function createTempRepo(): Promise<{ workdir: string; repoRoot: string; originPath: string }> {
   const workdir = await mkdtemp(join(tmpdir(), 'codocs-e2e-comments-'));
   const originPath = join(workdir, 'origin.git');
   const repoPath = join(workdir, 'repo');
@@ -292,7 +299,19 @@ async function createTempRepo(): Promise<{ workdir: string; repoRoot: string }> 
   await git(repoPath, 'commit', '-m', 'initial commit');
   await git(repoPath, 'push', '-u', 'origin', 'main');
 
-  return { workdir, repoRoot: repoPath };
+  return { workdir, repoRoot: repoPath, originPath };
+}
+
+/**
+ * List branch names present on the bare origin repo (i.e. the branches
+ * that have been pushed). Used to assert `pushBranch` actually fired.
+ */
+async function listOriginBranches(originPath: string): Promise<string[]> {
+  const { stdout } = await execFile(
+    'git',
+    ['--git-dir', originPath, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/'],
+  );
+  return stdout.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
 // ── Test primitives ──────────────────────────────────────────
@@ -325,6 +344,7 @@ interface TestCase {
 interface TestContext {
   workdir: string;
   repoRoot: string;
+  originPath: string;
   docsClient: FakeDocsClient;
   orchestrator: AgentOrchestrator;
   runner: RecordingRunner;
@@ -336,8 +356,19 @@ interface TestContext {
 async function runCase(tc: TestCase, debugFlag: boolean): Promise<boolean> {
   console.log(`\n\u2500\u2500 ${tc.title} \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`);
 
-  const { workdir, repoRoot } = await createTempRepo();
+  const { workdir, repoRoot, originPath } = await createTempRepo();
   const initialMarkdown = 'Project Alpha design.\n\nThe system currently has basic user login.\n';
+
+  // Sanity: the mock doc builder must round-trip through docsToMarkdown.
+  // Tests assume `docsToMarkdown(mdToMinimalDoc(m)) === m` for the inputs
+  // used here; if that invariant ever breaks, every assertion downstream
+  // becomes meaningless, so surface it at the top.
+  const rt = docsToMarkdown(mdToMinimalDoc(initialMarkdown));
+  if (rt !== initialMarkdown) {
+    console.log(`  \u274c mdToMinimalDoc round-trip broken: ${JSON.stringify(rt)} !== ${JSON.stringify(initialMarkdown)}`);
+    return false;
+  }
+
   const docsClient = new FakeDocsClient(initialMarkdown);
   const db = await openDatabase(':memory:');
   const queueStore = new QueueStore(db);
@@ -373,7 +404,7 @@ async function runCase(tc: TestCase, debugFlag: boolean): Promise<boolean> {
   };
 
   const docId = 'doc-e2e-comments';
-  const ctx: TestContext = { workdir, repoRoot, docsClient, orchestrator, runner, docId, debug, expect };
+  const ctx: TestContext = { workdir, repoRoot, originPath, docsClient, orchestrator, runner, docId, debug, expect };
 
   try {
     await tc.fn(ctx);
@@ -440,8 +471,8 @@ const TC1: TestCase = {
     await orchestrator.handleComment(event);
     await orchestrator.waitForIdle();
 
-    // The agent should have run in a worktree (codeMode=pr).
-    expect(runner.workingDirectories.length >= 1, 'agent ran at least once');
+    // Exactly one agent run — no retry via the fresh-session fallback.
+    expect(runner.workingDirectories.length === 1, `agent ran exactly once (saw ${runner.workingDirectories.length})`);
     const worktreePath = runner.workingDirectories[0];
     expect(
       worktreePath.includes('.codocs/worktrees/'),
@@ -457,19 +488,15 @@ const TC1: TestCase = {
       );
     }
 
-    // A final reply was posted (beyond the thinking emoji).
+    // Exactly one final content reply (beyond the thinking emoji).
     const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F914}');
-    expect(contentReplies.length >= 1, 'a content reply was posted on the comment');
+    expect(contentReplies.length === 1, `exactly one content reply was posted (saw ${contentReplies.length})`);
 
-    // The agent wrote something meaningful to the design-doc.md snapshot.
-    // Since codeMode=pr, the worktree was either torn down (no code changes)
-    // or preserved (code changes). In the no-code case the worktree is gone,
-    // so we have to read the edited markdown from the sync'd mock state.
-    const postEditMarkdown = docsClient.markdown;
-    // Our mock doesn't apply batchUpdate requests — but we can also read
-    // the agent's design-doc.md from the worktree IF it's still there.
-    const stillOnDisk = await readDesignDoc(worktreePath);
-    const effective = stillOnDisk ?? postEditMarkdown;
+    // Because this is a doc-only edit, the worktree was torn down — the
+    // only observable record of the agent's edit is `docsClient.markdown`,
+    // which the mock updated during `batchUpdate` from the captured
+    // design-doc snapshot.
+    const effective = docsClient.markdown;
     expect(effective !== before, 'design doc content changed from the baseline');
     expect(
       /rate limit/i.test(effective),
@@ -536,13 +563,13 @@ const TC2: TestCase = {
     expect(/audit/i.test(finalMd), 'final doc mentions audit logging');
 
     const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F914}');
-    expect(contentReplies.length >= 2, 'two final content replies posted');
+    expect(contentReplies.length === 2, `exactly two final content replies posted (saw ${contentReplies.length})`);
   },
 };
 
 const TC3: TestCase = {
   title: 'TC3  code-change comment creates a commit',
-  fn: async ({ orchestrator, runner, repoRoot, docId, expect }) => {
+  fn: async ({ docsClient, orchestrator, runner, repoRoot, originPath, docId, expect }) => {
     await orchestrator.handleComment(
       makeCommentEvent(
         docId,
@@ -552,9 +579,12 @@ const TC3: TestCase = {
     );
     await orchestrator.waitForIdle();
 
-    expect(runner.workingDirectories.length >= 1, 'agent ran');
+    expect(runner.workingDirectories.length === 1, `agent ran exactly once (saw ${runner.workingDirectories.length})`);
     const wtPath = runner.workingDirectories[0];
     expect(wtPath.includes('.codocs/worktrees/'), 'agent ran inside a worktree');
+
+    // Code-only change: no doc edits should have been applied.
+    expect(docsClient.batchUpdateCalls.length === 0, `no doc edits triggered (saw ${docsClient.batchUpdateCalls.length})`);
 
     // The worktree should still exist because a code change was made.
     // (For pure doc edits the orchestrator tears down; for code changes
@@ -562,29 +592,33 @@ const TC3: TestCase = {
     const wts = await listWorktrees(repoRoot);
     expect(wts.length === 1, `worktree retained after code change (saw ${JSON.stringify(wts)})`);
 
-    // A commit should exist on the new branch.
-    if (existsSync(wtPath)) {
-      const branchName = await git(wtPath, 'rev-parse', '--abbrev-ref', 'HEAD');
-      expect(branchName.startsWith('codocs/'), `branch name is a codocs branch (${branchName})`);
+    // A commit should exist on the new branch. The assertions below are
+    // unconditional — the retained-worktree check above is the gate, and
+    // a regression there should fail loudly, not silently skip these.
+    const branchName = await git(wtPath, 'rev-parse', '--abbrev-ref', 'HEAD');
+    expect(branchName.startsWith('codocs/'), `branch name is a codocs branch (${branchName})`);
 
-      const log = await git(wtPath, 'log', '--oneline', `main..${branchName}`);
-      expect(log.length > 0, `branch has at least one commit beyond main (log: ${log.slice(0, 60)})`);
+    const log = await git(wtPath, 'log', '--oneline', `main..${branchName}`);
+    expect(log.length > 0, `branch has at least one commit beyond main (log: ${log.slice(0, 60)})`);
 
-      // The expected file should be present in the worktree.
-      const filePath = join(wtPath, 'src', 'hello.ts');
-      expect(existsSync(filePath), `src/hello.ts was created in the worktree (${filePath})`);
+    // The expected file should be present in the worktree.
+    const filePath = join(wtPath, 'src', 'hello.ts');
+    expect(existsSync(filePath), `src/hello.ts was created in the worktree (${filePath})`);
+    const content = await readFile(filePath, 'utf-8');
+    expect(/greet/.test(content), 'src/hello.ts defines greet()');
 
-      if (existsSync(filePath)) {
-        const content = await readFile(filePath, 'utf-8');
-        expect(/greet/.test(content), 'src/hello.ts defines greet()');
-      }
-    }
+    // Branch was pushed to origin (pushBranch actually fired).
+    const originBranches = await listOriginBranches(originPath);
+    expect(
+      originBranches.includes(branchName),
+      `origin has branch ${branchName} (origin has: ${JSON.stringify(originBranches)})`,
+    );
   },
 };
 
 const TC4: TestCase = {
   title: 'TC4  concurrent comments: isolated worktrees, no cross-contamination',
-  fn: async ({ orchestrator, runner, repoRoot, docId, expect }) => {
+  fn: async ({ docsClient, orchestrator, runner, repoRoot, originPath, docId, expect }) => {
     // Two code-change comments fired simultaneously. Both agents should
     // work in distinct worktrees and produce distinct files without
     // seeing each other's work. Doc state isn't asserted — the agents
@@ -623,27 +657,49 @@ const TC4: TestCase = {
       `no retry-with-fresh-session fallback (runs: ${runner.workingDirectories.length})`,
     );
 
+    // Neither comment should have triggered a doc edit.
+    expect(docsClient.batchUpdateCalls.length === 0, `no doc edits triggered (saw ${docsClient.batchUpdateCalls.length})`);
+
     // Both worktrees are retained (each had a code change).
     const wts = await listWorktrees(repoRoot);
     expect(wts.length === 2, `two worktrees retained (saw ${wts.length}: ${JSON.stringify(wts)})`);
 
-    // Each worktree contains its OWN file and NOT the other's file.
-    // This is the isolation invariant.
+    // Each worktree contains its OWN file WITH the expected marker content
+    // and NOT the other's file. Checking the marker (not just existence)
+    // catches a contamination where both agents create empty files or
+    // swap contents.
     const worktreePaths = [...uniqueWorktrees];
-    const findings: Array<{ path: string; hasAlpha: boolean; hasBeta: boolean }> = [];
+    const findings: Array<{
+      path: string; hasAlphaMarker: boolean; hasBetaMarker: boolean;
+      alphaExists: boolean; betaExists: boolean;
+    }> = [];
     for (const wt of worktreePaths) {
-      const alphaExists = existsSync(join(wt, 'src', 'alpha.ts'));
-      const betaExists = existsSync(join(wt, 'src', 'beta.ts'));
-      findings.push({ path: wt, hasAlpha: alphaExists, hasBeta: betaExists });
+      const alphaPath = join(wt, 'src', 'alpha.ts');
+      const betaPath = join(wt, 'src', 'beta.ts');
+      const alphaExists = existsSync(alphaPath);
+      const betaExists = existsSync(betaPath);
+      let hasAlphaMarker = false;
+      let hasBetaMarker = false;
+      if (alphaExists) {
+        const c = await readFile(alphaPath, 'utf-8');
+        hasAlphaMarker = c.includes('ALPHA_MARKER') && c.includes('alpha-marker-v1');
+      }
+      if (betaExists) {
+        const c = await readFile(betaPath, 'utf-8');
+        hasBetaMarker = c.includes('BETA_MARKER') && c.includes('beta-marker-v1');
+      }
+      findings.push({ path: wt, hasAlphaMarker, hasBetaMarker, alphaExists, betaExists });
     }
-    const alphaOnly = findings.filter((f) => f.hasAlpha && !f.hasBeta);
-    const betaOnly = findings.filter((f) => f.hasBeta && !f.hasAlpha);
-    expect(alphaOnly.length === 1, `exactly one worktree contains alpha.ts but not beta.ts (saw ${JSON.stringify(findings)})`);
-    expect(betaOnly.length === 1, `exactly one worktree contains beta.ts but not alpha.ts (saw ${JSON.stringify(findings)})`);
+    const alphaOnly = findings.filter((f) => f.hasAlphaMarker && !f.betaExists);
+    const betaOnly = findings.filter((f) => f.hasBetaMarker && !f.alphaExists);
+    expect(alphaOnly.length === 1, `exactly one worktree has alpha.ts with ALPHA_MARKER and no beta.ts (saw ${JSON.stringify(findings)})`);
+    expect(betaOnly.length === 1, `exactly one worktree has beta.ts with BETA_MARKER and no alpha.ts (saw ${JSON.stringify(findings)})`);
 
     // Each worktree has a commit on its own branch.
+    const branches: string[] = [];
     for (const wt of worktreePaths) {
       const branch = await git(wt, 'rev-parse', '--abbrev-ref', 'HEAD');
+      branches.push(branch);
       const log = await git(wt, 'log', '--oneline', `main..${branch}`);
       expect(
         log.trim().length > 0,
@@ -652,11 +708,16 @@ const TC4: TestCase = {
     }
 
     // Both branches are distinct.
-    const branches: string[] = [];
-    for (const wt of worktreePaths) {
-      branches.push(await git(wt, 'rev-parse', '--abbrev-ref', 'HEAD'));
-    }
     expect(new Set(branches).size === 2, `distinct branches per comment (saw ${JSON.stringify(branches)})`);
+
+    // Both branches were pushed to origin.
+    const originBranches = await listOriginBranches(originPath);
+    for (const branch of branches) {
+      expect(
+        originBranches.includes(branch),
+        `origin has branch ${branch} (origin has: ${JSON.stringify(originBranches)})`,
+      );
+    }
   },
 };
 
