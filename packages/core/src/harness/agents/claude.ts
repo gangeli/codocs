@@ -6,6 +6,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { copyFile, mkdir, readdir, realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import type { AgentRunner, AgentRunOptions, AgentRunResult, ActiveAgent, RunnerCapabilities } from '../agent.js';
 import {
   type TrackedProcess,
@@ -14,6 +18,73 @@ import {
   getTrackedProcesses,
   killTrackedProcesses,
 } from './runner-utils.js';
+
+/**
+ * Claude stores per-session JSONL files under
+ * `~/.claude/projects/<slug>/<sessionId>.jsonl`, where `<slug>` is
+ * derived from the cwd (roughly: absolute path with `/` → `-` and `.`
+ * dropped). Session lookup (`--resume <sid>`) only inspects the slug
+ * for the *current* cwd.
+ *
+ * Our fork flow spawns the child in a different cwd than the parent
+ * (each comment gets its own worktree), so `--resume <parent> --fork-
+ * session` fails with exit 1 — Claude can't find the JSONL.
+ *
+ * Before spawning a forked child, we search every project dir for the
+ * parent's JSONL and copy it into the child's expected slug directory
+ * so `--resume` finds it. A no-op if the file is already in place, or
+ * if we can't locate it anywhere.
+ */
+async function cwdToSlug(cwd: string): Promise<string> {
+  // Matches Claude Code's observed per-project directory naming:
+  // every non-alphanumeric character in the realpath cwd is replaced
+  // with `-` (so `/`, `.`, `_` all collapse to `-`, including runs).
+  // realpath matters on macOS where /var is a symlink to /private/var
+  // and Claude uses the resolved /private/var/... form.
+  let real = resolve(cwd);
+  try {
+    real = await realpath(real);
+  } catch {
+    // Worktree path may not exist yet at slug computation time; fall
+    // back to the non-realpath form.
+  }
+  return real.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+async function findSessionFile(sessionId: string): Promise<string | null> {
+  const projectsDir = join(homedir(), '.claude', 'projects');
+  if (!existsSync(projectsDir)) return null;
+  let entries: string[];
+  try {
+    entries = await readdir(projectsDir);
+  } catch {
+    return null;
+  }
+  for (const d of entries) {
+    const candidate = join(projectsDir, d, `${sessionId}.jsonl`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function ensureSessionAvailable(
+  sessionId: string,
+  cwd: string,
+): Promise<void> {
+  const projectsDir = join(homedir(), '.claude', 'projects');
+  const targetDir = join(projectsDir, await cwdToSlug(cwd));
+  const targetFile = join(targetDir, `${sessionId}.jsonl`);
+  if (existsSync(targetFile)) return;
+  const src = await findSessionFile(sessionId);
+  if (!src) return;
+  try {
+    await mkdir(targetDir, { recursive: true });
+    await copyFile(src, targetFile);
+  } catch {
+    // If the copy fails we fall through; the caller's retry path
+    // (fresh session) will absorb it.
+  }
+}
 
 export class ClaudeRunner implements AgentRunner {
   readonly name = 'claude';
@@ -59,6 +130,12 @@ export class ClaudeRunner implements AgentRunner {
     }
 
     if (forking) {
+      // Claude looks up session JSONLs under the slug for the child's
+      // cwd. The parent was created in a different cwd, so copy the
+      // session file into the expected location before resuming.
+      if (opts?.workingDirectory) {
+        await ensureSessionAvailable(sessionId!, opts.workingDirectory);
+      }
       args.push('--resume', sessionId!, '--fork-session');
     } else if (sessionId) {
       args.push('--resume');

@@ -504,16 +504,18 @@ const TC2: TestCase = {
     );
     await orchestrator.waitForIdle();
 
+    // With the session-fork fix (cross-cwd JSONL copy), exactly 2 runs
+    // should happen — one per comment, no retry-with-fresh-session.
     expect(
-      runner.workingDirectories.length >= 2,
-      `runner observed at least two runs (saw ${runner.workingDirectories.length})`,
+      runner.workingDirectories.length === 2,
+      `runner observed exactly two runs, no session-fork fallback (saw ${runner.workingDirectories.length})`,
     );
 
     // The isolation invariant: distinct worktrees per comment.
     const uniqueWorktrees = new Set(runner.workingDirectories);
     expect(
-      uniqueWorktrees.size >= 2,
-      `at least two distinct worktrees were used (saw ${uniqueWorktrees.size})`,
+      uniqueWorktrees.size === 2,
+      `two distinct worktrees were used (saw ${uniqueWorktrees.size})`,
     );
 
     expect(docsClient.batchUpdateCalls.length === 2, 'two batchUpdate calls (one per comment)');
