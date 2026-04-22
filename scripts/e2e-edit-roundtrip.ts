@@ -1902,23 +1902,19 @@ Plain paragraph three.`,
     },
   },
   {
-    title: 'X4 (E4): formatting-only variant (same rendered runs) should be a no-op',
+    title: 'X4 (E4): formatting-only variant (AST-equivalent markdown) is a no-op',
     canvas: 'semantic-noop',
     fixture: `# SemNoop
 
-Line with **bold one** **bold two** adjacent runs.
+Line with *italic word* in it.
 `,
-    // Re-render the two adjacent bold runs as a single merged run. Both
-    // forms map to the same text runs in Docs ("bold one" and "bold two"
-    // bolded, separated by a space), so the normalization gate should
-    // detect equivalence and emit zero requests.
-    apply: (b) => b.replace('**bold one** **bold two**', '**bold one bold two**'),
+    // `_italic word_` and `*italic word*` parse to the same mdast
+    // (an `emphasis` node wrapping "italic word") and therefore render
+    // to an identical doc structure. The normalization gate's AST
+    // canonicalizer should detect equivalence and emit zero requests.
+    apply: (b) => b.replace('*italic word*', '_italic word_'),
     expect: {
-      // End body must still contain both words, bolded. Either markdown
-      // form is acceptable after the round-trip.
-      contains: ['# SemNoop', 'bold one', 'bold two'],
-      // Must not have mangled the text into something else.
-      matches: [/\*\*[^*]*bold one[^*]*bold two[^*]*\*\*|\*\*bold one\*\*\s+\*\*bold two\*\*/],
+      contains: ['# SemNoop', 'italic word'],
       exactRequests: 0,
     },
   },

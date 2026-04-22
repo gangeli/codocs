@@ -8,6 +8,10 @@
 
 import { merge as diff3Merge, diffPatch } from 'node-diff3';
 import type { docs_v1 } from 'googleapis';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
+import remarkStringify from 'remark-stringify';
 import type { IndexMapEntry } from '../converter/element-parser.js';
 import { markdownToDocsRequests } from '../converter/md-to-docs.js';
 import { createAttributionRequests } from '../attribution/named-ranges.js';
@@ -371,8 +375,43 @@ export async function computeDocDiff(
     return { hasChanges: false, requests: [], conflictsResolved };
   }
 
+  // AST-level equivalence fallback: markdown variants that parse to the
+  // same mdast (e.g. `_em_` vs `*em*`, `-` vs `*` list markers) hit this
+  // path. Skipping these zero-impact diffs avoids a round-trip edit that
+  // the reader would immediately re-canonicalize.
+  if (
+    canonicalizeMarkdown(mergeResult.mergedMarkdown) === canonicalizeMarkdown(theirs)
+  ) {
+    return { hasChanges: false, requests: [], conflictsResolved };
+  }
+
   const bodyEndIndex = getBodyEndIndex(document);
   const requests: docs_v1.Schema$Request[] = [];
+
+  // Pair theirs/merged sections by (heading, occurrence-index) so duplicate
+  // heading texts (e.g. two `# Notes`) stay distinct. Using `.find(...)` by
+  // heading alone collapses every occurrence onto the first match, which
+  // routes all edits for that heading onto the first section's doc range.
+  const NULL_HEADING_KEY = '\0null';
+  const keyOf = (sections: MdSection[]): string[] => {
+    const counts = new Map<string, number>();
+    return sections.map((s) => {
+      const h = s.heading ?? NULL_HEADING_KEY;
+      const n = counts.get(h) ?? 0;
+      counts.set(h, n + 1);
+      return `${h}\0${n}`;
+    });
+  };
+  const theirsKeys = keyOf(theirsSections);
+  const mergedKeys = keyOf(mergedSections);
+  const theirsByKey = new Map<string, MdSection>();
+  for (let i = 0; i < theirsSections.length; i++) {
+    theirsByKey.set(theirsKeys[i], theirsSections[i]);
+  }
+  const mergedByKey = new Map<string, MdSection>();
+  for (let i = 0; i < mergedSections.length; i++) {
+    mergedByKey.set(mergedKeys[i], mergedSections[i]);
+  }
 
   // Find sections that differ between theirs and merged
   const changedSections: Array<{
@@ -384,7 +423,7 @@ export async function computeDocDiff(
 
   for (let mi = 0; mi < mergedSections.length; mi++) {
     const mergedS = mergedSections[mi];
-    const theirsS = theirsSections.find((s) => s.heading === mergedS.heading);
+    const theirsS = theirsByKey.get(mergedKeys[mi]) ?? null;
     if (!theirsS || theirsS.content !== mergedS.content) {
       let docRange;
       if (!theirsS) {
@@ -393,7 +432,7 @@ export async function computeDocDiff(
         // no such neighbour exists (new section is last), append at body end.
         let docStartIndex = bodyEndIndex;
         for (let j = mi + 1; j < mergedSections.length; j++) {
-          const nextTheirs = theirsSections.find((s) => s.heading === mergedSections[j].heading);
+          const nextTheirs = theirsByKey.get(mergedKeys[j]);
           if (nextTheirs) {
             docStartIndex = findSectionDocRange(
               nextTheirs,
@@ -422,11 +461,11 @@ export async function computeDocDiff(
   }
 
   // Also handle sections that were deleted (in theirs but not in merged)
-  for (const theirsS of theirsSections) {
-    const mergedS = mergedSections.find((s) => s.heading === theirsS.heading);
-    if (!mergedS) {
+  for (let ti = 0; ti < theirsSections.length; ti++) {
+    const theirsS = theirsSections[ti];
+    if (!mergedByKey.has(theirsKeys[ti])) {
       const docRange = findSectionDocRange(
-        theirsS ?? null,
+        theirsS,
         theirsSections,
         indexMap,
         bodyEndIndex,
@@ -547,6 +586,12 @@ export async function computeDocDiff(
       document,
       indexMap,
     );
+    const blockquoteRegions = findBlockquoteRegionsInSection(
+      oldLines,
+      sectionMdStart,
+      document,
+      indexMap,
+    );
 
     // Google Docs batchUpdate processes requests sequentially.
     // Process hunks in reverse order (highest index first) so that
@@ -575,6 +620,25 @@ export async function computeDocDiff(
           },
           tableRegion,
           oldLines,
+          requests,
+        );
+        continue;
+      }
+
+      const blockquoteRegion = findContainingBlockquoteRegion(
+        oldOffset,
+        oldLength,
+        hunk.buffer2.chunk,
+        blockquoteRegions,
+      );
+      if (blockquoteRegion) {
+        emitBlockquoteHunkRequests(
+          {
+            oldOffset,
+            oldLength,
+            newChunk: hunk.buffer2.chunk,
+          },
+          blockquoteRegion,
           requests,
         );
         continue;
@@ -1049,6 +1113,48 @@ function normalizeForNoOpCheck(s: string): string {
     .map((l) => l.replace(/[ \t]+$/, ''))
     .join('\n')
     .trim();
+}
+
+// AST-based canonicalizer: parse with remark + GFM, stringify with fixed
+// options. Two markdown strings that parse to the same AST (e.g. `_em_`
+// vs `*em*`, or list-marker `-` vs `*`) canonicalize to the same output.
+// Used as a semantic-equivalence fallback in the no-op gate when the
+// cheap trailing-whitespace check fails.
+//
+// `any` here sidesteps unified's precise processor generics — the chain
+// `parse → GFM plugin → stringify` tightens the type to one we only need
+// to round-trip strings through. The processSync input/output are always
+// string ↔ string at runtime; the types just don't line up across the
+// plugin boundaries without verbose generic parameters.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _canonicalizer: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getCanonicalizer(): any {
+  if (!_canonicalizer) {
+    _canonicalizer = unified()
+      .use(remarkParse)
+      .use(remarkGfm)
+      .use(remarkStringify, {
+        bullet: '-',
+        emphasis: '*',
+        strong: '*',
+        rule: '-',
+        fence: '`',
+        fences: true,
+        listItemIndent: 'one',
+      });
+  }
+  return _canonicalizer;
+}
+
+function canonicalizeMarkdown(md: string): string {
+  try {
+    return String(getCanonicalizer().processSync(md));
+  } catch {
+    // If remark throws on exotic input, fall back to the raw string so
+    // the caller's equality check still runs deterministically.
+    return md;
+  }
 }
 
 function docHasAnyBullet(document: docs_v1.Schema$Document): boolean {
@@ -1601,4 +1707,165 @@ function emitInsertTableRow(
       },
     });
   }
+}
+
+// ── Blockquote handling ─────────────────────────────────────
+//
+// Blockquotes round-trip through a 1×1 table with a thick left border
+// (see writer/element-parser for the exact shape). Each markdown `> line`
+// in readback corresponds to one paragraph inside the single cell. The
+// generic line-diff path doesn't know about this: it tries to delete a
+// range that spans the table's structural indices, which Docs rejects
+// with "Invalid deletion range". Detect blockquote regions here and
+// emit cell-paragraph-scoped text edits instead.
+
+/** A run of consecutive `>`-prefixed lines mapped to a 1×1 blockquote
+ *  table in the live doc. */
+interface BlockquoteRegion {
+  /** Inclusive: markdown line index of the first `>` line. */
+  startLine: number;
+  /** Inclusive: markdown line index of the last `>` line. */
+  endLine: number;
+  /** Doc index of the table's structural element. */
+  docStartIndex: number;
+  /** Live table reference — used to look up cell paragraph ranges. */
+  table: docs_v1.Schema$Table;
+}
+
+function isBlockquoteLine(line: string): boolean {
+  return /^>($|\s)/.test(line);
+}
+
+/** Structural fingerprint matching the writer's blockquote: 1×1 table
+ *  with a 3pt left border and no other borders. */
+function isBlockquoteTableShape(table: docs_v1.Schema$Table): boolean {
+  const rows = table.tableRows ?? [];
+  if (rows.length !== 1) return false;
+  const cells = rows[0].tableCells ?? [];
+  if (cells.length !== 1) return false;
+  const s = cells[0].tableCellStyle;
+  if (!s) return false;
+  const w = (b?: docs_v1.Schema$TableCellBorder) => b?.width?.magnitude ?? 0;
+  return (
+    w(s.borderLeft) === 3 &&
+    w(s.borderTop) === 0 &&
+    w(s.borderRight) === 0 &&
+    w(s.borderBottom) === 0
+  );
+}
+
+function findBlockquoteRegionsInSection(
+  sectionLines: string[],
+  sectionMdStart: number,
+  document: docs_v1.Schema$Document,
+  indexMap: IndexMapEntry[],
+): BlockquoteRegion[] {
+  const regions: BlockquoteRegion[] = [];
+  let mdOffset = sectionMdStart;
+  let i = 0;
+  while (i < sectionLines.length) {
+    if (isBlockquoteLine(sectionLines[i])) {
+      const startLine = i;
+      const startMdOffset = mdOffset;
+      let endLine = i;
+      while (i < sectionLines.length && isBlockquoteLine(sectionLines[i])) {
+        endLine = i;
+        mdOffset += sectionLines[i].length + 1;
+        i++;
+      }
+      const docStartIndex = lookupDocIndexAt(indexMap, startMdOffset);
+      const tableElem =
+        docStartIndex != null ? findTableElementAt(document, docStartIndex) : null;
+      if (docStartIndex != null && tableElem && isBlockquoteTableShape(tableElem)) {
+        regions.push({ startLine, endLine, docStartIndex, table: tableElem });
+      }
+    } else {
+      mdOffset += sectionLines[i].length + 1;
+      i++;
+    }
+  }
+  return regions;
+}
+
+function findContainingBlockquoteRegion(
+  oldOffset: number,
+  oldLength: number,
+  newChunk: string[],
+  regions: BlockquoteRegion[],
+): BlockquoteRegion | null {
+  const newAllBq = newChunk.every((l) => isBlockquoteLine(l));
+  if (!newAllBq) return null;
+  for (const region of regions) {
+    if (oldLength === 0) {
+      // Pure insert inside (or immediately after) the region.
+      if (oldOffset >= region.startLine && oldOffset <= region.endLine + 1) {
+        return region;
+      }
+      continue;
+    }
+    const oldEnd = oldOffset + oldLength - 1;
+    if (oldOffset >= region.startLine && oldEnd <= region.endLine) {
+      return region;
+    }
+  }
+  return null;
+}
+
+/** Strip one leading `> ` (or bare `>`) prefix from a blockquote line. */
+function stripBlockquotePrefix(line: string): string {
+  const m = line.match(/^>\s?(.*)$/);
+  return m ? m[1] : line;
+}
+
+/** Emit cell-paragraph text edits for a hunk inside a blockquote
+ *  region. Assumes 1:1 markdown-line ↔ cell-paragraph correspondence
+ *  (true when each cell paragraph's markdown form has no internal
+ *  newlines — which covers single-line quoted paragraphs). */
+function emitBlockquoteHunkRequests(
+  hunk: { oldOffset: number; oldLength: number; newChunk: string[] },
+  region: BlockquoteRegion,
+  requests: docs_v1.Schema$Request[],
+): void {
+  const cell = region.table.tableRows?.[0]?.tableCells?.[0];
+  const cellParagraphs: Array<{ startIndex: number; endIndex: number }> = [];
+  for (const el of cell?.content ?? []) {
+    if (!el.paragraph) continue;
+    if (el.startIndex != null && el.endIndex != null) {
+      cellParagraphs.push({ startIndex: el.startIndex, endIndex: el.endIndex });
+    }
+  }
+
+  const newTexts = hunk.newChunk.map(stripBlockquotePrefix);
+  const pairCount = Math.min(hunk.oldLength, newTexts.length);
+
+  // Process pairs in reverse so later edits don't shift earlier
+  // paragraphs' indices.
+  for (let i = pairCount - 1; i >= 0; i--) {
+    const paraIdx = hunk.oldOffset + i - region.startLine;
+    const range = cellParagraphs[paraIdx];
+    if (!range) continue;
+    // Replace the paragraph's text (everything up to its trailing \n).
+    if (range.endIndex - 1 > range.startIndex) {
+      requests.push({
+        deleteContentRange: {
+          range: { startIndex: range.startIndex, endIndex: range.endIndex - 1 },
+        },
+      });
+    }
+    if (newTexts[i].length > 0) {
+      requests.push({
+        insertText: {
+          location: { index: range.startIndex },
+          text: newTexts[i],
+        },
+      });
+    }
+  }
+
+  // Line-count mismatches (pure inserts or deletes inside a blockquote)
+  // aren't supported yet — they'd require adding/removing cell paragraphs
+  // via inserts at the cell's paragraph boundaries. Leaving intentionally
+  // unhandled: the generic path was crashing for these too, so at worst
+  // we preserve the pre-existing behaviour. A future follow-up can emit
+  // insertText at cellParagraphs[end].endIndex-1 for pure-insert cases.
 }
