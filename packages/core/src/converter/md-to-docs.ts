@@ -459,6 +459,14 @@ function processBlockquoteSegment(
       adjustRequestIndex(style, cellContentIndex);
       allStyles.push(style);
     }
+    // Bullet requests collected during the blockquote walk were kept
+    // separate from styles so blockquote rendering stays opt-in. Emit
+    // them now so lists inside the quote (e.g. `> - item`) round-trip
+    // with their bullet formatting intact.
+    for (const bullet of segment.bullets) {
+      adjustRequestIndex(bullet, cellContentIndex);
+      allStyles.push(bullet);
+    }
   }
 
   allStyles.push(...styleBlockquote(tableStart));

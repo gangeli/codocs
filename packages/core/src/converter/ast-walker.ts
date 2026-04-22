@@ -60,6 +60,9 @@ export interface BlockquoteSegment {
   text: string;
   /** Style requests with offsets relative to text start (0-based). */
   styles: docs_v1.Schema$Request[];
+  /** createParagraphBullets requests for lists inside the blockquote,
+   *  with ranges relative to text start (0-based). */
+  bullets: docs_v1.Schema$Request[];
 }
 
 export type WalkSegment = TextSegment | TableSegment | ImageSegment | BlockquoteSegment;
@@ -556,7 +559,12 @@ function walkBlockquote(node: Blockquote, ctx: WalkContext, listDepth: number) {
   let text = ctx.buf;
   if (text.endsWith('\n')) text = text.slice(0, -1);
 
-  ctx.segments.push({ type: 'blockquote', text, styles: ctx.styles });
+  ctx.segments.push({
+    type: 'blockquote',
+    text,
+    styles: ctx.styles,
+    bullets: ctx.bullets,
+  });
 
   ctx.buf = savedBuf;
   ctx.offset = savedOffset;

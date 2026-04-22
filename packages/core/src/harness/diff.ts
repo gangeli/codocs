@@ -51,6 +51,93 @@ export interface DiffResult {
 // Heading regex: line starting with 1-6 `#` followed by a space
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 
+const NULL_HEADING_KEY = '\0null';
+
+/** Pair sections with straight positional `${heading}\0${occurrence}` keys. */
+function sectionKeysPositional(
+  sections: MdSection[],
+): Array<{ key: string; section: MdSection }> {
+  const counts = new Map<string, number>();
+  return sections.map((s) => {
+    const h = s.heading ?? NULL_HEADING_KEY;
+    const n = counts.get(h) ?? 0;
+    counts.set(h, n + 1);
+    return { key: `${h}\0${n}`, section: s };
+  });
+}
+
+/**
+ * Pair sections with keys chosen RELATIVE TO a reference side (e.g. base,
+ * or the current doc). Same-heading sections are paired by content
+ * equality first when the occurrence count differs — this is what lets
+ * a surviving duplicate-headed section (after its neighbour was deleted
+ * elsewhere) keep the reference's key for the matching content instead
+ * of collapsing onto the first positional slot.
+ *
+ * Reference sections that go unmatched retain their keys so callers can
+ * still look them up by name (they represent sections only present in
+ * the reference — e.g. deleted by the side we're keying).
+ */
+function sectionKeysRelativeTo(
+  sections: MdSection[],
+  reference: Array<{ key: string; section: MdSection }>,
+): Array<{ key: string; section: MdSection }> {
+  type RefEntry = { key: string; section: MdSection; used: boolean };
+  const refByHeading = new Map<string, RefEntry[]>();
+  for (const entry of reference) {
+    const h = entry.section.heading ?? NULL_HEADING_KEY;
+    if (!refByHeading.has(h)) refByHeading.set(h, []);
+    refByHeading.get(h)!.push({ ...entry, used: false });
+  }
+  const sideCountsByHeading = new Map<string, number>();
+  for (const s of sections) {
+    const h = s.heading ?? NULL_HEADING_KEY;
+    sideCountsByHeading.set(h, (sideCountsByHeading.get(h) ?? 0) + 1);
+  }
+
+  const result: Array<{ key: string; section: MdSection }> = [];
+  const freshCounters = new Map<string, number>();
+
+  for (const s of sections) {
+    const h = s.heading ?? NULL_HEADING_KEY;
+    const refCount = refByHeading.get(h)?.length ?? 0;
+    const sideCount = sideCountsByHeading.get(h) ?? 0;
+
+    // Count mismatch → prefer content-equality pairing so the survivor
+    // of a deletion keeps its original reference key.
+    let matched: RefEntry | null = null;
+    if (refCount !== sideCount) {
+      for (const candidate of refByHeading.get(h) ?? []) {
+        if (candidate.used) continue;
+        if (candidate.section.content === s.content) {
+          matched = candidate;
+          break;
+        }
+      }
+    }
+
+    let key: string;
+    if (matched) {
+      matched.used = true;
+      key = matched.key;
+    } else {
+      // Fallback: next-unused reference key for this heading, else a
+      // fresh occurrence-index past the highest reference one.
+      const unused = (refByHeading.get(h) ?? []).find((c) => !c.used);
+      if (unused) {
+        unused.used = true;
+        key = unused.key;
+      } else {
+        const n = freshCounters.get(h) ?? refCount;
+        freshCounters.set(h, n + 1);
+        key = `${h}\0${n}`;
+      }
+    }
+    result.push({ key, section: s });
+  }
+  return result;
+}
+
 // Fenced code-block opener/closer: 3+ backticks or tildes, optionally
 // preceded by up to 3 spaces of indentation, with optional info string.
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
@@ -126,19 +213,9 @@ function alignSections(
   oursSections: MdSection[],
   theirsSections: MdSection[],
 ): Array<[MdSection | null, MdSection | null, MdSection | null]> {
-  const NULL_HEADING = '\0null';
-  function withKeys(sections: MdSection[]): Array<{ key: string; section: MdSection }> {
-    const counts = new Map<string, number>();
-    return sections.map((s) => {
-      const h = s.heading ?? NULL_HEADING;
-      const n = counts.get(h) ?? 0;
-      counts.set(h, n + 1);
-      return { key: `${h}\0${n}`, section: s };
-    });
-  }
-  const base = withKeys(baseSections);
-  const ours = withKeys(oursSections);
-  const theirs = withKeys(theirsSections);
+  const base = sectionKeysPositional(baseSections);
+  const ours = sectionKeysRelativeTo(oursSections, base);
+  const theirs = sectionKeysRelativeTo(theirsSections, base);
 
   // Pick the ordering authority: if exactly one side reordered the existing
   // sections relative to base, that side's ordering wins (walked first, so
@@ -388,30 +465,19 @@ export async function computeDocDiff(
   const bodyEndIndex = getBodyEndIndex(document);
   const requests: docs_v1.Schema$Request[] = [];
 
-  // Pair theirs/merged sections by (heading, occurrence-index) so duplicate
-  // heading texts (e.g. two `# Notes`) stay distinct. Using `.find(...)` by
-  // heading alone collapses every occurrence onto the first match, which
-  // routes all edits for that heading onto the first section's doc range.
-  const NULL_HEADING_KEY = '\0null';
-  const keyOf = (sections: MdSection[]): string[] => {
-    const counts = new Map<string, number>();
-    return sections.map((s) => {
-      const h = s.heading ?? NULL_HEADING_KEY;
-      const n = counts.get(h) ?? 0;
-      counts.set(h, n + 1);
-      return `${h}\0${n}`;
-    });
-  };
-  const theirsKeys = keyOf(theirsSections);
-  const mergedKeys = keyOf(mergedSections);
+  // Pair theirs/merged sections by (heading, occurrence-index), with
+  // content-equality fallback when the counts differ. Positional-only
+  // keying collapses duplicate headings onto the first match and routes
+  // edits to the wrong section; content-match keeps the survivor of a
+  // duplicate-heading deletion paired with its true doc-side slot.
+  const theirsKeyed = sectionKeysPositional(theirsSections);
+  const mergedKeyed = sectionKeysRelativeTo(mergedSections, theirsKeyed);
+  const theirsKeys = theirsKeyed.map((e) => e.key);
+  const mergedKeys = mergedKeyed.map((e) => e.key);
   const theirsByKey = new Map<string, MdSection>();
-  for (let i = 0; i < theirsSections.length; i++) {
-    theirsByKey.set(theirsKeys[i], theirsSections[i]);
-  }
+  for (const e of theirsKeyed) theirsByKey.set(e.key, e.section);
   const mergedByKey = new Map<string, MdSection>();
-  for (let i = 0; i < mergedSections.length; i++) {
-    mergedByKey.set(mergedKeys[i], mergedSections[i]);
-  }
+  for (const e of mergedKeyed) mergedByKey.set(e.key, e.section);
 
   // Find sections that differ between theirs and merged
   const changedSections: Array<{
@@ -1827,45 +1893,97 @@ function emitBlockquoteHunkRequests(
   requests: docs_v1.Schema$Request[],
 ): void {
   const cell = region.table.tableRows?.[0]?.tableCells?.[0];
-  const cellParagraphs: Array<{ startIndex: number; endIndex: number }> = [];
+  type CellPara = { startIndex: number; endIndex: number; bullet: boolean };
+  const cellParagraphs: CellPara[] = [];
   for (const el of cell?.content ?? []) {
     if (!el.paragraph) continue;
     if (el.startIndex != null && el.endIndex != null) {
-      cellParagraphs.push({ startIndex: el.startIndex, endIndex: el.endIndex });
+      cellParagraphs.push({
+        startIndex: el.startIndex,
+        endIndex: el.endIndex,
+        bullet: !!el.paragraph.bullet,
+      });
     }
   }
 
-  const newTexts = hunk.newChunk.map(stripBlockquotePrefix);
-  const pairCount = Math.min(hunk.oldLength, newTexts.length);
+  // Each new chunk line: strip `> ` prefix; if the counterpart cell
+  // paragraph is bulleted, also strip the `- ` marker so we don't
+  // double-apply it (the paragraph's bullet style re-renders it on
+  // readback).
+  const prefixStripped = hunk.newChunk.map(stripBlockquotePrefix);
+  const pairCount = Math.min(hunk.oldLength, prefixStripped.length);
 
-  // Process pairs in reverse so later edits don't shift earlier
-  // paragraphs' indices.
+  // Replacement pairs: edit existing cell paragraphs.
   for (let i = pairCount - 1; i >= 0; i--) {
     const paraIdx = hunk.oldOffset + i - region.startLine;
-    const range = cellParagraphs[paraIdx];
-    if (!range) continue;
-    // Replace the paragraph's text (everything up to its trailing \n).
-    if (range.endIndex - 1 > range.startIndex) {
+    const para = cellParagraphs[paraIdx];
+    if (!para) continue;
+    const text = para.bullet ? stripBulletMarker(prefixStripped[i]) : prefixStripped[i];
+    if (para.endIndex - 1 > para.startIndex) {
       requests.push({
         deleteContentRange: {
-          range: { startIndex: range.startIndex, endIndex: range.endIndex - 1 },
+          range: { startIndex: para.startIndex, endIndex: para.endIndex - 1 },
         },
       });
     }
-    if (newTexts[i].length > 0) {
+    if (text.length > 0) {
       requests.push({
         insertText: {
-          location: { index: range.startIndex },
-          text: newTexts[i],
+          location: { index: para.startIndex },
+          text,
         },
       });
     }
   }
 
-  // Line-count mismatches (pure inserts or deletes inside a blockquote)
-  // aren't supported yet — they'd require adding/removing cell paragraphs
-  // via inserts at the cell's paragraph boundaries. Leaving intentionally
-  // unhandled: the generic path was crashing for these too, so at worst
-  // we preserve the pre-existing behaviour. A future follow-up can emit
-  // insertText at cellParagraphs[end].endIndex-1 for pure-insert cases.
+  // Pure-insert: add new paragraphs to the cell. The anchor paragraph
+  // is the one IMMEDIATELY BEFORE the insert point (line
+  // `hunk.oldOffset - 1` in markdown); for inserts at the region's
+  // very start, anchorIdx is -1 and we prepend inside the cell's first
+  // paragraph. Each new chunk line becomes its own paragraph by
+  // including a trailing `\n` in the inserted text.
+  if (hunk.oldLength === 0 && prefixStripped.length > 0) {
+    const anchorMdLine = hunk.oldOffset - 1;
+    const anchorIdx = anchorMdLine - region.startLine;
+    const anchor = anchorIdx >= 0 ? cellParagraphs[anchorIdx] : null;
+    // Strip bullet marker if the neighbouring paragraph is bulleted —
+    // new paragraphs created from the split inherit its list formatting.
+    const adjacentBullet =
+      (anchor?.bullet ?? false) ||
+      (anchorIdx < 0 && (cellParagraphs[0]?.bullet ?? false));
+    const lines = prefixStripped.map((t) =>
+      adjacentBullet ? stripBulletMarker(t) : t,
+    );
+    const payload = lines.join('\n') + '\n';
+    // Choose an insertion index that lands INSIDE an existing cell
+    // paragraph (Docs rejects inserts at a structural boundary):
+    //   - Mid-cell (anchor not last): anchor.endIndex sits at the start
+    //     of the next paragraph; insert there.
+    //   - End-of-cell (anchor is last) or no anchor: insert at
+    //     anchor.endIndex - 1 (the last paragraph's trailing \n),
+    //     placing the new lines before it — the existing \n then
+    //     terminates the last newly-inserted paragraph.
+    let insertAt: number;
+    if (anchor) {
+      const isLast = anchorIdx === cellParagraphs.length - 1;
+      insertAt = isLast ? anchor.endIndex - 1 : anchor.endIndex;
+    } else if (cellParagraphs.length > 0) {
+      insertAt = cellParagraphs[0].startIndex;
+    } else {
+      return; // empty cell — nothing to insert into
+    }
+    requests.push({
+      insertText: {
+        location: { index: insertAt },
+        text: payload,
+      },
+    });
+  }
+
+  // Pure-delete (oldLength > newChunk.length): removing cell paragraphs
+  // entirely is out of scope for now — would require deleteContentRange
+  // spanning one or more whole paragraphs inside the cell plus careful
+  // handling of the cell's last paragraph (which can't be deleted).
+  // The common paragraph-count-preserving edits above cover the tests
+  // we have today.
 }
