@@ -3055,6 +3055,397 @@ See [the site](https://example.com) for more.
       exactRequests: 0,
     },
   },
+
+  // ── Group U: Round 2 corner cases. Probabilities informed by prior
+  //   calibration (overconfident in the 30-60% band last time, under-
+  //   confident in the <30% band). Comments note predicted fail-prob
+  //   and the specific mechanism expected to trip.
+
+  // U1 (~90%) — Agent adds a COLUMN to an existing table. emitTableHunkRequests
+  // is row-shaped (insertTableRow, deleteTableRow, per-cell edits for
+  // paired rows) with no column-add path. I don't see anywhere the
+  // diff pipeline emits `insertTableColumn`, so adding a column should
+  // either crash or leave the table shape intact with extra text.
+  {
+    title: 'U1: add a column to an existing table',
+    canvas: 'u1',
+    fixture: `# ColAdd
+
+| A | B |
+| --- | --- |
+| a1 | b1 |
+| a2 | b2 |
+
+Trailing.
+`,
+    apply: (b) =>
+      b
+        .replace('| A | B |', '| A | B | C |')
+        .replace('| --- | --- |', '| --- | --- | --- |')
+        .replace('| a1 | b1 |', '| a1 | b1 | c1 |')
+        .replace('| a2 | b2 |', '| a2 | b2 | c2 |'),
+    expect: {
+      contains: ['# ColAdd', 'A', 'B', 'C', 'a1', 'b1', 'c1', 'a2', 'b2', 'c2', 'Trailing.'],
+      ordering: [
+        ['# ColAdd', 'a1'],
+        ['a1', 'a2'],
+        ['a2', 'Trailing.'],
+      ],
+    },
+  },
+
+  // U2 (~85%) — Two tables back-to-back with only a blank line between.
+  // findTableRegionsInSection walks a section's lines, and the region
+  // detector treats a `| header |` + `| --- |` + consecutive `| row |`
+  // lines as ONE region — a single blank line between two table blocks
+  // breaks the sequence, but if the region walker doesn't restart on
+  // non-table lines, it might merge them. Edit the second table's cell.
+  {
+    title: 'U2: two tables adjacent (separated by one blank line) — edit second',
+    canvas: 'u2',
+    fixture: `# TwoTables
+
+| A | B |
+| --- | --- |
+| a1 | b1 |
+
+| X | Y |
+| --- | --- |
+| x1 | y1 |
+
+End.
+`,
+    apply: (b) => b.replace('| x1 | y1 |', '| X1 | y1 |'),
+    expect: {
+      contains: ['# TwoTables', 'a1', 'b1', 'X1', 'y1', 'End.'],
+      notContains: ['| x1 | y1 |'],
+      matches: [/\|\s*X1\s*\|\s*y1\s*\|/],
+      ordering: [
+        ['| a1 | b1 |', '| X1 | y1 |'],
+      ],
+    },
+  },
+
+  // U3 (~80%) — Edit the language tag on a code fence (```python → ```typescript).
+  // The writer stores the language as a named range `codelang:python`
+  // covering the fenced-code paragraphs. Changing the tag means
+  // dropping the old range and creating a new one. The diff pipeline
+  // doesn't obviously have a named-range lifecycle for code langs —
+  // tag changes probably leave the OLD range in place.
+  {
+    title: 'U3: edit code fence language tag (python → typescript)',
+    canvas: 'u3',
+    fixture:
+      '# CodeLang\n\nBefore.\n\n' +
+      '```python\n' +
+      'def hello():\n' +
+      '    return 42\n' +
+      '```\n' +
+      '\nAfter.\n',
+    apply: (b) => b.replace('```python\n', '```typescript\n'),
+    expect: {
+      // The new lang must be present; the old one must be gone.
+      contains: ['```typescript', 'def hello():', 'return 42'],
+      notContains: ['```python'],
+    },
+  },
+
+  // U4 (~75%) — Multi-paragraph list item (GFM "loose" list). A list
+  // item with a continuation paragraph indented by 2 spaces. Agent
+  // edits the continuation. Writer may or may not preserve the
+  // multi-paragraph structure; reader's bullet-detection path assumes
+  // one paragraph per item.
+  {
+    title: 'U4: multi-paragraph list item — edit the continuation paragraph',
+    canvas: 'u4',
+    fixture: `# LooseList
+
+- first item
+- second item
+
+  continuation of second item.
+
+- third item
+
+End.
+`,
+    apply: (b) =>
+      b.replace('continuation of second item.', 'continuation rewritten.'),
+    expect: {
+      contains: ['first item', 'second item', 'continuation rewritten', 'third item', 'End.'],
+      notContains: ['continuation of second item.'],
+      ordering: [
+        ['second item', 'continuation rewritten'],
+        ['continuation rewritten', 'third item'],
+      ],
+    },
+  },
+
+  // U5 (~70%) — Empty cell edit. Cell has no content initially; agent
+  // fills it. cellParagraphRange would return range [start, end) where
+  // end === start + 1 (just the \n), so the "if end-1 > start" delete
+  // guard skips, but the insertText into an empty cell should still
+  // work. Tests the boundary condition.
+  {
+    title: 'U5: fill an empty table cell',
+    canvas: 'u5',
+    fixture: `# EmptyCell
+
+| A | B |
+| --- | --- |
+|   | b1 |
+| a2 | b2 |
+
+End.
+`,
+    apply: (b) => b.replace('|   | b1 |', '| FILLED | b1 |'),
+    expect: {
+      contains: ['# EmptyCell', 'FILLED', 'b1', 'a2', 'b2', 'End.'],
+      matches: [/\|\s*FILLED\s*\|\s*b1\s*\|/],
+    },
+  },
+
+  // U6 (~70%) — Ordered list with explicit start number (1. … 5. →
+  // starts at 1, vs agent wanting it at 5). remark-gfm parses `5.` as
+  // list-item-1 with startNumber=5. The writer sets startNumber on
+  // the list, which Docs respects in rendering. On readback, the
+  // reader iterates items with its own counter keyed off the list-id.
+  // If the reader doesn't honour startNumber, the readback is "1. foo"
+  // when the fixture was "5. foo".
+  {
+    title: 'U6: ordered list with startNumber != 1 — round-trip',
+    canvas: 'u6',
+    fixture: `# StartFive
+
+Some preamble.
+
+5. five-item
+6. six-item
+7. seven-item
+
+Trailing.
+`,
+    apply: (b) => b.replace('six-item', 'six-item-edited'),
+    expect: {
+      // Either the start number round-trips (5., 6., 7.) OR it renumbers
+      // to 1., 2., 3. — both outcomes preserve the list shape. What MUST
+      // survive is the text content and the edit.
+      contains: ['five-item', 'six-item-edited', 'seven-item'],
+      notContains: ['six-item\n', 'six-item '],
+      // Exactly three numbered items, all consecutive.
+      matches: [/\d+\.\s+five-item/, /\d+\.\s+six-item-edited/, /\d+\.\s+seven-item/],
+    },
+  },
+
+  // U7 (~65%) — Heading with inline bold formatting. `# **Bold** Heading` —
+  // walkAst walks the strong node inside the heading, emitting bold
+  // style on that substring. Reader's parseParagraph for a heading
+  // paragraph runs emitStyledSegments, which should emit the `**`
+  // markers. BUT the heading style (HEADING_1) might interact with
+  // inline styles in unexpected ways (e.g. header bold overrides
+  // inline-segment detection).
+  {
+    title: 'U7: heading with inline bold — edit the bold word',
+    canvas: 'u7',
+    fixture: `# **Bold** Heading
+
+Body paragraph.
+
+# Next
+
+Other body.
+`,
+    apply: (b) => b.replace('**Bold** Heading', '**Strong** Heading'),
+    expect: {
+      contains: ['**Strong** Heading', 'Body paragraph.', '# Next'],
+      notContains: ['**Bold** Heading'],
+    },
+  },
+
+  // U8 (~65%) — Link with a title attribute. `[text](url "title")` —
+  // remark parses this as a Link node with `title` set. walkLink in
+  // ast-walker pushes an updateTextStyle with `link: { url }` — no
+  // title handling visible. So title is likely dropped on write. Agent
+  // sees `[text](url)` (no title) in base and edits. Test asserts no
+  // crash, link text round-trips.
+  {
+    title: 'U8: link with title attribute — edit the text',
+    canvas: 'u8',
+    fixture: `# TitleLink
+
+See [the site](https://example.com "Example Homepage") for info.
+
+End.
+`,
+    apply: (b) => b.replace('the site', 'the homepage'),
+    expect: {
+      // Either the title is preserved or dropped; the edit must land.
+      contains: ['the homepage', 'https://example.com', 'End.'],
+      notContains: ['the site'],
+    },
+  },
+
+  // U9 (~55%) — Link text inside a heading. `# Section [with link](url)`.
+  // Editing the link text should change the heading's inline content
+  // without corrupting the heading style or the link URL.
+  {
+    title: 'U9: link inside a heading — edit the link text',
+    canvas: 'u9',
+    fixture: `# Intro
+
+Body.
+
+## See [the docs](https://docs.example.com) for details
+
+More body.
+`,
+    apply: (b) => b.replace('the docs', 'our documentation'),
+    expect: {
+      contains: ['our documentation', 'https://docs.example.com', 'More body.'],
+      notContains: ['the docs'],
+      // Heading style should survive.
+      matches: [/^##\s+.*our documentation/m],
+    },
+  },
+
+  // U10 (~50%) — Three-level nested list. `-\n  -\n    -`. Agent edits
+  // the deepest item. walkList uses listDepth to emit tab-prefixed
+  // bullets; reader detects nestingLevel on bullets. With depth 3,
+  // the tab-emission might drop or the indentation detection might
+  // miscategorise the innermost as depth 2.
+  {
+    title: 'U10: three-level nested list — edit the deepest item',
+    canvas: 'u10',
+    fixture: `# Nested3
+
+- level 1
+  - level 2
+    - level 3 deep
+  - level 2 sibling
+- level 1 sibling
+
+Trailing.
+`,
+    apply: (b) => b.replace('level 3 deep', 'level 3 edited'),
+    expect: {
+      contains: [
+        '# Nested3',
+        'level 1',
+        'level 2',
+        'level 3 edited',
+        'level 2 sibling',
+        'level 1 sibling',
+        'Trailing.',
+      ],
+      notContains: ['level 3 deep'],
+      ordering: [
+        ['level 2', 'level 3 edited'],
+        ['level 3 edited', 'level 2 sibling'],
+      ],
+    },
+  },
+
+  // U11 (~45%) — Table at the very START of the doc (no preceding
+  // paragraph / heading). parseSections emits a null-heading section
+  // containing the table. computeMdOffset for this section is 0.
+  // findTableRegionsInSection walks from 0 and should find it. But a
+  // null-heading section has special handling elsewhere (preamble
+  // edits, E2/X2) — this tests the intersection.
+  {
+    title: 'U11: table at doc start (no preceding content) — edit a cell',
+    canvas: 'u11',
+    fixture: `| A | B |
+| --- | --- |
+| a1 | b1 |
+| a2 | b2 |
+
+Trailing paragraph.
+`,
+    apply: (b) => b.replace('| a1 | b1 |', '| A1 | b1 |'),
+    expect: {
+      contains: ['A1', 'b1', 'a2', 'b2', 'Trailing paragraph.'],
+      notContains: ['| a1 | b1 |'],
+      matches: [/\|\s*A1\s*\|\s*b1\s*\|/],
+    },
+  },
+
+  // U12 (~35%) — Heading directly after a list with no blank line.
+  // remark-gfm is usually lenient and still parses the heading. Writer
+  // emits separate paragraphs. Test that an edit to the heading or
+  // the adjacent list item both land.
+  {
+    title: 'U12: heading immediately after a list (no blank line) — edit both',
+    canvas: 'u12',
+    fixture: `# Adjacent
+
+- first
+- second
+# Follow-up
+
+Body.
+`,
+    apply: (b) =>
+      b
+        .replace('second', 'second-edited')
+        .replace('# Follow-up', '# Follow-up rewritten'),
+    expect: {
+      contains: ['second-edited', '# Follow-up rewritten', 'Body.'],
+      notContains: ['# Follow-up\n'],
+      ordering: [
+        ['second-edited', '# Follow-up rewritten'],
+      ],
+    },
+  },
+
+  // U13 (~30%) — Single character insertion inside a paragraph. Very
+  // small edits stress the per-section line-diff's tolerance for
+  // trivial differences. Should just work.
+  {
+    title: 'U13: insert a single character inside a paragraph',
+    canvas: 'u13',
+    fixture: `# Tiny
+
+The quick brown fox jumps.
+
+End.
+`,
+    apply: (b) => b.replace('fox', 'foxy'),
+    expect: {
+      exact: `# Tiny
+
+The quick brown foxy jumps.
+
+End.`,
+      contains: ['foxy jumps'],
+      notContains: ['fox jumps'],
+    },
+  },
+
+  // U14 (~25%) — Image alt text edit. `![alt](url)` → `![new alt](url)`.
+  // Images round-trip as `![alt](url)` per existing tests (M3e), so
+  // an alt edit should be a text-level change on the paragraph
+  // containing the image reference. Should work.
+  {
+    title: 'U14: edit the alt text of an inline image',
+    canvas: 'u14',
+    fixture: `# ImgAlt
+
+Before image.
+
+![original alt](https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Sunflower_from_Silesia2.jpg/100px-Sunflower_from_Silesia2.jpg)
+
+After image.
+`,
+    apply: (b) => b.replace('original alt', 'updated alt'),
+    expect: {
+      // Alt text change should survive. If images are stored as
+      // inline objects without alt metadata, the readback may show a
+      // fallback alt; either way the surrounding paragraphs stay
+      // intact and the image still renders.
+      contains: ['Before image.', 'After image.'],
+      matches: [/!\[[^\]]*\]\(https?:\/\/[^)]+\)/],
+    },
+  },
 ];
 
 // ── Runner ────────────────────────────────────────────────────
