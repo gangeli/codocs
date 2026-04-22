@@ -17,6 +17,7 @@ import type { IndexMapEntry } from '../converter/element-parser.js';
 import { markdownToDocsRequests } from '../converter/md-to-docs.js';
 import { walkAst, type TextSegment } from '../converter/ast-walker.js';
 import { createAttributionRequests } from '../attribution/named-ranges.js';
+import { CODELANG_RANGE_PREFIX } from '../types.js';
 
 /** A section of a markdown document, delimited by headings. */
 export interface MdSection {
@@ -726,6 +727,17 @@ export async function computeDocDiff(
         continue;
       }
 
+      if (
+        tryEmitCodeFenceLangChange(
+          { oldOffset, oldLength, newChunk: hunk.buffer2.chunk },
+          oldLines,
+          document,
+          requests,
+        )
+      ) {
+        continue;
+      }
+
 
       const deleteStartIdx = Math.min(
         lineDocIndices[Math.min(oldOffset, lineDocIndices.length - 1)],
@@ -1399,6 +1411,66 @@ function isAllBulletContent(markdown: string): boolean {
  *  the cell text. */
 function stripBulletMarker(line: string): string {
   return line.replace(/^\s*(?:[-*+]|\d+\.)\s+/, '');
+}
+
+/**
+ * Handle a one-line hunk that only changes a code-fence language tag
+ * (e.g. ```` ```python```` → ```` ```typescript````). The fence itself
+ * is a markdown rendering artefact — it's not a line in the doc — so
+ * the generic text-diff path would misfire, landing a delete+insert on
+ * the FIRST code-content paragraph instead. The language is stored as
+ * a named range `codelang:<lang>` covering the fenced paragraphs; to
+ * switch tags, delete the old range and create a new one at the same
+ * doc indices.
+ *
+ * Returns true when the hunk was a lang-change (fully handled here).
+ * Returns false for any other shape — including a `codelang:<oldLang>`
+ * range that can't be located in the current doc, so the caller can
+ * still fall through to the generic path.
+ */
+function tryEmitCodeFenceLangChange(
+  hunk: { oldOffset: number; oldLength: number; newChunk: string[] },
+  oldLines: string[],
+  document: docs_v1.Schema$Document,
+  requests: docs_v1.Schema$Request[],
+): boolean {
+  if (hunk.oldLength !== 1 || hunk.newChunk.length !== 1) return false;
+  const oldLine = oldLines[hunk.oldOffset];
+  const newLine = hunk.newChunk[0];
+  // Fence opener: optional indent + 3+ backticks or tildes + optional
+  // info string (lang tag). Only a lang-tag change counts here — if
+  // the fence itself differs (```` ``` ```` vs ```` ~~~ ````) we'd
+  // need to rewrite content too, so bail out.
+  const FENCE = /^ {0,3}(`{3,}|~{3,})(\S*)\s*$/;
+  const om = oldLine.match(FENCE);
+  const nm = newLine.match(FENCE);
+  if (!om || !nm) return false;
+  if (om[1] !== nm[1]) return false; // fence char changed; not handled
+  const oldLang = om[2];
+  const newLang = nm[2];
+  if (oldLang === newLang) return false;
+
+  // Locate the existing codelang:<oldLang> range in the doc.
+  const oldName = CODELANG_RANGE_PREFIX + oldLang;
+  const nrData = document.namedRanges?.[oldName];
+  const first = nrData?.namedRanges?.[0]?.ranges?.[0];
+  if (!first || first.startIndex == null || first.endIndex == null) {
+    // No existing range to rewrite — either the writer skipped emitting
+    // it (empty lang on the original) or we can't find it. Let the
+    // caller's generic path run; at worst that's the same as today's
+    // behaviour, not a regression.
+    return false;
+  }
+  requests.push({ deleteNamedRange: { name: oldName } });
+  if (newLang.length > 0) {
+    requests.push({
+      createNamedRange: {
+        name: CODELANG_RANGE_PREFIX + newLang,
+        range: { startIndex: first.startIndex, endIndex: first.endIndex },
+      },
+    });
+  }
+  return true;
 }
 
 /**
