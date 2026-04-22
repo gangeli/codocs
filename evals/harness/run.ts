@@ -60,14 +60,16 @@ async function loadAllCases(): Promise<EvalCase[]> {
   return all;
 }
 
-function parseArgs(argv: string[]): { filter?: string; concurrency: number } {
+function parseArgs(argv: string[]): { filter?: string; concurrency: number; model?: string } {
   let filter: string | undefined;
+  let model: string | undefined;
   let concurrency = 2;
   for (const a of argv) {
     if (a.startsWith('--filter=')) filter = a.slice('--filter='.length);
     else if (a.startsWith('--concurrency=')) concurrency = Math.max(1, Number(a.slice('--concurrency='.length)));
+    else if (a.startsWith('--model=')) model = a.slice('--model='.length);
   }
-  return { filter, concurrency };
+  return { filter, concurrency, model };
 }
 
 async function runInPool<T, R>(items: T[], concurrency: number, fn: (t: T) => Promise<R>): Promise<R[]> {
@@ -350,7 +352,7 @@ async function writeArtifacts(results: CaseResult[]): Promise<string> {
 async function main(): Promise<void> {
   await preflight();
 
-  const { filter, concurrency } = parseArgs(process.argv.slice(2));
+  const { filter, concurrency, model } = parseArgs(process.argv.slice(2));
   const all = await loadAllCases();
   const selected = filter
     ? all.filter((c) => c.id.toLowerCase().includes(filter.toLowerCase()) || c.category === filter)
@@ -361,7 +363,8 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  console.log(bold(`Running ${selected.length}/${all.length} eval case(s), concurrency=${concurrency}`));
+  const agentModel = model ?? 'sonnet';
+  console.log(bold(`Running ${selected.length}/${all.length} eval case(s), concurrency=${concurrency}, agent-model=${agentModel}`));
   console.log('');
 
   const tracker = new LiveTracker(selected.length);
@@ -369,7 +372,7 @@ async function main(): Promise<void> {
   try {
     results = await runInPool(selected, concurrency, async (tc) => {
       tracker.start(tc);
-      const r = await runCase(tc, {});
+      const r = await runCase(tc, { model: agentModel });
       tracker.complete(r);
       return r;
     });

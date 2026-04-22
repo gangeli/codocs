@@ -5,19 +5,23 @@ End-to-end evals for the comment → agent → reply/doc/code pipeline.
 ## Running
 
 ```bash
-make eval                          # full suite (~38 cases, spawns real Claude agents)
+make eval                          # full suite (~45 cases, spawns real Claude agents on Sonnet)
 make eval FILTER=BF-01             # one case
 make eval FILTER=bug-fix           # one category
+make eval MODEL=haiku              # run agents on Haiku (cheaper, weaker)
+make eval MODEL=opus               # run agents on Opus (expensive)
 make eval/judge                    # judge-prompt calibration (~30 synthetic cases, no agent)
 make eval/judge FILTER=negation    # one calibration group
 ```
 
 Results print per-category and per-case. Artifacts (JSON summary) land in `evals/runs/<timestamp>/`.
 
-Environment variables:
+Environment / Make variables:
 - `ANTHROPIC_API_KEY` — required. The judge uses Sonnet (`claude-sonnet-4-6`).
 - `DEBUG_KEEP_TMP=1` — keep per-case temp dirs for post-mortem inspection.
 - `CONCURRENCY=<n>` — cap parallel cases (default 2 — each spawns a real Claude agent).
+- `MODEL=<haiku|sonnet|opus>` — agent model (default `sonnet`). The judge model is
+  pinned separately in `evals/harness/judge.ts` and is NOT affected by this.
 
 ## Layout
 

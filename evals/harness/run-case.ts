@@ -204,7 +204,10 @@ export async function runCase(tc: EvalCase, opts: RunCaseOptions = {}): Promise<
     codeMode: () => 'pr',
     githubToken: () => null,
     repoRoot,
-    model: () => (opts.model ?? 'haiku'),
+    // Default to Sonnet: Haiku is too weak to surface meaningful prompt
+    // regressions, Opus is too expensive for routine runs. Override via
+    // opts.model / CLI --model=<alias>.
+    model: () => (opts.model ?? 'sonnet'),
     debug: (m) => { if (opts.debug) console.error(`  [dbg] ${m}`); },
     idleDebounceMs: 500,
   });

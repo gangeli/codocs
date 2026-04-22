@@ -93,10 +93,13 @@ e2e/comments: build
 
 # Run the end-to-end eval suite. Pass FILTER=<substring> to run a subset,
 # CONCURRENCY=<n> to cap parallel cases (default 2 because each case spawns
-# a real Claude agent). Results print a per-category breakdown; detailed
-# per-case artifacts land in evals/runs/<timestamp>/.
+# a real Claude agent), MODEL=<haiku|sonnet|opus> to pick the agent model
+# (default: sonnet — Haiku is too weak to surface prompt regressions, Opus
+# is expensive for routine runs). The judge model is pinned separately in
+# evals/harness/judge.ts and is NOT affected by MODEL. Results print a
+# per-category breakdown; detailed per-case artifacts land in evals/runs/<timestamp>/.
 eval: build
-	@$(LOAD_ENV) npx tsx evals/harness/run.ts $(if $(FILTER),--filter=$(FILTER),) $(if $(CONCURRENCY),--concurrency=$(CONCURRENCY),)
+	@$(LOAD_ENV) npx tsx evals/harness/run.ts $(if $(FILTER),--filter=$(FILTER),) $(if $(CONCURRENCY),--concurrency=$(CONCURRENCY),) $(if $(MODEL),--model=$(MODEL),)
 
 # Calibrate the judge prompt against a fixed set of (rubric, response,
 # expected-verdict) fixtures. Does NOT spawn Claude agents — only the
