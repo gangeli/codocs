@@ -3459,6 +3459,384 @@ After image.
       matches: [/!\[[^\]]*\]\(https?:\/\/[^)]+\)/],
     },
   },
+
+  // ── Group V: Round 3 corner cases. Probabilities in comments.
+  //   Last round was ~strong in top band (≥75%), systematically
+  //   overconfident in middle band (50-70% had 0/6 fails). This round
+  //   keeps middle-band sparse and only there when I can name a
+  //   concrete broken path.
+
+  // V1 (~80%) — Heading levels H4, H5, H6. Docs has HEADING_4–HEADING_6
+  // named styles; style-map.ts may or may not map them. If it only
+  // handles H1–H3, deeper levels round-trip as NORMAL_TEXT and the
+  // `####` prefix is lost — edit would land but the heading styling
+  // would collapse.
+  {
+    title: 'V1: heading levels 4, 5, 6 — round-trip + edit',
+    canvas: 'v1',
+    fixture: `# H1
+
+## H2
+
+### H3
+
+#### H4
+
+##### H5
+
+###### H6
+
+Body.
+`,
+    apply: (b) => b.replace('#### H4', '#### H4 Edited'),
+    expect: {
+      contains: [
+        '# H1',
+        '## H2',
+        '### H3',
+        '#### H4 Edited',
+        '##### H5',
+        '###### H6',
+        'Body.',
+      ],
+      notContains: ['#### H4\n'],
+    },
+  },
+
+  // V2 (~75%) — Indented code block (4-space indent, no fence). GFM
+  // supports both styles; remark parses as `code` node with no lang.
+  // The writer's code path emits fenced code with the `codelang:*`
+  // named range — what about no-lang? It should still emit as code
+  // paragraphs with Courier font. On readback, parseDocumentToMarkdown
+  // reconstructs as ```` ``` ```` fence (always). So the indented form
+  // would come back as fenced on round-trip, and the agent's search
+  // for `    const x` (4-space indent) wouldn't match.
+  {
+    title: 'V2: indented code block (4-space) — round-trip + edit',
+    canvas: 'v2',
+    fixture: `# IndentedCode
+
+Before.
+
+    const x = 42;
+    return x;
+
+After.
+`,
+    apply: (b) => b.replace('return x', 'return x * 2'),
+    expect: {
+      // If indented code survives as fenced, the edit should still find
+      // the line. Assert the edit lands and surrounding paragraphs stay.
+      contains: ['Before.', 'const x = 42', 'return x * 2', 'After.'],
+      notContains: ['return x;\n'],
+    },
+  },
+
+  // V3 (~70%) — Literal `|` inside a table cell. GFM escapes it as
+  // `\|`. parseTable escapes on read (cellText.replace(/\|/g, '\\|')),
+  // so readback gives `| a \| b | c |`. The agent's apply targets
+  // the escaped form. The writer needs to UN-escape or handle literal
+  // `|` in cell content.
+  {
+    title: 'V3: literal `|` inside a table cell — edit neighbouring cell',
+    canvas: 'v3',
+    fixture: `# PipeCell
+
+| Col1 | Col2 |
+| --- | --- |
+| a \\| b | plain |
+| other | PLAIN |
+
+End.
+`,
+    apply: (b) => b.replace('PLAIN', 'EDITED'),
+    expect: {
+      // Edit must land on the plain cell; pipe-containing cell must
+      // still have a literal `|` (escaped or not).
+      contains: ['# PipeCell', 'EDITED', 'other', 'End.'],
+      notContains: ['PLAIN\n', '| PLAIN |'],
+      matches: [/a\s*\\?\|\s*b/],
+    },
+  },
+
+  // V4 (~45%) — Two duplicate-named sections, agent CHANGES THE
+  // HEADING LEVEL (H1 → H2) of the second one. Combines the X1/X1d
+  // duplicate-heading alignment fix with A17's heading-level change
+  // mechanic. alignSections pairs by (heading, occurrence-index) —
+  // after the level change, ours has [Notes#0 H1, Notes#0 H2]
+  // (different heading strings `# Notes` vs `## Notes`). That reads
+  // as a DELETION of Notes-H1-#1 + ADDITION of Notes-H2-#0, which
+  // should work but could reorder unexpectedly.
+  {
+    title: 'V4: change heading level on second duplicate-named section',
+    canvas: 'v4',
+    fixture: `# Notes
+
+First body.
+
+# Other
+
+Other body.
+
+# Notes
+
+Second body.
+`,
+    apply: (b) =>
+      b.replace(/# Notes\n\nSecond body\./, '## Notes\n\nSecond body.'),
+    expect: {
+      exact: `# Notes
+
+First body.
+
+# Other
+
+Other body.
+
+## Notes
+
+Second body.`,
+      contains: ['# Notes', '# Other', '## Notes', 'First body.', 'Second body.'],
+      ordering: [
+        ['# Notes', 'First body.'],
+        ['First body.', '# Other'],
+        ['# Other', '## Notes'],
+        ['## Notes', 'Second body.'],
+      ],
+    },
+  },
+
+  // V5 (~40%) — Raw HTML block in markdown. remark parses `<div>...`
+  // as an `html` node; the walker's `html` case emits the HTML as
+  // plain text. The reader re-emits whatever's in the doc. Edit a
+  // neighbouring paragraph and verify the HTML text survives.
+  {
+    title: 'V5: raw HTML block passthrough — edit adjacent paragraph',
+    canvas: 'v5',
+    fixture: `# HTML
+
+Before HTML.
+
+<div class="note">Raw HTML content</div>
+
+After HTML.
+`,
+    apply: (b) => b.replace('After HTML.', 'After HTML rewritten.'),
+    expect: {
+      contains: ['Before HTML.', 'After HTML rewritten.', 'Raw HTML content'],
+      notContains: ['After HTML.\n'],
+      ordering: [
+        ['Before HTML.', 'Raw HTML content'],
+        ['Raw HTML content', 'After HTML rewritten.'],
+      ],
+    },
+  },
+
+  // V6 (~35%) — Emoji ZWJ sequence (family emoji: 👨‍👩‍👧‍👦 = man + ZWJ +
+  // woman + ZWJ + girl + ZWJ + boy). Each is a multi-code-point
+  // grapheme. Docs may store as a single text run or split. Edit
+  // adjacent text.
+  {
+    title: 'V6: emoji ZWJ sequence — edit surrounding text',
+    canvas: 'v6',
+    fixture: `# Emoji
+
+The family \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466} is here.
+
+End.
+`,
+    apply: (b) => b.replace('is here', 'is present'),
+    expect: {
+      contains: [
+        '# Emoji',
+        '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}',
+        'is present',
+      ],
+      notContains: ['is here'],
+    },
+  },
+
+  // V7 (~35%) — Delete the ONLY table in a doc. The section-delete
+  // path for K4 (a section with a table) works, but THIS test removes
+  // the table from a section that still has surrounding prose — the
+  // surviving paragraphs should stay intact with the table gone.
+  {
+    title: 'V7: delete a standalone table (surrounding prose stays)',
+    canvas: 'v7',
+    fixture: `# DeleteTable
+
+Before table.
+
+| A | B |
+| --- | --- |
+| a1 | b1 |
+| a2 | b2 |
+
+After table.
+`,
+    apply: (b) =>
+      b.replace(/\n\| A \| B \|\n\| --- \| --- \|\n\| a1 \| b1 \|\n\| a2 \| b2 \|\n/, ''),
+    expect: {
+      exact: `# DeleteTable
+
+Before table.
+
+After table.`,
+      contains: ['Before table.', 'After table.'],
+      notContains: ['| A | B |', '| a1 | b1 |'],
+    },
+  },
+
+  // V8 (~30%) — Agent inserts a fresh table mid-document. The
+  // section-added path calls markdownToDocsRequests on the new
+  // content — should handle the table naturally. Test exercises the
+  // new-section branch with a table inside.
+  {
+    title: 'V8: insert a fresh table mid-document',
+    canvas: 'v8',
+    fixture: `# InsertTable
+
+Before.
+
+After.
+`,
+    apply: (b) =>
+      b.replace(
+        'Before.\n\nAfter.',
+        'Before.\n\n| K | V |\n| --- | --- |\n| k1 | v1 |\n| k2 | v2 |\n\nAfter.',
+      ),
+    expect: {
+      contains: ['Before.', 'K', 'V', 'k1', 'v1', 'k2', 'v2', 'After.'],
+      matches: [/\|\s*k1\s*\|\s*v1\s*\|/, /\|\s*k2\s*\|\s*v2\s*\|/],
+      ordering: [
+        ['Before.', '| k1 | v1 |'],
+        ['| k2 | v2 |', 'After.'],
+      ],
+    },
+  },
+
+  // V9 (~30%) — Reorder three list items. Line-diff ambiguity with
+  // identical tokens isn't at play (items are distinct), but the
+  // per-section diff may pick an "equivalent but non-minimal" set of
+  // edits (e.g. three replaces instead of a move). As long as the
+  // final state is correct, we pass.
+  {
+    title: 'V9: reorder three list items (c, a, b)',
+    canvas: 'v9',
+    fixture: `# Reorder
+
+- alpha
+- beta
+- gamma
+
+End.
+`,
+    apply: (b) =>
+      b.replace('- alpha\n- beta\n- gamma', '- gamma\n- alpha\n- beta'),
+    expect: {
+      exact: `# Reorder
+
+- gamma
+- alpha
+- beta
+
+End.`,
+      ordering: [
+        ['- gamma', '- alpha'],
+        ['- alpha', '- beta'],
+      ],
+    },
+  },
+
+  // V10 (~30%) — A paragraph that LITERALLY starts with `|`. GFM
+  // table detection needs a `|---|` separator on the next line, so a
+  // single `|` line shouldn't match. But a defensive regex in the
+  // diff path (isTableRowLine) doesn't check for the separator —
+  // might confuse classification.
+  {
+    title: 'V10: paragraph starting with `|` (not a table row)',
+    canvas: 'v10',
+    fixture: `# Pipes
+
+Some preamble.
+
+| this line starts with a pipe but is just text.
+
+Trailing.
+`,
+    apply: (b) =>
+      b.replace('| this line starts with a pipe but is just text.', '| pipe-prefixed text rewritten.'),
+    expect: {
+      contains: ['# Pipes', 'Some preamble.', '| pipe-prefixed text rewritten.', 'Trailing.'],
+      notContains: ['this line starts with a pipe but is just text.'],
+    },
+  },
+
+  // V11 (~30%) — Hard line break inside a paragraph (two trailing
+  // spaces + \n). remark parses as a `break` node; the walker emits
+  // a literal `\n` inside the paragraph text. Docs has no hard-break
+  // primitive in paragraph; it's stored as a vertical tab or
+  // line-break element, or as a paragraph break. Round-trip probably
+  // collapses to a normal paragraph break.
+  {
+    title: 'V11: hard line break `  \\n` — edit surrounding content',
+    canvas: 'v11',
+    fixture: `# HardBreak
+
+First line
+second line.
+
+Other paragraph.
+`,
+    // Edit "Other paragraph" — verify the hard-break paragraph
+    // survives (as one paragraph with a break, or split into two).
+    apply: (b) => b.replace('Other paragraph.', 'Other paragraph rewritten.'),
+    expect: {
+      contains: ['First line', 'second line', 'Other paragraph rewritten.'],
+      notContains: ['Other paragraph.\n'],
+      ordering: [
+        ['First line', 'second line'],
+        ['second line', 'Other paragraph rewritten.'],
+      ],
+    },
+  },
+
+  // V12 (~25%) — Heading with ATX closer (`# Title ###`). remark
+  // parses as heading with text "Title" (strips the closer). Writer
+  // stores heading paragraph with "Title" text. Reader emits as
+  // `# Title` (no closer). Agent's search for the closer form
+  // wouldn't find it — test that the edit targets the STRIPPED form.
+  {
+    title: 'V12: heading with ATX closer normalises on read',
+    canvas: 'v12',
+    fixture: `# Title ###
+
+Body content.
+`,
+    apply: (b) => b.replace('Body content', 'Body content rewritten'),
+    expect: {
+      contains: ['Title', 'Body content rewritten'],
+      notContains: ['Body content.'],
+      matches: [/^#\s+Title\s*$/m],
+    },
+  },
+
+  // V13 (~20%) — Link URL with query string and escaped ampersand.
+  // Docs API accepts URLs; reader emits the URL verbatim. The `&`
+  // shouldn't need any escaping in the markdown.
+  {
+    title: 'V13: link URL with query string (`?a=b&c=d`) — edit link text',
+    canvas: 'v13',
+    fixture: `# QueryLink
+
+See [docs](https://example.com/page?section=intro&lang=en) for info.
+`,
+    apply: (b) => b.replace('[docs]', '[the docs]'),
+    expect: {
+      contains: ['the docs', 'https://example.com/page?section=intro&lang=en'],
+      notContains: ['[docs]'],
+    },
+  },
 ];
 
 // ── Runner ────────────────────────────────────────────────────
