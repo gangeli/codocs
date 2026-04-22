@@ -233,6 +233,50 @@ describe('element-parser edge cases', () => {
     expect(indexMap).toEqual([{ mdOffset: 0, docIndex: 1 }]);
   });
 
+  it('recovers the fence language from a `codelang:<lang>` named range', () => {
+    // Writer stores the fence language via a named range `codelang:<lang>`
+    // spanning the paragraph's run (Docs has no native code-block
+    // language tag). The reader must surface it on the opening fence.
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 7,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 7,
+                textRun: {
+                  content: 'foo()\n',
+                  textStyle: {
+                    weightedFontFamily: { fontFamily: 'Courier New' },
+                  },
+                },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+          },
+        },
+      ],
+      {
+        namedRanges: {
+          'codelang:python': {
+            namedRanges: [
+              {
+                namedRangeId: 'nr-lang',
+                name: 'codelang:python',
+                ranges: [{ startIndex: 1, endIndex: 7 }],
+              },
+            ],
+          },
+        },
+      },
+    );
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('```python\nfoo()\n```\n');
+  });
+
   it('emits inline code when monospace is mixed with plain text in one paragraph', () => {
     const doc = makeDoc([
       {
@@ -341,6 +385,146 @@ describe('element-parser edge cases', () => {
       { mdOffset: 0, docIndex: 1 },
       { mdOffset: 8, docIndex: 7 },
     ]);
+  });
+
+  it('handles a 3-level nested bullet list with 2-space indent per level', () => {
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 5,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 5,
+                textRun: { content: 'L0\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-n', nestingLevel: 0 },
+          },
+        },
+        {
+          startIndex: 5,
+          endIndex: 9,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 5,
+                endIndex: 9,
+                textRun: { content: 'L1\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-n', nestingLevel: 1 },
+          },
+        },
+        {
+          startIndex: 9,
+          endIndex: 13,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 9,
+                endIndex: 13,
+                textRun: { content: 'L2\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-n', nestingLevel: 2 },
+          },
+        },
+      ],
+      {
+        lists: {
+          'list-n': {
+            listProperties: {
+              nestingLevels: [
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED' },
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED' },
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED' },
+              ],
+            },
+          },
+        },
+      },
+    );
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('- L0\n  - L1\n    - L2\n');
+  });
+
+  it('renders a mixed ordered/unordered nested list honouring each level glyph', () => {
+    // Mixed nesting in Docs: outer unordered, inner ordered, inner-inner
+    // unordered. The reader preserves each level's glyph — outer `-`,
+    // middle `1.`, innermost `-`. Each level has its own indent, so the
+    // output reads as nested markdown that re-emits the same glyph mix.
+    // If this fails, a regression has collapsed all levels to the
+    // outermost glyph (or promoted the inner DECIMAL to peer with outer).
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 9,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 9,
+                textRun: { content: 'outer\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-mix', nestingLevel: 0 },
+          },
+        },
+        {
+          startIndex: 9,
+          endIndex: 17,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 9,
+                endIndex: 17,
+                textRun: { content: 'inner\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-mix', nestingLevel: 1 },
+          },
+        },
+        {
+          startIndex: 17,
+          endIndex: 27,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 17,
+                endIndex: 27,
+                textRun: { content: 'deep\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-mix', nestingLevel: 2 },
+          },
+        },
+      ],
+      {
+        lists: {
+          'list-mix': {
+            listProperties: {
+              nestingLevels: [
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED' },
+                { glyphType: 'DECIMAL' },
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED' },
+              ],
+            },
+          },
+        },
+      },
+    );
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('- outer\n  1. inner\n    - deep\n');
   });
 
   it('handles checkbox lists (unchecked)', () => {
@@ -603,6 +787,172 @@ describe('element-parser edge cases', () => {
     expect(indexMap).toEqual([{ mdOffset: 0, docIndex: 1 }]);
   });
 
+  it('renders an empty table cell as "| |" (single space, no leading cell text)', () => {
+    const doc = makeDoc([
+      {
+        startIndex: 1,
+        endIndex: 50,
+        table: {
+          rows: 2,
+          columns: 2,
+          tableRows: [
+            {
+              tableCells: [
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'A\n' } }],
+                      },
+                    },
+                  ],
+                },
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: '\n' } }],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              tableCells: [
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: '\n' } }],
+                      },
+                    },
+                  ],
+                },
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'D\n' } }],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('| A | |\n| --- | --- |\n| | D |\n');
+  });
+
+  it('escapes a literal pipe inside a table cell so the row separator is preserved', () => {
+    const doc = makeDoc([
+      {
+        startIndex: 1,
+        endIndex: 50,
+        table: {
+          rows: 2,
+          columns: 2,
+          tableRows: [
+            {
+              tableCells: [
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'A\n' } }],
+                      },
+                    },
+                  ],
+                },
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'B\n' } }],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              tableCells: [
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'x | y\n' } }],
+                      },
+                    },
+                  ],
+                },
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'D\n' } }],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('| A | B |\n| --- | --- |\n| x \\| y | D |\n');
+  });
+
+  it('joins multiple paragraphs within a table cell using a space separator', () => {
+    const doc = makeDoc([
+      {
+        startIndex: 1,
+        endIndex: 50,
+        table: {
+          rows: 1,
+          columns: 2,
+          tableRows: [
+            {
+              tableCells: [
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'line one\n' } }],
+                      },
+                    },
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'line two\n' } }],
+                      },
+                    },
+                  ],
+                },
+                {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [{ textRun: { content: 'B\n' } }],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('| line one line two | B |\n| --- | --- |\n');
+  });
+
   // ── Inline images ────────────────────────────────────────────
 
   it('emits ![title](sourceUri) for a plain inline image', () => {
@@ -784,6 +1134,35 @@ describe('element-parser edge cases', () => {
     expect(indexMap).toEqual([{ mdOffset: 0, docIndex: 1 }]);
   });
 
+  it('drops a paragraph that falls entirely outside the agent filter range', () => {
+    // "Inside" sits at [1, 8) and is inside agent:test; "Outside"
+    // sits at [8, 16) and is NOT — the filter must exclude it so the
+    // emitted markdown contains only the attributed paragraph.
+    const doc = makeDoc(
+      [
+        { startIndex: 0, endIndex: 1, sectionBreak: {} },
+        paragraph('Inside', { namedStyleType: 'NORMAL_TEXT' }, {}, 1),
+        paragraph('Outside', { namedStyleType: 'NORMAL_TEXT' }, {}, 8),
+      ],
+      {
+        namedRanges: {
+          'agent:test': {
+            namedRanges: [
+              {
+                namedRangeId: 'nr-1',
+                name: 'agent:test',
+                ranges: [{ startIndex: 1, endIndex: 8 }],
+              },
+            ],
+          },
+        },
+      },
+    );
+    const { md } = renderAndValidate(doc, { agentFilter: 'test' });
+    expect(md).toBe('Inside\n');
+    expect(md).not.toContain('Outside');
+  });
+
   // ── Added coverage ──────────────────────────────────────────
 
   it('tracks UTF-16 surrogate pairs for emoji in doc indices', () => {
@@ -918,6 +1297,47 @@ describe('element-parser edge cases', () => {
     expect(md).toBe('**foo bar**\n');
     expect(md).not.toContain('****');
     expect(indexMap).toEqual([{ mdOffset: 0, docIndex: 1 }]);
+  });
+
+  it('renders bold → bold+italic → bold as a continuous bold span with a nested italic', () => {
+    // Three runs in one paragraph: "foo " bold, "bar" bold+italic,
+    // " baz" bold. The outer bold must NOT close and reopen between
+    // runs — the expected rendering keeps a single `**…**` wrapper with
+    // a nested `*bar*` italic span. A mis-implementation that emits per
+    // run style fragments would produce `**foo ****bar*****baz**` or
+    // similar.
+    const doc = makeDoc([
+      {
+        startIndex: 1,
+        endIndex: 13,
+        paragraph: {
+          elements: [
+            {
+              startIndex: 1,
+              endIndex: 5,
+              textRun: { content: 'foo ', textStyle: { bold: true } },
+            },
+            {
+              startIndex: 5,
+              endIndex: 8,
+              textRun: {
+                content: 'bar',
+                textStyle: { bold: true, italic: true },
+              },
+            },
+            {
+              startIndex: 8,
+              endIndex: 13,
+              textRun: { content: ' baz\n', textStyle: { bold: true } },
+            },
+          ],
+          paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+        },
+      },
+    ]);
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('**foo *bar* baz**\n');
+    expect(md).not.toContain('****');
   });
 
   // ── Comprehensive round-trip ───────────────────────────────

@@ -43,6 +43,14 @@ describe('extractSubscriptionFromResponse', () => {
     ).toThrow('Invalid subscription name');
   });
 
+  it('accepts a name of "operations" with no trailing slash (startsWith is strict)', () => {
+    const result = extractSubscriptionFromResponse({ name: 'operations' });
+    expect(result.name).toBe('operations');
+    expect(result.targetResource).toBe('');
+    expect(result.eventTypes).toEqual([]);
+    expect(result.expireTime).toBe('');
+  });
+
   it('throws for missing name', () => {
     expect(() => extractSubscriptionFromResponse({})).toThrow(
       'Invalid subscription name',

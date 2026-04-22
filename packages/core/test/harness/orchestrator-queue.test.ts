@@ -407,9 +407,12 @@ describe('AgentOrchestrator queue integration', () => {
     await waitFor(() => expect(queueStore.isAgentBusy('alice')).toBe(false));
 
     // Check that the failed item is marked in the DB
-    const rows = db.exec("SELECT status, error FROM agent_queue WHERE id = 1");
+    const rows = db.exec(
+      "SELECT status, error FROM agent_queue WHERE json_extract(comment_event, '$.comment.id') = 'c1'",
+    );
     expect(rows[0].values[0][0]).toBe('failed');
     expect(rows[0].values[0][1]).toContain('Agent crashed');
+    expect(queueStore.pendingCount('alice')).toBe(0);
   });
 
   it('handleComment returns Queued for second concurrent call', async () => {

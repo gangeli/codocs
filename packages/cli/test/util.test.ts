@@ -28,6 +28,14 @@ describe('truncate', () => {
   it('handles newlines before truncation', () => {
     expect(truncate('a\nb', 4)).toBe('a\\nb');
   });
+
+  it('returns only ellipsis for maxLen 0', () => {
+    expect(truncate('short', 0)).toBe('...');
+  });
+
+  it('truncates mid-escaped-newline when expansion pushes past maxLen', () => {
+    expect(truncate('line1\nline2', 6)).toBe('line1\\...');
+  });
 });
 
 describe('withErrorHandler', () => {

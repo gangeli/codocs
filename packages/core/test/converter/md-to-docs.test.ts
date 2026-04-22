@@ -224,11 +224,17 @@ describe('markdownToDocsRequests', () => {
     // emitter uses is inclusive of the paragraph's '\n' — expected end
     // is 1 + checkedStart + len + 1. The range must NOT cover the
     // preceding "unchecked item" or the following "another unchecked".
-    const strikeReq = requests.find(
+    // There must be EXACTLY one strikethrough request in this fixture:
+    // only the `[x]` item carries strikethrough. Using `.filter(...)`
+    // with `.toHaveLength(1)` instead of `.find(...)` catches the case
+    // where the writer accidentally emits a strikethrough for unchecked
+    // items too (which would silently be the first match and slip past
+    // the range checks).
+    const strikeReqs = requests.filter(
       (r) => r.updateTextStyle?.textStyle?.strikethrough === true,
     );
-    expect(strikeReq).toBeDefined();
-    const range = strikeReq!.updateTextStyle!.range!;
+    expect(strikeReqs).toHaveLength(1);
+    const range = strikeReqs[0].updateTextStyle!.range!;
     const plain = 'unchecked item\nchecked item\nanother unchecked';
     const checkedStart = plain.indexOf('checked item', plain.indexOf('\n'));
     expect(range.startIndex).toBe(1 + checkedStart);
@@ -311,6 +317,34 @@ describe('markdownToDocsRequests', () => {
           r.updateParagraphStyle?.range?.endIndex === 1,
       ),
     ).toBeUndefined();
+  });
+
+  it('emits a reset block when the doc has one non-empty paragraph (endIndex=3)', () => {
+    // endIndex === 3 means a single 1-character paragraph exists
+    // (content from [1, 2) plus trailing newline at [2, 3)). The reset
+    // block MUST fire with range [1, 2) so the anchor paragraph is
+    // cleared of prior styling/bullets before the new content goes in.
+    const { requests } = markdownToDocsRequests('Hello', 1, true, 3);
+    const resetStyle = requests.find(
+      (r) =>
+        r.updateParagraphStyle?.paragraphStyle?.namedStyleType ===
+          'NORMAL_TEXT' &&
+        r.updateParagraphStyle?.range?.startIndex === 1 &&
+        r.updateParagraphStyle?.range?.endIndex === 2,
+    );
+    expect(resetStyle).toBeDefined();
+    const bulletReset = requests.find(
+      (r) =>
+        r.deleteParagraphBullets?.range?.startIndex === 1 &&
+        r.deleteParagraphBullets?.range?.endIndex === 2,
+    );
+    expect(bulletReset).toBeDefined();
+    const contentDelete = requests.find(
+      (r) =>
+        r.deleteContentRange?.range?.startIndex === 1 &&
+        r.deleteContentRange?.range?.endIndex === 2,
+    );
+    expect(contentDelete).toBeDefined();
   });
 
   it('handles empty markdown', () => {
@@ -648,10 +682,17 @@ describe('markdownToDocsRequests', () => {
     const md = 'Just a simple paragraph.';
     const { requests } = markdownToDocsRequests(md);
 
-    const normalStyle = requests.find(
+    const normalStyles = requests.filter(
       (r) => r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'NORMAL_TEXT',
     );
-    expect(normalStyle).toBeDefined();
+    expect(normalStyles).toHaveLength(1);
+    // One paragraph inserted at index 1 with `md.length` content chars;
+    // the paragraph's paragraph-style range covers [1, 1 + length + 1) =
+    // start of the inserted text through (and including) the paragraph's
+    // implicit terminator newline.
+    const range = normalStyles[0].updateParagraphStyle!.range!;
+    expect(range.startIndex).toBe(1);
+    expect(range.endIndex).toBe(1 + md.length + 1);
   });
 
   it('list items get NORMAL_TEXT so they do not inherit heading style', () => {
@@ -734,17 +775,27 @@ describe('markdownToDocsRequests', () => {
     expect(afterInsert).toBeDefined();
     expect(tableReq).toBeDefined();
 
-    // The "Before" insert must land at an index strictly less than both the
-    // table location AND the "After" insert. Similarly the "After" insert
-    // must come strictly after the table. This is tighter than the old
-    // `>= 2` check, which merely counted requests.
+    // Exact index computation. "Before\n" (length 7) is inserted at
+    // index 1, so the table's insertTable lands at 1 + 7 = 8.
+    // insertTable at N pushes content right by 1, so tableStart = 9.
+    // Table structure size for R=2, C=2 is 2 + R + 2*R*C = 12.
+    // Cell text lengths sum to |A|+|B|+|1|+|2| = 4.
+    // afterIdx = tableInsertIdx + tableStructureSize + totalCellText + 1
+    //          = 8 + 12 + 4 + 1 = 25.
     const beforeIdx = beforeInsert!.insertText!.location!.index!;
     const tableIdx = tableReq!.insertTable!.location!.index!;
     const afterIdx = afterInsert!.insertText!.location!.index!;
 
-    expect(beforeIdx).toBeLessThan(tableIdx);
-    expect(tableIdx).toBeLessThan(afterIdx);
-    expect(beforeIdx).toBeLessThan(afterIdx);
+    expect(beforeIdx).toBe(1);
+    expect(tableIdx).toBe(1 + 'Before\n'.length);
+
+    const R = 2;
+    const C = 2;
+    const tableStructureSize = 2 + R + 2 * R * C;
+    const totalCellText = 'A'.length + 'B'.length + '1'.length + '2'.length;
+    const expectedAfterIdx = tableIdx + tableStructureSize + totalCellText + 1;
+    expect(expectedAfterIdx).toBe(25);
+    expect(afterIdx).toBe(expectedAfterIdx);
   });
 
   // ── Unicode range correctness ───────────────────────────────────
@@ -908,7 +959,34 @@ describe('markdownToDocsRequests', () => {
     const a = markdownToDocsRequests(md);
     const b = markdownToDocsRequests(md);
     expect(a.text).toBe(b.text);
-    expect(JSON.stringify(a.requests)).toBe(JSON.stringify(b.requests));
+    expect(a.requests).toEqual(b.requests);
+  });
+
+  it('is deterministic: markdownToDocsRequestsAsync with a mocked drive produces identical requests on repeated calls', async () => {
+    // Non-image markdown: the mermaid/image path doesn't fire, so the async
+    // output should be fully deterministic (mirrors the sync determinism
+    // above). If the mermaid path is ever added to this fixture and this
+    // test starts to flake, the mermaid branch has hash/timestamp
+    // nondeterminism — isolate it by splitting the fixture.
+    const md =
+      '# Title\n\nBody with **bold** and *italic* and `code`.\n\n' +
+      '- one\n- two\n\n' +
+      '1. first\n2. second\n\n' +
+      '| A | B |\n| - | - |\n| 1 | 2 |\n\n' +
+      'After.';
+    const driveApi = { uploadTempImage: vi.fn() } as any;
+    const a = await markdownToDocsRequestsAsync(md, 1, false, undefined, {
+      driveApi,
+      documentId: 'doc-1',
+    });
+    const b = await markdownToDocsRequestsAsync(md, 1, false, undefined, {
+      driveApi,
+      documentId: 'doc-1',
+    });
+    expect(a.text).toBe(b.text);
+    expect(a.requests).toEqual(b.requests);
+    expect(a.tempDriveFileIds).toEqual(b.tempDriveFileIds);
+    expect(a.mermaidImages).toEqual(b.mermaidImages);
   });
 
   // ── Image embedding ──────────────────────────────────────────

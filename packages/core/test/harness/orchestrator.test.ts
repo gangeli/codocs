@@ -295,6 +295,7 @@ describe('AgentOrchestrator E2E', () => {
     event.comment.content = '';
 
     const result = await orchestrator.handleComment(event);
+    await orchestrator.waitForIdle();
 
     expect(result.editSummary).toBe('No content');
     // No thinking emoji should be posted
@@ -323,8 +324,7 @@ describe('AgentOrchestrator E2E', () => {
     // Should delete thinking reply and post default message, not empty string
     const replyCalls = callLog.filter((c) => c.method === 'reply:replyToComment');
     expect(replyCalls.length).toBe(2); // thinking emoji + default message
-    expect(replyCalls[1].args[2]).toMatch(/Done|no changes/i);
-    expect(replyCalls[1].args[2].length).toBeGreaterThan(0);
+    expect(replyCalls[1].args[2]).toBe('Done \u2014 no changes needed.');
   });
 
   it('includes thread history in prompt for replies', async () => {
@@ -482,8 +482,10 @@ describe('AgentOrchestrator E2E', () => {
       fallbackAgent: 'test-agent',
     });
 
-    await orchestrator.handleComment(makeCommentEvent());
+    const result = await orchestrator.handleComment(makeCommentEvent());
     await orchestrator.waitForIdle();
+
+    expect(result.editSummary).toBe('Skipped \u2014 user lost access');
 
     // Should NOT post any reply or run the agent
     const replyMethods = callLog.filter((c) => c.method.startsWith('reply:'));

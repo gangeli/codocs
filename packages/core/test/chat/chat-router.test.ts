@@ -35,12 +35,12 @@ function makeChatTab(overrides: Partial<ChatTab> = {}): ChatTab {
   };
 }
 
-function mockChatTabStore(tabs: ChatTab[] = []): ChatTabStore {
+function mockChatTabStore(tabs: ChatTab[] = [], expectedDocId = 'doc-1'): ChatTabStore {
   return {
     getByActiveComment: vi.fn((commentId: string) =>
       tabs.find((t) => t.activeCommentId === commentId) ?? null,
     ),
-    getActiveByDocument: vi.fn((_docId: string) => tabs),
+    getActiveByDocument: vi.fn((docId: string) => (docId === expectedDocId ? tabs : [])),
     getByTab: vi.fn(),
     getBySourceComment: vi.fn(),
     create: vi.fn(),
@@ -75,7 +75,8 @@ function mockClient(): CodocsClient {
 describe('routeComment', () => {
   it('routes to doc when no chat tabs exist', async () => {
     const store = mockChatTabStore([]);
-    const result = await routeComment(makeEvent(), store, mockClient());
+    const event = makeEvent();
+    const result = await routeComment(event, store, mockClient());
     expect(result.type).toBe('doc');
   });
 
@@ -96,12 +97,10 @@ describe('routeComment', () => {
   it('routes to chat when quotedText contains anchor marker', async () => {
     const tab = makeChatTab();
     const store = mockChatTabStore([tab]);
-    const result = await routeComment(
-      makeEvent({ quotedText: CHAT_INPUT_ANCHOR }),
-      store,
-      mockClient(),
-    );
+    const event = makeEvent({ quotedText: CHAT_INPUT_ANCHOR });
+    const result = await routeComment(event, store, mockClient());
     expect(result.type).toBe('chat');
+    expect(store.getActiveByDocument).toHaveBeenCalledWith(event.documentId);
   });
 
   it('routes to doc when quotedText is empty (even with active chat tabs)', async () => {
@@ -120,6 +119,52 @@ describe('routeComment', () => {
     const store = mockChatTabStore([tab]);
     const result = await routeComment(
       makeEvent({ quotedText: 'ab', id: 'other-comment' }),
+      store,
+      mockClient(),
+    );
+    expect(result.type).toBe('doc');
+  });
+
+  it('routes to chat when quotedText is exactly 3 chars and uniquely matches a tab', async () => {
+    const tab = makeChatTab({ id: 1, tabId: 'tab-1', activeCommentId: 'active-1' });
+    const store = mockChatTabStore([tab]);
+    const client = {
+      getDocumentWithTabs: vi.fn(async () => ({
+        tabs: [
+          {
+            tabProperties: { tabId: 'tab-1' },
+            documentTab: {
+              body: {
+                content: [{
+                  paragraph: {
+                    elements: [{ textRun: { content: 'abc\n' } }],
+                  },
+                  startIndex: 1,
+                  endIndex: 6,
+                }],
+              },
+            },
+          },
+        ],
+      })),
+    } as unknown as CodocsClient;
+
+    const result = await routeComment(
+      makeEvent({ quotedText: 'abc', id: 'other-comment' }),
+      store,
+      client,
+    );
+    expect(result.type).toBe('chat');
+    if (result.type === 'chat') {
+      expect(result.chatTab.tabId).toBe('tab-1');
+    }
+  });
+
+  it('routes to doc when quotedText is whitespace-only (trim length 0)', async () => {
+    const tab = makeChatTab();
+    const store = mockChatTabStore([tab]);
+    const result = await routeComment(
+      makeEvent({ quotedText: '   ', id: 'other-comment' }),
       store,
       mockClient(),
     );
@@ -167,18 +212,16 @@ describe('routeComment', () => {
       })),
     } as unknown as CodocsClient;
 
-    const result = await routeComment(
-      makeEvent({
-        quotedText: uniqueText,
-        id: 'other-comment',
-      }),
-      store,
-      client,
-    );
+    const event = makeEvent({
+      quotedText: uniqueText,
+      id: 'other-comment',
+    });
+    const result = await routeComment(event, store, client);
     expect(result.type).toBe('chat');
     if (result.type === 'chat') {
       expect(result.chatTab.tabId).toBe('tab-2');
     }
+    expect(store.getActiveByDocument).toHaveBeenCalledWith(event.documentId);
   });
 
   it('does not route empty quotedText on main doc to chat tab', async () => {

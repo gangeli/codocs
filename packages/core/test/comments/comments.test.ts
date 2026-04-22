@@ -66,6 +66,36 @@ describe('addComment', () => {
       JSON.stringify({ r: 0, a: [{ txt: 'buggy code here' }] }),
     );
   });
+
+  it('combines agent prefix and quotedText anchor', async () => {
+    const api = createMockDriveApi();
+    await addComment(api as any, 'doc-1', {
+      content: 'hi',
+      agent: { name: 'planner' },
+      quotedText: 'World',
+    });
+    expect(api.createComment).toHaveBeenCalledWith(
+      'doc-1',
+      '[planner]: hi',
+      JSON.stringify({ r: 0, a: [{ txt: 'World' }] }),
+    );
+    const [, content, anchor] = api.createComment.mock.calls[0];
+    expect(content).toBe('[planner]: hi');
+    expect(JSON.parse(anchor)).toEqual({ r: 0, a: [{ txt: 'World' }] });
+  });
+
+  it('escapes special characters in quotedText anchor safely via JSON.stringify', async () => {
+    const api = createMockDriveApi();
+    const special = '"\n\\';
+    await addComment(api as any, 'doc-1', {
+      content: 'Check',
+      quotedText: special,
+    });
+    const [, , anchor] = api.createComment.mock.calls[0];
+    expect(() => JSON.parse(anchor)).not.toThrow();
+    expect(JSON.parse(anchor)).toEqual({ r: 0, a: [{ txt: special }] });
+    expect(anchor).toBe(JSON.stringify({ r: 0, a: [{ txt: special }] }));
+  });
 });
 
 describe('listComments', () => {

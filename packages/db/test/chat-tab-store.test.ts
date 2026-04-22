@@ -151,6 +151,28 @@ describe('ChatTabStore', () => {
       const tab = store.getByTab('doc-1', 'tab-abc');
       expect(tab!.status).toBe('archived');
     });
+
+    it('is a silent no-op for a nonexistent id', () => {
+      store.create({
+        documentId: 'doc-1',
+        tabId: 'tab-abc',
+        title: 'Discussion',
+        agentName: 'planner',
+      });
+
+      expect(() => store.archive(99999)).not.toThrow();
+
+      const tab = store.getByTab('doc-1', 'tab-abc');
+      expect(tab).not.toBeNull();
+      expect(tab!.status).toBe('active');
+    });
+  });
+
+  describe('updateActiveComment nonexistent id', () => {
+    it('is a silent no-op for a nonexistent id', () => {
+      expect(() => store.updateActiveComment(99999, 'some-comment')).not.toThrow();
+      expect(store.getByActiveComment('some-comment')).toBeNull();
+    });
   });
 
   describe('messages', () => {

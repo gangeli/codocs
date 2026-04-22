@@ -18,10 +18,16 @@ describe('CodocsSessionStore', () => {
 
   describe('listAll', () => {
     it('returns every session, newest first', () => {
-      store.upsert('/a', ['d1'], 'claude');
-      store.upsert('/b', ['d2'], 'claude');
+      const a = store.upsert('/a', ['d1'], 'claude');
+      db.run(
+        `UPDATE codocs_sessions SET last_used_at = '2020-01-01 00:00:00' WHERE id = ?`,
+        [a.id],
+      );
+      const b = store.upsert('/b', ['d2'], 'claude');
+
       const all = store.listAll();
       expect(all).toHaveLength(2);
+      expect(all.map((s) => s.id)).toEqual([b.id, a.id]);
     });
 
     it('returns empty for fresh DB', () => {

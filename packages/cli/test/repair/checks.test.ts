@@ -227,6 +227,15 @@ describe('repair/checks', () => {
       expect(issues).toHaveLength(1);
       expect(issues[0].severity).toBe('info');
     });
+
+    it('does not flag recently-completed rows', async () => {
+      db.run(
+        `INSERT INTO agent_queue (agent_name, document_id, comment_event, status, completed_at)
+         VALUES ('alice', 'doc', '{}', 'completed', datetime('now', '-1 days'))`,
+      );
+      const ctx = makeCtx(db);
+      expect(await oldCompletedQueueItems.run(ctx)).toEqual([]);
+    });
   });
 
   describe('staleCodeTasks', () => {
@@ -235,10 +244,13 @@ describe('repair/checks', () => {
         `INSERT INTO code_tasks (document_id, comment_id, agent_name, branch_name, worktree_path, base_branch, updated_at)
          VALUES ('d1', 'c1', 'alice', 'b', '/tmp', 'main', datetime('now', '-30 days'))`,
       );
+      const rows = db.exec('SELECT id FROM code_tasks');
+      const expectedId = rows[0]?.values[0]?.[0] as number;
       const ctx = makeCtx(db);
       const issues = await staleCodeTasks.run(ctx);
       expect(issues).toHaveLength(1);
       expect(issues[0].code).toBe('stale-code-task');
+      expect(issues[0].context).toMatchObject({ codeTaskId: expectedId });
     });
   });
 

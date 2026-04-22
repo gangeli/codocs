@@ -9,6 +9,9 @@ import {
   writeTokens,
   clearTokens,
   tokensPath,
+  readGitHubTokens,
+  writeGitHubTokens,
+  clearGitHubTokens,
 } from '../../src/auth/token-store.js';
 
 let tempDir: string;
@@ -90,5 +93,28 @@ describe('token storage', () => {
     writeTokens({ access_token: 'a', refresh_token: 'r' });
     const mode = statSync(tokensPath()).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+});
+
+describe('github token storage', () => {
+  it('returns null when no tokens exist', () => {
+    expect(readGitHubTokens()).toBeNull();
+  });
+
+  it('writes and reads tokens', () => {
+    const tokens = { access_token: 'gho_abc', scope: 'repo,read:user' };
+    writeGitHubTokens(tokens);
+    expect(readGitHubTokens()).toEqual(tokens);
+  });
+
+  it('clears tokens', () => {
+    writeGitHubTokens({ access_token: 'gho_abc', scope: 'repo' });
+    clearGitHubTokens();
+    expect(readGitHubTokens()).toBeNull();
+  });
+
+  it('clearGitHubTokens is idempotent', () => {
+    clearGitHubTokens();
+    clearGitHubTokens();
   });
 });

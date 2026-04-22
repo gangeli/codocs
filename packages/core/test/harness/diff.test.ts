@@ -233,6 +233,8 @@ describe('parseSections', () => {
     expect(sections).toHaveLength(1);
     expect(sections[0].heading).toBeNull();
     expect(sections[0].content).toBe('Hello world\nSecond line\n');
+    expect(sections[0].startLine).toBe(0);
+    expect(sections[0].endLine).toBe(3);
   });
 
   it('parses sections split by headings', () => {
@@ -2160,6 +2162,15 @@ describe('interpolateDocIndex', () => {
     const bodyEnd = 180;
     // Expected: 160 + (250 - 200) * 0.8 = 200, clamped to 180
     expect(interpolateDocIndex(250, indexMap, bodyEnd)).toBe(bodyEnd);
+  });
+
+  it('single entry at the exact offset returns the entry docIndex', () => {
+    // Spot-check: the single-entry path agrees with the multi-entry path at
+    // the fixed point, so the fallback is a true extrapolation from the
+    // known anchor and not an off-by-one.
+    expect(
+      interpolateDocIndex(100, [{ mdOffset: 100, docIndex: 80 }], 999),
+    ).toBe(80);
   });
 
   it('handles single entry — extrapolation before', () => {

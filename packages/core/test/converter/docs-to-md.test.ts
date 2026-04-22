@@ -246,6 +246,163 @@ describe('docsToMarkdown', () => {
     expect(md).toBe('1. first\n2. second\n');
   });
 
+  it('honours a startNumber override on the list nesting level', () => {
+    // Docs exposes startNumber on each nestingLevel; a value of 5 means
+    // the very first ordered item renders as `5.` and subsequent ones
+    // continue from there.
+    const doc = {
+      documentId: 'o',
+      title: 'O',
+      body: {
+        content: [
+          { startIndex: 0, endIndex: 1, sectionBreak: { sectionStyle: {} } },
+          {
+            startIndex: 1,
+            endIndex: 9,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 1,
+                  endIndex: 9,
+                  textRun: { content: 'first\n', textStyle: {} },
+                },
+              ],
+              paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+              bullet: { listId: 'l1', nestingLevel: 0 },
+            },
+          },
+          {
+            startIndex: 9,
+            endIndex: 17,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 9,
+                  endIndex: 17,
+                  textRun: { content: 'second\n', textStyle: {} },
+                },
+              ],
+              paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+              bullet: { listId: 'l1', nestingLevel: 0 },
+            },
+          },
+        ],
+      },
+      namedRanges: {},
+      lists: {
+        l1: {
+          listProperties: {
+            nestingLevels: [{ glyphType: 'DECIMAL', startNumber: 5 }],
+          },
+        },
+      },
+      inlineObjects: {},
+    };
+    const md = docsToMarkdown(doc);
+    expect(md).toBe('5. first\n6. second\n');
+  });
+
+  it('restarts the running counter for a second ordered list after a heading', () => {
+    // Two separate ordered lists (distinct listIds) separated by a
+    // heading: the second list must restart at 1, not continue from the
+    // previous list's last counter.
+    const doc = {
+      documentId: 'o',
+      title: 'O',
+      body: {
+        content: [
+          { startIndex: 0, endIndex: 1, sectionBreak: { sectionStyle: {} } },
+          {
+            startIndex: 1,
+            endIndex: 9,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 1,
+                  endIndex: 9,
+                  textRun: { content: 'a1\n', textStyle: {} },
+                },
+              ],
+              paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+              bullet: { listId: 'lA', nestingLevel: 0 },
+            },
+          },
+          {
+            startIndex: 9,
+            endIndex: 17,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 9,
+                  endIndex: 17,
+                  textRun: { content: 'a2\n', textStyle: {} },
+                },
+              ],
+              paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+              bullet: { listId: 'lA', nestingLevel: 0 },
+            },
+          },
+          {
+            startIndex: 17,
+            endIndex: 24,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 17,
+                  endIndex: 24,
+                  textRun: { content: 'Next\n', textStyle: {} },
+                },
+              ],
+              paragraphStyle: { namedStyleType: 'HEADING_2' },
+            },
+          },
+          {
+            startIndex: 24,
+            endIndex: 32,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 24,
+                  endIndex: 32,
+                  textRun: { content: 'b1\n', textStyle: {} },
+                },
+              ],
+              paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+              bullet: { listId: 'lB', nestingLevel: 0 },
+            },
+          },
+          {
+            startIndex: 32,
+            endIndex: 40,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 32,
+                  endIndex: 40,
+                  textRun: { content: 'b2\n', textStyle: {} },
+                },
+              ],
+              paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+              bullet: { listId: 'lB', nestingLevel: 0 },
+            },
+          },
+        ],
+      },
+      namedRanges: {},
+      lists: {
+        lA: {
+          listProperties: { nestingLevels: [{ glyphType: 'DECIMAL' }] },
+        },
+        lB: {
+          listProperties: { nestingLevels: [{ glyphType: 'DECIMAL' }] },
+        },
+      },
+      inlineObjects: {},
+    };
+    const md = docsToMarkdown(doc);
+    expect(md).toBe('1. a1\n2. a2\n\n## Next\n\n1. b1\n2. b2\n');
+  });
+
   // ── Code block ──────────────────────────────────────────────────
 
   it('wraps a monospace-font paragraph in a fenced code block', () => {

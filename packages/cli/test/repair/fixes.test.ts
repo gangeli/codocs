@@ -71,12 +71,13 @@ describe('repair/fixes', () => {
     it('reports when session not found', async () => {
       const result = await deleteSessionFix.apply(ctx, issue({ sessionId: 'nope' }));
       expect(result.ok).toBe(false);
-      expect(result.message).toMatch(/not found/);
+      expect(result.message).toBe('Session nope not found');
     });
 
     it('fails without sessionId context', async () => {
       const result = await deleteSessionFix.apply(ctx, issue({}));
       expect(result.ok).toBe(false);
+      expect(result.message).toBe('No sessionId in issue context');
     });
   });
 
@@ -98,7 +99,7 @@ describe('repair/fixes', () => {
       }));
       expect(result.ok).toBe(true);
       expect(ctx.sessionStore.get(s.id)).toBeNull();
-      expect(result.message).toMatch(/deleted empty session/);
+      expect(result.message).toBe(`Removed last doc; deleted empty session ${s.id}`);
     });
 
     it('fails when doc not in session', async () => {
@@ -107,6 +108,7 @@ describe('repair/fixes', () => {
         sessionId: s.id, docId: VALID_DOC_B,
       }));
       expect(result.ok).toBe(false);
+      expect(result.message).toBe(`Doc ${VALID_DOC_B} was not in session ${s.id}`);
     });
   });
 
@@ -116,7 +118,7 @@ describe('repair/fixes', () => {
       ctx.queueStore.dequeue('alice');
       const result = await resetStaleQueueFix.apply(ctx, issue({}));
       expect(result.ok).toBe(true);
-      expect(result.message).toMatch(/Reset 1/);
+      expect(result.message).toBe('Reset 1 stuck item(s)');
       expect(ctx.queueStore.isAgentBusy('alice')).toBe(false);
       expect(ctx.queueStore.peek('alice')).not.toBeNull();
       const reclaimed = ctx.queueStore.dequeue('alice');
@@ -126,13 +128,13 @@ describe('repair/fixes', () => {
     it('resetStaleQueueFix handles empty queue', async () => {
       const result = await resetStaleQueueFix.apply(ctx, issue({}));
       expect(result.ok).toBe(true);
-      expect(result.message).toMatch(/Nothing to reset/);
+      expect(result.message).toBe('Nothing to reset');
     });
 
     it('purgeOldQueueFix is non-destructive on fresh queue', async () => {
       const result = await purgeOldQueueFix.apply(ctx, issue({}));
       expect(result.ok).toBe(true);
-      expect(result.message).toMatch(/Nothing to purge/);
+      expect(result.message).toBe('Nothing to purge');
     });
 
     it('purgeOldQueueFix removes 60-day-old items but keeps recent ones', async () => {
@@ -147,7 +149,7 @@ describe('repair/fixes', () => {
 
       const result = await purgeOldQueueFix.apply(ctx, issue({}));
       expect(result.ok).toBe(true);
-      expect(result.message).toMatch(/Purged 1/);
+      expect(result.message).toBe('Purged 1 old item(s)');
 
       const rows = ctx.db.exec('SELECT id FROM agent_queue ORDER BY id ASC');
       const remainingIds = rows[0]?.values.map((r) => r[0] as number) ?? [];
@@ -174,6 +176,7 @@ describe('repair/fixes', () => {
     it('fails without codeTaskId', async () => {
       const result = await markCodeTaskCompletedFix.apply(ctx, issue({}));
       expect(result.ok).toBe(false);
+      expect(result.message).toBe('No codeTaskId in issue context');
     });
   });
 });

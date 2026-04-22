@@ -52,14 +52,13 @@ describe('classifyComment', () => {
     expect(result).toEqual({ type: 'human', author: 'Human' });
   });
 
-  it('ignores action replies (resolve/reopen) when finding the last message', () => {
+  it.each(['resolve', 'reopen', 'deleted'])('ignores %s action replies', (action) => {
     const comment = makeComment({
       replies: [
         { id: 'r1', content: 'Done', author: { displayName: 'Bot', emailAddress: BOT_EMAILS[0] } },
-        { id: 'r2', content: 'Resolved', action: 'resolve', author: { displayName: 'Human', emailAddress: 'human@example.com' } },
+        { id: 'r2', content: 'Action reply', action, author: { displayName: 'Human', emailAddress: 'human@example.com' } },
       ],
     });
-    // Last non-action reply is from the bot
     const result = classifyComment(comment, { botEmails: BOT_EMAILS });
     expect(result.type).toBe('bot');
   });
@@ -67,7 +66,7 @@ describe('classifyComment', () => {
   it('returns human when email is missing but displayName is present', () => {
     const comment = makeComment({ author: { displayName: 'Anonymous' } });
     const result = classifyComment(comment, { botEmails: BOT_EMAILS });
-    expect(result.type).toBe('human');
+    expect(result).toEqual({ type: 'human', author: 'Anonymous' });
   });
 
   it('returns unknown when both email and displayName are missing', () => {
@@ -78,7 +77,7 @@ describe('classifyComment', () => {
 
   it('classifies as human when botEmails list is empty', () => {
     const result = classifyComment(makeComment(), { botEmails: [] });
-    expect(result.type).toBe('human');
+    expect(result).toEqual({ type: 'human', author: 'Human User' });
   });
 
   it('classifies as bot by display name when email is unavailable', () => {

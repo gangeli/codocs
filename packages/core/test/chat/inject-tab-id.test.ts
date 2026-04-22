@@ -44,9 +44,11 @@ describe('injectTabId', () => {
         location: { index: 1 },
       },
     }];
+    const snap = structuredClone(requests);
 
     injectTabId(requests, 'tab-123');
-    expect((requests[0].insertText!.location as any).tabId).toBeUndefined();
+
+    expect(requests).toEqual(snap);
   });
 
   it('handles requests with no location/range', () => {
