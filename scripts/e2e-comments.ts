@@ -28,6 +28,21 @@
  *   TC4  concurrent code-change pair   — two comments fired together
  *                                        land in two isolated worktrees
  *                                        with no file cross-contamination.
+ *   TC5  mixed code + doc edit         — single comment that changes
+ *                                        BOTH a source file and the
+ *                                        design doc; both branches
+ *                                        fire in one processComment.
+ *   TC6  thread follow-up              — a second comment event with
+ *                                        the same comment.id reuses the
+ *                                        existing worktree and adds a
+ *                                        second commit on the same
+ *                                        branch (rebase path).
+ *   TC7  doc merge conflict            — "others" mutate the doc
+ *                                        between the snapshot and the
+ *                                        theirs-read, forcing a
+ *                                        computeDocDiff conflict and
+ *                                        triggering a second agent run
+ *                                        via buildConflictPrompt.
  *
  * Usage:
  *   npx tsx scripts/e2e-comments.ts
@@ -48,7 +63,7 @@ import {
   type CommentEvent,
   type CodocsClient,
 } from '../packages/core/src/index.js';
-import { openDatabase, QueueStore } from '../packages/db/src/index.js';
+import { openDatabase, QueueStore, CodeTaskStore } from '../packages/db/src/index.js';
 
 import { mkdtemp, rm, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -135,6 +150,10 @@ class FakeDocsClient {
   log: FakeDocsCallLog[] = [];
   replies: Array<{ commentId: string; content: string; replyId: string }> = [];
   batchUpdateCalls: Array<{ docId: string; requests: unknown[] }> = [];
+  /** getDocument call counter. 1-indexed after the first call. */
+  getDocumentCalls = 0;
+  /** Scheduled markdown swaps: on call N (1-indexed), set markdown to `md` before returning. */
+  private scheduledSwaps = new Map<number, string>();
   private replyCounter = 0;
   private runner?: RecordingRunner;
 
@@ -147,6 +166,17 @@ class FakeDocsClient {
   }
 
   /**
+   * Schedule a markdown swap for the Nth getDocument call (1-indexed).
+   * When that call fires, the internal markdown is replaced with `md`
+   * BEFORE the document is returned. Used by TC7 to simulate a
+   * concurrent edit by "others" between the orchestrator's base-snapshot
+   * read and its later "theirs" read.
+   */
+  setMarkdownOnGetDocument(nth: number, md: string): void {
+    this.scheduledSwaps.set(nth, md);
+  }
+
+  /**
    * Wire up a recording runner whose last-captured design-doc content
    * will be applied when `batchUpdate` is called. This mimics Google
    * Docs applying edits to the canonical doc.
@@ -156,6 +186,12 @@ class FakeDocsClient {
   }
 
   async getDocument(docId: string): Promise<docs_v1.Schema$Document> {
+    this.getDocumentCalls += 1;
+    const swap = this.scheduledSwaps.get(this.getDocumentCalls);
+    if (swap !== undefined) {
+      this.markdown = swap;
+      this.scheduledSwaps.delete(this.getDocumentCalls);
+    }
     this.log.push({ method: 'getDocument', args: [docId] });
     return mdToMinimalDoc(this.markdown);
   }
@@ -348,6 +384,7 @@ interface TestContext {
   docsClient: FakeDocsClient;
   orchestrator: AgentOrchestrator;
   runner: RecordingRunner;
+  codeTaskStore: CodeTaskStore;
   docId: string;
   debug: string[];
   expect: (cond: boolean, message: string) => void;
@@ -372,6 +409,7 @@ async function runCase(tc: TestCase, debugFlag: boolean): Promise<boolean> {
   const docsClient = new FakeDocsClient(initialMarkdown);
   const db = await openDatabase(':memory:');
   const queueStore = new QueueStore(db);
+  const codeTaskStore = new CodeTaskStore(db);
   const debug: string[] = [];
 
   const innerRunner = new ClaudeRunner();
@@ -382,6 +420,7 @@ async function runCase(tc: TestCase, debugFlag: boolean): Promise<boolean> {
     client: docsClient as unknown as CodocsClient,
     sessionStore: createMemorySessionStore(),
     queueStore,
+    codeTaskStore,
     agentRunner: runner,
     fallbackAgent: 'aria',
     permissionMode: () => ({ type: 'bypass' }),
@@ -404,7 +443,7 @@ async function runCase(tc: TestCase, debugFlag: boolean): Promise<boolean> {
   };
 
   const docId = 'doc-e2e-comments';
-  const ctx: TestContext = { workdir, repoRoot, originPath, docsClient, orchestrator, runner, docId, debug, expect };
+  const ctx: TestContext = { workdir, repoRoot, originPath, docsClient, orchestrator, runner, codeTaskStore, docId, debug, expect };
 
   try {
     await tc.fn(ctx);
@@ -721,6 +760,202 @@ const TC4: TestCase = {
   },
 };
 
+const TC5: TestCase = {
+  title: 'TC5  mixed code + doc edit in one comment',
+  fn: async ({ docsClient, orchestrator, runner, repoRoot, originPath, docId, expect }) => {
+    const before = docsClient.markdown;
+    // Single comment that requires BOTH a code change and a doc edit.
+    // Guards against a regression where the orchestrator runs only one
+    // of its post-hoc detection branches (code commit OR doc diff).
+    await orchestrator.handleComment(
+      makeCommentEvent(
+        docId,
+        'Please do BOTH of the following in a single pass: '
+        + '(1) create a new file at src/mixed.ts whose only contents are: export const MIX_MARKER = "mix-marker-v1"; '
+        + 'AND (2) append a one-sentence paragraph to the design doc stating that we will add rate limiting. '
+        + 'Both must be done — do not skip either step.',
+        { id: 'comment-mixed' },
+      ),
+    );
+    await orchestrator.waitForIdle();
+
+    // Exactly one agent run (no fallback retry).
+    expect(runner.workingDirectories.length === 1, `agent ran exactly once (saw ${runner.workingDirectories.length})`);
+    const wtPath = runner.workingDirectories[0];
+
+    // Code branch fired: worktree retained, file exists with the marker,
+    // branch pushed to origin, commit on the branch beyond main.
+    const wts = await listWorktrees(repoRoot);
+    expect(wts.length === 1, `worktree retained (saw ${JSON.stringify(wts)})`);
+
+    const filePath = join(wtPath, 'src', 'mixed.ts');
+    expect(existsSync(filePath), `src/mixed.ts was created (${filePath})`);
+    if (existsSync(filePath)) {
+      const content = await readFile(filePath, 'utf-8');
+      expect(
+        content.includes('MIX_MARKER') && content.includes('mix-marker-v1'),
+        'src/mixed.ts contains MIX_MARKER with expected value',
+      );
+    }
+
+    const branchName = await git(wtPath, 'rev-parse', '--abbrev-ref', 'HEAD');
+    expect(branchName.startsWith('codocs/'), `branch is a codocs branch (${branchName})`);
+    const log = await git(wtPath, 'log', '--oneline', `main..${branchName}`);
+    expect(log.trim().split('\n').length === 1, `exactly one commit beyond main (log: ${log.slice(0, 80)})`);
+
+    const originBranches = await listOriginBranches(originPath);
+    expect(
+      originBranches.includes(branchName),
+      `origin has branch ${branchName} (origin has: ${JSON.stringify(originBranches)})`,
+    );
+
+    // Doc branch fired: batchUpdate called exactly once, doc markdown changed
+    // from baseline and contains the new content.
+    expect(docsClient.batchUpdateCalls.length === 1, `batchUpdate called exactly once (saw ${docsClient.batchUpdateCalls.length})`);
+    expect(docsClient.markdown !== before, 'design doc content changed from the baseline');
+    expect(/rate/i.test(docsClient.markdown), 'design doc mentions rate limiting');
+  },
+};
+
+const TC6: TestCase = {
+  title: 'TC6  thread follow-up reuses the same worktree',
+  fn: async ({ orchestrator, runner, repoRoot, originPath, codeTaskStore, docId, expect }) => {
+    const threadId = 'comment-thread-followup';
+
+    // First comment on the thread — creates worktree and branch.
+    await orchestrator.handleComment(
+      makeCommentEvent(
+        docId,
+        'Create a new file at src/first.ts whose only contents are: export const FIRST_MARKER = "first-v1";',
+        { id: threadId },
+      ),
+    );
+    await orchestrator.waitForIdle();
+
+    expect(runner.workingDirectories.length === 1, `first comment: one run (saw ${runner.workingDirectories.length})`);
+    const firstWt = runner.workingDirectories[0];
+    const firstBranch = await git(firstWt, 'rev-parse', '--abbrev-ref', 'HEAD');
+    const firstLog = await git(firstWt, 'log', '--oneline', `main..${firstBranch}`);
+    expect(firstLog.trim().split('\n').length === 1, 'first comment added exactly one commit');
+
+    // The code task was recorded under this comment.id.
+    const task = codeTaskStore.getByComment(docId, threadId);
+    expect(task !== null, 'code task was recorded for the thread');
+    if (task) {
+      expect(task.worktreePath === firstWt, `recorded worktreePath matches (${task.worktreePath} === ${firstWt})`);
+      expect(task.branchName === firstBranch, `recorded branchName matches (${task.branchName} === ${firstBranch})`);
+    }
+
+    // Second comment on the SAME thread (same comment.id) — the
+    // orchestrator should look up the existing task and reuse its
+    // worktree + branch rather than creating a new one.
+    await orchestrator.handleComment(
+      makeCommentEvent(
+        docId,
+        'Now create a second file in the same branch at src/second.ts whose only contents are: export const SECOND_MARKER = "second-v2";',
+        { id: threadId },
+      ),
+    );
+    await orchestrator.waitForIdle();
+
+    expect(runner.workingDirectories.length === 2, `total runs after follow-up: 2 (saw ${runner.workingDirectories.length})`);
+    const secondWt = runner.workingDirectories[1];
+    expect(secondWt === firstWt, `follow-up reused the same worktree (${secondWt} === ${firstWt})`);
+
+    // Still only one worktree on disk — not two.
+    const wts = await listWorktrees(repoRoot);
+    expect(wts.length === 1, `still exactly one worktree after follow-up (saw ${JSON.stringify(wts)})`);
+
+    // Same branch name, and it now has two commits beyond main.
+    const secondBranch = await git(firstWt, 'rev-parse', '--abbrev-ref', 'HEAD');
+    expect(secondBranch === firstBranch, `branch name unchanged (${secondBranch} === ${firstBranch})`);
+    const secondLog = await git(firstWt, 'log', '--oneline', `main..${secondBranch}`);
+    expect(
+      secondLog.trim().split('\n').length === 2,
+      `branch now has two commits beyond main (log: ${secondLog.replace(/\n/g, ' | ').slice(0, 120)})`,
+    );
+
+    // Both files should exist in the worktree; only one branch on origin.
+    expect(existsSync(join(firstWt, 'src', 'first.ts')), 'src/first.ts still present');
+    expect(existsSync(join(firstWt, 'src', 'second.ts')), 'src/second.ts was added');
+
+    const originBranches = await listOriginBranches(originPath);
+    const codocsBranches = originBranches.filter((b) => b.startsWith('codocs/'));
+    expect(codocsBranches.length === 1, `exactly one codocs branch on origin (saw ${JSON.stringify(codocsBranches)})`);
+    expect(codocsBranches[0] === firstBranch, `origin branch is the same one (${codocsBranches[0]} === ${firstBranch})`);
+
+    // Origin's copy of the branch has both commits too (push happened twice).
+    const originLog = await git(
+      firstWt, 'log', '--oneline', `main..origin/${firstBranch}`,
+    );
+    expect(
+      originLog.trim().split('\n').length === 2,
+      `origin branch has both commits (log: ${originLog.replace(/\n/g, ' | ').slice(0, 120)})`,
+    );
+  },
+};
+
+const TC7: TestCase = {
+  title: 'TC7  doc merge conflict triggers a conflict-resolution sub-run',
+  fn: async ({ docsClient, orchestrator, runner, docId, expect }) => {
+    // Set up a doc with two paragraphs. The agent will rewrite the second
+    // one; "others" will ALSO rewrite the second one between the
+    // orchestrator's base snapshot and its "theirs" read. The two edits
+    // are incompatible, forcing a merge conflict that the orchestrator
+    // resolves via a second agent run (orchestrator.ts:812–824).
+    const original = 'Line A.\n\nLine B.\n';
+    const concurrent = 'Line A.\n\nLine D, edited by someone else.\n';
+    docsClient.setMarkdown(original);
+
+    // getDocument call accounting:
+    //   call #1 — handleComment (agent assignment)
+    //   call #2 — processComment base snapshot
+    //   call #3 — processComment "theirs" read (post-agent)
+    // Swap to the concurrent version right at call #3 so the base is
+    // clean but theirs has diverged.
+    docsClient.setMarkdownOnGetDocument(3, concurrent);
+
+    await orchestrator.handleComment(
+      makeCommentEvent(
+        docId,
+        'In the design doc, replace the "Line B." paragraph with "Line C." Preserve Line A unchanged.',
+        { id: 'comment-conflict' },
+      ),
+    );
+    await orchestrator.waitForIdle();
+
+    // Main run + conflict-resolution sub-run = exactly 2 runs.
+    expect(
+      runner.workingDirectories.length === 2,
+      `main run + conflict resolution: 2 runs (saw ${runner.workingDirectories.length})`,
+    );
+
+    // Both runs happened in the SAME worktree — the conflict resolver
+    // reuses the current worktree, not a fresh one.
+    const uniqueWorktrees = new Set(runner.workingDirectories);
+    expect(uniqueWorktrees.size === 1, `both runs used the same worktree (saw ${uniqueWorktrees.size})`);
+
+    // The second prompt is the conflict-resolution prompt, which contains
+    // the literal word "conflict" (see buildConflictPrompt in prompt.ts).
+    // This confirms the orchestrator actually took the resolver branch
+    // rather than, say, running the main path twice.
+    expect(
+      /conflict/i.test(runner.promptHistory[1] ?? ''),
+      'second run received a conflict-resolution prompt',
+    );
+
+    // batchUpdate was called exactly once after the merge was resolved.
+    expect(
+      docsClient.batchUpdateCalls.length === 1,
+      `batchUpdate called exactly once after merge (saw ${docsClient.batchUpdateCalls.length})`,
+    );
+
+    // Exactly one final content reply was posted.
+    const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F914}');
+    expect(contentReplies.length === 1, `exactly one content reply (saw ${contentReplies.length})`);
+  },
+};
+
 // ── Main ─────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -745,7 +980,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const all: TestCase[] = [TC1, TC2, TC3, TC4];
+  const all: TestCase[] = [TC1, TC2, TC3, TC4, TC5, TC6, TC7];
   const selected = filters.length
     ? all.filter((t) => filters.some((f) => t.title.toLowerCase().includes(f)))
     : all;
