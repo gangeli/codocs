@@ -2074,6 +2074,506 @@ Tail body.`,
       ordering: [['# Keep', '# Tail']],
     },
   },
+
+  // ── Group X (follow-ups): more duplicate-key / alignment edge cases ──
+  {
+    title: 'X1b: duplicate body lines — edit the second occurrence',
+    canvas: 'dup-lines',
+    fixture: `# Dup Lines
+
+- apple
+- apple
+- apple
+
+Trailing.
+`,
+    // The fixture has three identical `- apple` lines. Agent rewrites
+    // only the second one. The test exercises the per-section line-diff
+    // (node-diff3) ability to localise the edit to the middle
+    // occurrence, rather than smearing across all three.
+    apply: (b) => {
+      const lines = b.split('\n');
+      let seen = 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i] === '- apple') {
+          seen++;
+          if (seen === 2) {
+            lines[i] = '- apricot';
+            break;
+          }
+        }
+      }
+      return lines.join('\n');
+    },
+    expect: {
+      contains: ['- apple', '- apricot', 'Trailing.'],
+      notContains: ['- apple\n- apple\n- apple'],
+      ordering: [
+        ['- apple', '- apricot'],
+        ['- apricot', '- apple'],
+        ['- apple', 'Trailing.'],
+      ],
+      // There must still be exactly two `- apple` lines and exactly one
+      // `- apricot` line (regression guard on smearing).
+      custom: (n) => {
+        const appleCount = (n.match(/^- apple$/gm) ?? []).length;
+        const apricotCount = (n.match(/^- apricot$/gm) ?? []).length;
+        return {
+          pass: appleCount === 2 && apricotCount === 1,
+          reason: `expected 2 apple + 1 apricot, got ${appleCount} apple + ${apricotCount} apricot`,
+        };
+      },
+    },
+  },
+  {
+    title: 'X1c: rename a heading into one that already exists',
+    canvas: 'rename-collision',
+    fixture: `# Alpha
+
+Alpha body.
+
+# Beta
+
+Beta body.
+
+# Gamma
+
+Gamma body.
+`,
+    // Agent renames # Alpha → # Beta. Doc now has two # Beta sections.
+    // alignSections's (heading, occurrence-index) pairing must decide
+    // whether renamed-Alpha becomes Beta#0 (colliding with the original
+    // Beta) or Beta#1 (appending). The intent here is "rename Alpha,
+    // keep everything else" — so the expected body has Alpha's content
+    // under a new `# Beta` heading at position 0, and the original Beta
+    // content under a second `# Beta` heading at position 1.
+    apply: (b) => b.replace('# Alpha', '# Beta'),
+    expect: {
+      contains: ['Alpha body.', 'Beta body.', '# Gamma', 'Gamma body.'],
+      notContains: ['# Alpha'],
+      ordering: [
+        ['Alpha body.', 'Beta body.'],
+        ['Beta body.', '# Gamma'],
+      ],
+      // Must have exactly two `# Beta` heading lines after rename.
+      custom: (n) => {
+        const count = (n.match(/^#\s+Beta\s*$/gm) ?? []).length;
+        return {
+          pass: count === 2,
+          reason: `expected 2 '# Beta' heading lines, got ${count}`,
+        };
+      },
+    },
+  },
+  {
+    title: 'X1d: delete the first of two duplicate-named sections',
+    canvas: 'dup-del-first',
+    fixture: `# Notes
+
+First notes body.
+
+# Other
+
+Other body.
+
+# Notes
+
+Second notes body.
+`,
+    // Delete the FIRST # Notes section (body + heading), keeping the
+    // second intact. This reshuffles occurrence indices: what was
+    // Notes#1 in base is Notes#0 in ours, so (heading, occurrence-index)
+    // pairing must realise the renumbering.
+    apply: (b) => b.replace('# Notes\n\nFirst notes body.\n\n', ''),
+    expect: {
+      exact: `# Other
+
+Other body.
+
+# Notes
+
+Second notes body.`,
+      contains: ['# Other', 'Other body.', '# Notes', 'Second notes body.'],
+      notContains: ['First notes body.'],
+      ordering: [['# Other', '# Notes'], ['# Notes', 'Second notes body.']],
+    },
+  },
+  {
+    title: 'X1e: agent appends a section whose heading duplicates an existing one',
+    canvas: 'dup-add',
+    fixture: `# Notes
+
+Original notes.
+`,
+    // Add a second `# Notes` section at the end. Base has Notes#0 only;
+    // ours has Notes#0 (unchanged) + Notes#1 (new). alignSections sees
+    // the new Notes#1 with no match in base/theirs → added-by-agent.
+    apply: (b) => b.trimEnd() + '\n\n# Notes\n\nAppended notes body.\n',
+    expect: {
+      contains: ['Original notes.', 'Appended notes body.'],
+      ordering: [['Original notes.', 'Appended notes body.']],
+      custom: (n) => {
+        const count = (n.match(/^#\s+Notes\s*$/gm) ?? []).length;
+        return {
+          pass: count === 2,
+          reason: `expected 2 '# Notes' heading lines, got ${count}`,
+        };
+      },
+    },
+  },
+
+  // ── Group M (follow-ups): more structural-element edges ──
+  {
+    title: 'M3b: multi-paragraph blockquote — edit ONE paragraph',
+    canvas: 'bq-multi',
+    fixture: `# BQMulti
+
+Before.
+
+> First quoted paragraph.
+>
+> Second quoted paragraph.
+>
+> Third quoted paragraph.
+
+After.
+`,
+    apply: (b) =>
+      b.replace('Second quoted paragraph.', 'Second quoted paragraph rewritten.'),
+    expect: {
+      contains: [
+        '# BQMulti',
+        'Before.',
+        '> First quoted paragraph.',
+        '> Second quoted paragraph rewritten.',
+        '> Third quoted paragraph.',
+        'After.',
+      ],
+      notContains: ['> Second quoted paragraph.'],
+      ordering: [
+        ['> First quoted paragraph.', '> Second quoted paragraph rewritten.'],
+        ['> Second quoted paragraph rewritten.', '> Third quoted paragraph.'],
+      ],
+    },
+  },
+  {
+    title: 'M3c: blockquote — add a new line inside (line count changes)',
+    canvas: 'bq-insert',
+    fixture: `# BQInsert
+
+> Line one.
+> Line two.
+
+Trailing.
+`,
+    // Insert a new `> Line one and a half.` between lines 1 and 2.
+    // This is the pure-insert case my blockquote emitter left as a TODO;
+    // expected to either work via follow-up logic or reveal the gap.
+    apply: (b) => b.replace('> Line one.\n', '> Line one.\n> Line one and a half.\n'),
+    expect: {
+      contains: ['> Line one.', '> Line one and a half.', '> Line two.', 'Trailing.'],
+      ordering: [
+        ['> Line one.', '> Line one and a half.'],
+        ['> Line one and a half.', '> Line two.'],
+      ],
+    },
+  },
+  {
+    title: 'M3d: fenced code block — add a new line inside',
+    canvas: 'code-ins',
+    fixture:
+      '# CodeIns\n\nBefore.\n\n' +
+      '```python\n' +
+      'def greet(name):\n' +
+      '    print("hello", name)\n' +
+      '```\n' +
+      '\nAfter.\n',
+    apply: (b) =>
+      b.replace(
+        'def greet(name):\n    print("hello", name)',
+        'def greet(name):\n    name = name.strip()\n    print("hello", name)',
+      ),
+    expect: {
+      contains: ['def greet(name):', 'name = name.strip()', 'print("hello", name)'],
+      ordering: [
+        ['def greet(name):', 'name = name.strip()'],
+        ['name = name.strip()', 'print("hello", name)'],
+        ['print("hello", name)', 'After.'],
+      ],
+    },
+  },
+  {
+    title: 'M3e: edit a paragraph adjacent to an inline image',
+    canvas: 'img-adj',
+    fixture: `# Img
+
+Before image paragraph.
+
+![sunflower](https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Sunflower_from_Silesia2.jpg/100px-Sunflower_from_Silesia2.jpg)
+
+After image paragraph.
+`,
+    // Edit the "after image paragraph" — NOT the image itself. Image
+    // round-trip fidelity is a separate concern; this test verifies
+    // that an image-adjacent edit doesn't corrupt the image or misplace
+    // the edit.
+    apply: (b) =>
+      b.replace('After image paragraph.', 'After image paragraph rewritten.'),
+    expect: {
+      contains: ['Before image paragraph.', 'After image paragraph rewritten.'],
+      notContains: ['After image paragraph.\n'],
+      // Image must still be present (either as a markdown image or as
+      // the re-rendered form the docs reader emits).
+      matches: [/!\[[^\]]*\]\(https?:\/\/[^)]+\)/],
+      ordering: [
+        ['Before image paragraph.', 'After image paragraph rewritten.'],
+      ],
+    },
+  },
+  {
+    title: 'M3f: edit a paragraph adjacent to a mermaid block',
+    canvas: 'mermaid-adj',
+    fixture:
+      '# Mermaid\n\nBefore mermaid.\n\n' +
+      '```mermaid\n' +
+      'graph TD\n' +
+      '    A --> B\n' +
+      '    B --> C\n' +
+      '```\n' +
+      '\nAfter mermaid.\n',
+    // Edit the paragraph AFTER the mermaid block. Without the DB
+    // mapping this harness doesn't wire up, the mermaid source won't
+    // round-trip through readMarkdown (the block becomes an opaque
+    // image). The test only cares that the adjacent-paragraph edit
+    // lands correctly without corrupting the image element or the
+    // surrounding content.
+    apply: (b) => b.replace('After mermaid.', 'After mermaid rewritten.'),
+    expect: {
+      contains: ['# Mermaid', 'Before mermaid.', 'After mermaid rewritten.'],
+      notContains: ['After mermaid.\n'],
+      ordering: [
+        ['Before mermaid.', 'After mermaid rewritten.'],
+      ],
+    },
+  },
+  {
+    title: 'M3g: blockquote containing a bullet list — edit a list item inside',
+    canvas: 'bq-list',
+    fixture: `# BQList
+
+> An intro line.
+>
+> - alpha
+> - beta
+> - gamma
+>
+> Outro line.
+
+Trailing.
+`,
+    apply: (b) => b.replace('> - beta', '> - beta-prime'),
+    expect: {
+      contains: [
+        '# BQList',
+        '> An intro line.',
+        '> - alpha',
+        '> - beta-prime',
+        '> - gamma',
+        '> Outro line.',
+        'Trailing.',
+      ],
+      notContains: ['> - beta\n'],
+      ordering: [
+        ['> - alpha', '> - beta-prime'],
+        ['> - beta-prime', '> - gamma'],
+      ],
+    },
+  },
+
+  // ── Group X4 (follow-ups): more AST-equivalent variants ──
+  {
+    title: 'X4b: bullet marker swap (- ↔ *) is a canonicalised no-op',
+    canvas: 'bullet-swap',
+    fixture: `# BulletSwap
+
+- apple
+- banana
+- cherry
+`,
+    apply: (b) => b.replace(/^- /gm, '* '),
+    expect: {
+      contains: ['apple', 'banana', 'cherry'],
+      exactRequests: 0,
+    },
+  },
+  {
+    title: 'X4c: strong delimiter swap (** ↔ __) is a canonicalised no-op',
+    canvas: 'strong-swap',
+    fixture: `# StrongSwap
+
+Line with **strong word** in it.
+`,
+    apply: (b) => b.replace('**strong word**', '__strong word__'),
+    expect: {
+      contains: ['strong word'],
+      exactRequests: 0,
+    },
+  },
+  {
+    title: 'X4d: ordered-list marker swap (1. ↔ 1)) is a canonicalised no-op',
+    canvas: 'ord-swap',
+    fixture: `# OrdSwap
+
+1. apple
+2. banana
+3. cherry
+`,
+    apply: (b) => b.replace(/^(\d+)\.\s/gm, '$1) '),
+    expect: {
+      contains: ['apple', 'banana', 'cherry'],
+      exactRequests: 0,
+    },
+  },
+  {
+    title: 'X4e: ATX vs Setext heading style is a canonicalised no-op',
+    canvas: 'setext',
+    fixture: `# Heading A
+
+Body of A.
+`,
+    // Convert the ATX heading to Setext underline form.
+    apply: (b) => b.replace('# Heading A', 'Heading A\n========='),
+    expect: {
+      contains: ['Heading A', 'Body of A.'],
+      exactRequests: 0,
+    },
+  },
+  {
+    title: 'X4f: code fence delimiter swap (``` ↔ ~~~) is a canonicalised no-op',
+    canvas: 'fence-swap',
+    fixture:
+      '# FenceSwap\n\n```python\n' +
+      'print("hi")\n' +
+      '```\n',
+    apply: (b) =>
+      b
+        .replace('```python\n', '~~~python\n')
+        .replace(/```\n?$/, '~~~\n'),
+    expect: {
+      contains: ['FenceSwap', 'print("hi")'],
+      exactRequests: 0,
+    },
+  },
+
+  // ── Group Z: Cross-cutting interactions ──
+  {
+    title: 'Z1: duplicate heading + AST-equivalent body variant in second section',
+    canvas: 'z1',
+    fixture: `# Dup
+
+First body with **strong**.
+
+# Other
+
+Middle section.
+
+# Dup
+
+Second body with **strong**.
+`,
+    // Rewrite the second `# Dup` body's **strong** as __strong__ —
+    // AST-equivalent. Combined with a duplicate-heading doc, this
+    // exercises both the occurrence-index alignment (from the X1 fix)
+    // AND the AST canonicalizer (from the X4 fix) in one run. Should
+    // be a zero-request no-op if both fixes compose correctly.
+    apply: (b) =>
+      b.replace(
+        'Second body with **strong**.',
+        'Second body with __strong__.',
+      ),
+    expect: {
+      contains: ['First body with', 'Middle section.', 'Second body with', 'strong'],
+      exactRequests: 0,
+    },
+  },
+  {
+    title: 'Z2: blockquote inside a section with duplicate heading',
+    canvas: 'z2',
+    fixture: `# Quoted
+
+> First-Quoted body.
+
+# Other
+
+Mid.
+
+# Quoted
+
+> Second-Quoted body.
+`,
+    // Edit the blockquote in the SECOND # Quoted section. Exercises
+    // occurrence-index alignment (X1 path) plus blockquote routing (M3
+    // path) together. The naïve path would land the edit in the first
+    // blockquote (wrong section).
+    apply: (b) =>
+      b.replace('> Second-Quoted body.', '> Second-Quoted body rewritten.'),
+    expect: {
+      contains: [
+        '# Quoted',
+        '# Other',
+        '> First-Quoted body.',
+        '> Second-Quoted body rewritten.',
+      ],
+      notContains: ['> Second-Quoted body.\n'],
+      ordering: [
+        ['> First-Quoted body.', '# Other'],
+        ['# Other', '> Second-Quoted body rewritten.'],
+      ],
+      custom: (n) => {
+        const count = (n.match(/^#\s+Quoted\s*$/gm) ?? []).length;
+        return {
+          pass: count === 2,
+          reason: `expected 2 '# Quoted' heading lines, got ${count}`,
+        };
+      },
+    },
+  },
+  {
+    title: 'Z3: edit crossing structural boundary (last table row + next paragraph)',
+    canvas: 'z3',
+    fixture: `# Cross
+
+| A | B |
+| --- | --- |
+| r1a | r1b |
+| r2a | r2b |
+
+Paragraph right after the table.
+
+Trailing paragraph.
+`,
+    // Single agent change rewrites BOTH the last row and the following
+    // paragraph. The diff could see this as one hunk straddling the
+    // table→paragraph boundary, or as two hunks. Either way, the
+    // routing must NOT try to apply the paragraph-edit portion via the
+    // table handler (it's not a table row) and must NOT apply the row-
+    // edit portion via the generic paragraph handler (the range would
+    // straddle structural indices).
+    apply: (b) =>
+      b
+        .replace('| r2a | r2b |', '| R2A | R2B |')
+        .replace('Paragraph right after the table.', 'Paragraph rewritten.'),
+    expect: {
+      contains: ['# Cross', 'r1a', 'r1b', 'R2A', 'R2B', 'Paragraph rewritten.', 'Trailing paragraph.'],
+      notContains: ['| r2a | r2b |', 'Paragraph right after the table.'],
+      matches: [/\|\s*R2A\s*\|\s*R2B\s*\|/],
+      ordering: [
+        ['| r1a | r1b |', '| R2A | R2B |'],
+        ['| R2A | R2B |', 'Paragraph rewritten.'],
+        ['Paragraph rewritten.', 'Trailing paragraph.'],
+      ],
+    },
+  },
 ];
 
 // ── Runner ────────────────────────────────────────────────────
