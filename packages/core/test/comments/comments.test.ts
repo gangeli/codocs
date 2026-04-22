@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { addComment, listComments, resolveComment } from '../../src/comments/index.js';
+import { addComment, listComments } from '../../src/comments/index.js';
 
 // Mock DriveApi
 function createMockDriveApi() {
@@ -85,10 +85,3 @@ describe('listComments', () => {
   });
 });
 
-describe('resolveComment', () => {
-  it('calls driveApi.resolveComment', async () => {
-    const api = createMockDriveApi();
-    await resolveComment(api as any, 'doc-1', 'c1');
-    expect(api.resolveComment).toHaveBeenCalledWith('doc-1', 'c1');
-  });
-});

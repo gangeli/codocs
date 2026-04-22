@@ -1,15 +1,5 @@
 import { describe, it, expect } from 'vitest';
-
-// Test the countOccurrences logic extracted from comment command
-function countOccurrences(haystack: string, needle: string): number {
-  let count = 0;
-  let pos = 0;
-  while ((pos = haystack.indexOf(needle, pos)) !== -1) {
-    count++;
-    pos += needle.length;
-  }
-  return count;
-}
+import { countOccurrences } from '../../src/commands/comment.js';
 
 describe('countOccurrences', () => {
   it('returns 0 for no matches', () => {
@@ -24,8 +14,9 @@ describe('countOccurrences', () => {
     expect(countOccurrences('the cat sat on the mat', 'the')).toBe(2);
   });
 
-  it('handles overlapping needle positions correctly', () => {
+  it('does not double-count overlapping occurrences', () => {
     expect(countOccurrences('aaa', 'aa')).toBe(1);
+    expect(countOccurrences('aaaa', 'aa')).toBe(2);
   });
 
   it('handles exact full string match', () => {

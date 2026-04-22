@@ -157,6 +157,10 @@ function parseDocumentToMarkdownImpl(
   // Collapse any accidental runs of 3+ newlines, then normalise trailing/leading.
   let result = output.replace(/\n{3,}/g, '\n\n').trim();
 
+  // An empty result (no paragraphs, or every paragraph filtered out)
+  // must not emit a stray trailing newline.
+  if (result === '') return { markdown: '', indexMap };
+
   return { markdown: result + '\n', indexMap };
 }
 
@@ -250,12 +254,24 @@ function parseParagraph(
       /[\u2610\u2611\u2713\u2714]/.test(nestingProps?.glyphSymbol ?? '');
 
     if (isCheckbox) {
-      // Determine checked state: Google Docs applies strikethrough to checked items
-      const isChecked = elements.some(
+      // Determine checked state: Google Docs signals a checked item
+      // either by applying strikethrough to the text, or by exposing a
+      // checked-glyph (☑ / ✓ / ✔) in the list's nesting props.
+      const glyph = nestingProps?.glyphSymbol ?? '';
+      const glyphChecked = /[\u2611\u2713\u2714]/.test(glyph);
+      const textChecked = elements.some(
         (el) => el.textRun?.textStyle?.strikethrough === true,
       );
+      const isChecked = glyphChecked || textChecked;
       const checkbox = isChecked ? '- [x]' : '- [ ]';
-      return prefix + indent + checkbox + ' ' + text;
+      // For a checked item the strikethrough IS the "checked" signal —
+      // it shouldn't also leak into the emitted text as a visible
+      // `~~...~~` wrap.
+      let body = text;
+      if (isChecked && body.startsWith('~~') && body.endsWith('~~')) {
+        body = body.slice(2, -2);
+      }
+      return prefix + indent + checkbox + ' ' + body;
     }
 
     // If glyph type is set (DECIMAL, ALPHA, etc.), it's ordered

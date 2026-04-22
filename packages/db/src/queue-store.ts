@@ -123,7 +123,7 @@ export class QueueStore {
   }
 
   /** Reset 'processing' items back to 'pending' (crash recovery). Returns count reset. */
-  resetStaleProcessing(): number {
+  resetAllProcessing(): number {
     this.db.run(
       "UPDATE agent_queue SET status = 'pending', started_at = NULL WHERE status = 'processing'",
     );

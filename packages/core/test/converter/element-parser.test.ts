@@ -379,7 +379,48 @@ describe('element-parser edge cases', () => {
     expect(indexMap).toEqual([{ mdOffset: 0, docIndex: 1 }]);
   });
 
-  it('handles checkbox lists (checked via strikethrough)', () => {
+  it('renders a plain strikethrough bullet (not a checkbox) as `- ~~text~~`', () => {
+    // A regular disc bullet with a strikethrough text run should emit
+    // the strikethrough as markdown, not as a checkbox state.
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 6,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 6,
+                textRun: { content: 'text\n', textStyle: { strikethrough: true } },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-plain', nestingLevel: 0 },
+          },
+        },
+      ],
+      {
+        lists: {
+          'list-plain': {
+            listProperties: {
+              nestingLevels: [
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED', glyphSymbol: '\u25cf' },
+              ],
+            },
+          },
+        },
+      },
+    );
+    const { md, indexMap } = renderAndValidate(doc);
+    expect(md).toBe('- ~~text~~\n');
+    expect(indexMap).toEqual([{ mdOffset: 0, docIndex: 1 }]);
+  });
+
+  it('handles a checked checkbox item with strikethrough text as `- [x] text`', () => {
+    // Strikethrough is the signal that the checkbox is checked. It MUST
+    // NOT leak into the emitted text as a visible `~~...~~` wrap — a
+    // checked item should render as `- [x] text`, not `- [x] ~~text~~`.
     const doc = makeDoc(
       [
         {
@@ -410,13 +451,48 @@ describe('element-parser edge cases', () => {
         },
       },
     );
-    // Strikethrough is the signal that the checkbox is checked, but Docs
-    // keeps the span's strikethrough formatting — so we still emit
-    // `~~...~~` inside the `[x]` item. (Consumers that want the bare text
-    // can strip the markdown; we preserve the round-trip shape here.)
     const { md, indexMap } = renderAndValidate(doc);
-    expect(md).toBe('- [x] ~~done task~~\n');
+    expect(md).toBe('- [x] done task\n');
     expect(indexMap).toEqual([{ mdOffset: 0, docIndex: 1 }]);
+  });
+
+  it('renders a checked checkbox marked by a checked glyph (☑) as `- [x] text`', () => {
+    // Some Docs environments signal "checked" via the glyph character
+    // on the list's nesting props rather than by applying strikethrough
+    // to the text. The reader must treat a ☑ / ✓ / ✔ glyph as checked
+    // even when the text run has no strikethrough.
+    const doc = makeDoc(
+      [
+        {
+          startIndex: 1,
+          endIndex: 11,
+          paragraph: {
+            elements: [
+              {
+                startIndex: 1,
+                endIndex: 11,
+                textRun: { content: 'done task\n', textStyle: {} },
+              },
+            ],
+            paragraphStyle: { namedStyleType: 'NORMAL_TEXT' },
+            bullet: { listId: 'list-cb', nestingLevel: 0 },
+          },
+        },
+      ],
+      {
+        lists: {
+          'list-cb': {
+            listProperties: {
+              nestingLevels: [
+                { glyphType: 'GLYPH_TYPE_UNSPECIFIED', glyphSymbol: '\u2611' },
+              ],
+            },
+          },
+        },
+      },
+    );
+    const { md } = renderAndValidate(doc);
+    expect(md).toBe('- [x] done task\n');
   });
 
   it('handles checkbox lists via checkboxLevel property', () => {

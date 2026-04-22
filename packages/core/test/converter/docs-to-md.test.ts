@@ -152,18 +152,14 @@ describe('docsToMarkdown', () => {
       inlineObjects: {},
     };
     const md = docsToMarkdown(doc);
-    expect(md).toBe('\n');
+    expect(md).toBe('');
   });
 
-  // KNOWN BUG — wrapped in it.fails so this test asserts the behavior a
-  // user would reasonably expect ("no content matches → empty string")
-  // and flips green once the converter stops emitting a stray trailing
-  // newline. Remove it.fails at that point.
-  it.fails('returns an empty string when the agent filter matches no content', () => {
+  it('returns an empty string when the agent filter matches no content', () => {
     const doc = loadFixture('attributed-doc.json');
     const md = docsToMarkdown(doc, { agentFilter: 'unknown-agent' });
-    // User-expected: filtering to zero paragraphs yields the empty
-    // string, not a lone '\n'. Today the converter returns '\n'.
+    // Filtering to zero paragraphs yields the empty string, not a
+    // lone '\n'.
     expect(md).toBe('');
   });
 

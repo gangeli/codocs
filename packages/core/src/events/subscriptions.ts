@@ -106,7 +106,7 @@ export async function createCommentSubscription(
   );
 }
 
-function extractSubscriptionFromResponse(data: Record<string, any>): SubscriptionInfo {
+export function extractSubscriptionFromResponse(data: Record<string, any>): SubscriptionInfo {
   const name = data.name ?? '';
   if (!name || name.startsWith('operations/')) {
     throw new Error(`Invalid subscription name: ${name}`);

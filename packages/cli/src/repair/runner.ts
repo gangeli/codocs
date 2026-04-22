@@ -42,7 +42,7 @@ export async function runHealthChecks(ctx: RepairContext): Promise<Issue[]> {
   return runChecks(ALL_CHECKS, ctx);
 }
 
-async function runChecks(checks: Check[], ctx: RepairContext): Promise<Issue[]> {
+export async function runChecks(checks: Check[], ctx: RepairContext): Promise<Issue[]> {
   const out: Issue[] = [];
   for (const check of checks) {
     try {
@@ -51,7 +51,7 @@ async function runChecks(checks: Check[], ctx: RepairContext): Promise<Issue[]> 
     } catch (err: any) {
       out.push({
         code: 'internal-check-failed',
-        severity: 'warning',
+        severity: 'error',
         title: `Check "${check.id}" threw`,
         detail: err?.message ?? String(err),
         fixes: [],

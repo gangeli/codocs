@@ -23,6 +23,9 @@ function createDriveApi(stubs: Record<string, any>): DriveApi {
   if (stubs.filesGet) {
     drive.files.get = stubs.filesGet;
   }
+  if (stubs.repliesCreate) {
+    drive.replies.create = stubs.repliesCreate;
+  }
   return api;
 }
 
@@ -83,19 +86,38 @@ describe('DriveApi.removePermission', () => {
   });
 
   it('swallows 404 on delete (already removed)', async () => {
+    const deleteFn = vi.fn(async () => {
+      const err: any = new Error('Not found');
+      err.code = 404;
+      throw err;
+    });
     const api = createDriveApi({
       permissionsList: vi.fn(async () => ({
         data: { permissions: [{ id: 'perm-1', emailAddress: 'bot@example.com' }] },
       })),
-      permissionsDelete: vi.fn(async () => {
-        const err: any = new Error('Not found');
-        err.code = 404;
-        throw err;
-      }),
+      permissionsDelete: deleteFn,
     });
 
     // Should not throw
     await expect(api.removePermission('doc-1', 'bot@example.com')).resolves.toBeUndefined();
+    expect(deleteFn).toHaveBeenCalled();
+  });
+
+  it('rethrows non-404 errors on delete', async () => {
+    const deleteFn = vi.fn(async () => {
+      const err: any = new Error('Server error');
+      err.code = 500;
+      throw err;
+    });
+    const api = createDriveApi({
+      permissionsList: vi.fn(async () => ({
+        data: { permissions: [{ id: 'perm-1', emailAddress: 'bot@example.com' }] },
+      })),
+      permissionsDelete: deleteFn,
+    });
+
+    await expect(api.removePermission('doc-1', 'bot@example.com')).rejects.toThrow('Server error');
+    expect(deleteFn).toHaveBeenCalled();
   });
 });
 
@@ -142,5 +164,20 @@ describe('DriveApi.canAccess', () => {
     });
 
     await expect(api.canAccess('doc-1')).rejects.toThrow('Server error');
+  });
+});
+
+describe('DriveApi.resolveComment', () => {
+  it('posts a replies.create with action: resolve', async () => {
+    const repliesCreate = vi.fn(async () => ({ data: { id: 'reply-1' } }));
+    const api = createDriveApi({ repliesCreate });
+
+    await api.resolveComment('file-1', 'comment-1');
+
+    expect(repliesCreate).toHaveBeenCalledTimes(1);
+    const arg = repliesCreate.mock.calls[0][0];
+    expect(arg.fileId).toBe('file-1');
+    expect(arg.commentId).toBe('comment-1');
+    expect(arg.requestBody.action).toBe('resolve');
   });
 });

@@ -2,7 +2,7 @@
  * Library of fixer functions. Each fix is self-contained and applied with
  * issue.context providing the targets (session ID, doc ID, queue item, etc.).
  *
- * Non-destructive fixes (e.g. resetStaleProcessing) can be auto-applied.
+ * Non-destructive fixes (e.g. resetAllProcessing) can be auto-applied.
  * Destructive fixes require user confirmation in the TUI or --auto=false.
  */
 
@@ -78,7 +78,7 @@ export const resetStaleQueueFix: Fix = {
   description: "Move items stuck in 'processing' back to 'pending' so they can be retried.",
   destructive: false,
   async apply(ctx): Promise<FixResult> {
-    const count = ctx.queueStore.resetStaleProcessing();
+    const count = ctx.queueStore.resetAllProcessing();
     persist(ctx);
     return {
       ok: true,

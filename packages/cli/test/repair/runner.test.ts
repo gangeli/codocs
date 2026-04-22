@@ -6,7 +6,7 @@ import {
   QueueStore,
   CodeTaskStore,
 } from '@codocs/db';
-import { runStartupChecks, runHealthChecks, applyFix, sortIssues } from '../../src/repair/runner.js';
+import { runStartupChecks, runHealthChecks, runChecks, applyFix, sortIssues } from '../../src/repair/runner.js';
 import type { Check, Fix, Issue, RepairContext } from '../../src/repair/types.js';
 
 function makeCtx(db: Database): RepairContext {
@@ -87,22 +87,12 @@ describe('repair/runner', () => {
         throw new Error('kaboom');
       },
     };
-    // Invoke the wrapper directly via a local array
-    const out: Issue[] = [];
-    for (const c of [throwing]) {
-      try {
-        out.push(...await c.run(ctx));
-      } catch (err: any) {
-        out.push({
-          code: 'internal-check-failed',
-          severity: 'warning',
-          title: `Check "${c.id}" threw`,
-          detail: err.message,
-          fixes: [],
-        });
-      }
-    }
-    expect(out[0].code).toBe('internal-check-failed');
-    expect(out[0].detail).toMatch(/kaboom/);
+    const issues = await runChecks([throwing], ctx);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('internal-check-failed');
+    expect(issues[0].severity).toBe('error');
+    expect(issues[0].title).toBe('Check "throws" threw');
+    expect(issues[0].detail).toMatch(/kaboom/);
+    expect(issues[0].fixes).toEqual([]);
   });
 });

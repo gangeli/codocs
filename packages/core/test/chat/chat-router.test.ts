@@ -127,19 +127,58 @@ describe('routeComment', () => {
   });
 
   it('routes to chat via content matching when quotedText matches tab content', async () => {
-    const tab = makeChatTab();
-    const store = mockChatTabStore([tab]);
-    const client = mockClient();
+    const tab1 = makeChatTab({ id: 1, tabId: 'tab-1', activeCommentId: 'active-1' });
+    const tab2 = makeChatTab({ id: 2, tabId: 'tab-2', activeCommentId: 'active-2' });
+    const store = mockChatTabStore([tab1, tab2]);
+
+    const uniqueText = 'planner internal notes Q4 roadmap';
+    const client = {
+      getDocumentWithTabs: vi.fn(async () => ({
+        tabs: [
+          {
+            tabProperties: { tabId: 'tab-1' },
+            documentTab: {
+              body: {
+                content: [{
+                  paragraph: {
+                    elements: [{ textRun: { content: 'unrelated content here\n' } }],
+                  },
+                  startIndex: 1,
+                  endIndex: 30,
+                }],
+              },
+            },
+          },
+          {
+            tabProperties: { tabId: 'tab-2' },
+            documentTab: {
+              body: {
+                content: [{
+                  paragraph: {
+                    elements: [{ textRun: { content: `${uniqueText}\n` } }],
+                  },
+                  startIndex: 1,
+                  endIndex: 40,
+                }],
+              },
+            },
+          },
+        ],
+      })),
+    } as unknown as CodocsClient;
 
     const result = await routeComment(
       makeEvent({
-        quotedText: CHAT_INPUT_ANCHOR,
+        quotedText: uniqueText,
         id: 'other-comment',
       }),
       store,
       client,
     );
     expect(result.type).toBe('chat');
+    if (result.type === 'chat') {
+      expect(result.chatTab.tabId).toBe('tab-2');
+    }
   });
 
   it('does not route empty quotedText on main doc to chat tab', async () => {

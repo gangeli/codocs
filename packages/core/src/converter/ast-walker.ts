@@ -668,8 +668,21 @@ function walkTable(node: Table, ctx: WalkContext) {
 
 function emitHorizontalRule(ctx: WalkContext) {
   const rule = '———\n';
+  const startOffset = ctx.offset;
   ctx.buf += rule;
   ctx.offset += rule.length;
+  ctx.styles.push({
+    updateParagraphStyle: {
+      range: {
+        startIndex: startOffset,
+        endIndex: ctx.offset,
+      },
+      paragraphStyle: {
+        namedStyleType: 'NORMAL_TEXT',
+      },
+      fields: 'namedStyleType',
+    },
+  });
 }
 
 function ensureNewline(ctx: WalkContext) {

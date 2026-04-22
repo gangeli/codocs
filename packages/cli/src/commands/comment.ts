@@ -51,7 +51,7 @@ function extractDocId(input: string): string {
   return match ? match[1] : input;
 }
 
-function countOccurrences(haystack: string, needle: string): number {
+export function countOccurrences(haystack: string, needle: string): number {
   let count = 0;
   let pos = 0;
   while ((pos = haystack.indexOf(needle, pos)) !== -1) {

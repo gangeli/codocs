@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { openDatabase, SessionStore, QueueStore } from '@codocs/db';
 import type { Database } from 'sql.js';
 import type { AgentRunner, AgentRunResult, AgentRunOptions } from '../../src/harness/agent.js';
@@ -304,6 +305,17 @@ describe('AgentOrchestrator queue integration', () => {
 
     // Second comment starts — it should fetch the document again
     await waitFor(() => expect(calls).toHaveLength(2));
+
+    // The runner's prompt for c2 references a design-doc snapshot path
+    // that the orchestrator wrote with the freshly-fetched doc content.
+    // Reading that file proves fresh state was both fetched AND delivered.
+    const c2Prompt = calls[1].prompt;
+    const pathMatch = c2Prompt.match(/markdown file: (\S+)/);
+    expect(pathMatch).not.toBeNull();
+    const designDocPath = pathMatch![1];
+    const snapshot = await readFile(designDocPath, 'utf-8');
+    expect(snapshot).toContain('Hello World Updated');
+
     calls[1].resolve(makeResult());
 
     // getDocument should have been called for both comments independently

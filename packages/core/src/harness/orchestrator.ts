@@ -507,7 +507,7 @@ export class AgentOrchestrator {
    * Recover from a previous crash by resetting stale queue items and draining.
    */
   async recoverQueue(): Promise<void> {
-    const count = this.queueStore.resetStaleProcessing();
+    const count = this.queueStore.resetAllProcessing();
     if (count > 0) this.debug(`Recovered ${count} stale queue item(s)`);
 
     const agents = this.queueStore.pendingAgents();

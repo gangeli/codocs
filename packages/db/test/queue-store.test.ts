@@ -171,12 +171,12 @@ describe('QueueStore', () => {
     expect(store.pendingAgents()).toHaveLength(0);
   });
 
-  it('resetStaleProcessing moves processing items back to pending', () => {
+  it('resetAllProcessing moves processing items back to pending', () => {
     store.enqueue('alice', 'doc-1', makeEvent());
     store.enqueue('alice', 'doc-2', makeEvent());
     store.dequeue('alice'); // item 1 -> processing
 
-    const count = store.resetStaleProcessing();
+    const count = store.resetAllProcessing();
     expect(count).toBe(1);
 
     // Now alice has 2 pending items again
@@ -184,7 +184,7 @@ describe('QueueStore', () => {
     expect(store.isAgentBusy('alice')).toBe(false);
   });
 
-  it('resetStaleProcessing does not affect completed or failed items', () => {
+  it('resetAllProcessing does not affect completed or failed items', () => {
     const id1 = store.enqueue('alice', 'doc-1', makeEvent());
     const id2 = store.enqueue('alice', 'doc-2', makeEvent());
 
@@ -193,7 +193,7 @@ describe('QueueStore', () => {
     store.dequeue('alice');
     store.markFailed(id2, 'error');
 
-    const count = store.resetStaleProcessing();
+    const count = store.resetAllProcessing();
     expect(count).toBe(0);
   });
 

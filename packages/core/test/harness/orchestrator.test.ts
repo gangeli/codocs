@@ -847,6 +847,56 @@ describe('AgentOrchestrator fork-per-comment', () => {
       // Base should still be the original root.
       expect(sessionStore.getSession('test-agent', 'doc-123:base')?.sessionId).toBe('root');
     }
+
+    // Run 2: agent DOES produce changes by writing to the design-doc file
+    // the orchestrator passed it via the prompt. This triggers batchUpdate
+    // and should advance the base-session to the run's child session id.
+    {
+      const editCallLog: CallLog[] = [];
+      const client = createMockClient(editCallLog);
+      const replyClient = createMockReplyClient(editCallLog);
+      const editedChildId = 'fork-root-edit';
+      const editingRunner: AgentRunner = {
+        name: 'mock-edit',
+        run: vi.fn(async (prompt: string, sessionId: string | null, runOpts?: any) => {
+          const pathMatch = prompt.match(/markdown file: (\S+)/);
+          expect(pathMatch).not.toBeNull();
+          const designDocPath = pathMatch![1];
+          const { readFile, writeFile } = await import('node:fs/promises');
+          const current = await readFile(designDocPath, 'utf-8');
+          await writeFile(designDocPath, current + '\nA newly appended line.\n', 'utf-8');
+          return {
+            sessionId: editedChildId,
+            exitCode: 0,
+            stdout: 'edited',
+            stderr: '',
+          };
+        }),
+        getActiveProcesses: () => [],
+        killAll: () => [],
+        getCapabilities: () => ({
+          supportsSessionResume: true,
+          supportsSessionFork: true,
+          models: [],
+          harnessSettings: [],
+          supportsPermissionMode: false,
+        }),
+      };
+      const orchestrator = createOrchestrator({
+        client, replyClient, sessionStore, queueStore,
+        agentRunner: editingRunner, fallbackAgent: 'test-agent',
+      });
+      const event = makeCommentEvent();
+      event.comment.id = 'thread-edit';
+      await orchestrator.handleComment(event);
+      await orchestrator.waitForIdle();
+
+      // batchUpdate must have been invoked to apply the edits.
+      expect(editCallLog.some((c) => c.method === 'batchUpdate')).toBe(true);
+
+      // Base session now points at the successful run's child session id.
+      expect(sessionStore.getSession('test-agent', 'doc-123:base')?.sessionId).toBe(editedChildId);
+    }
   });
 
   it('does not overwrite base when a fork fails; retries fresh without a parent', async () => {

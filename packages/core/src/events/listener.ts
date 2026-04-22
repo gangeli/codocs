@@ -13,7 +13,7 @@ import { classifyComment } from './classify.js';
 import type { CommentEvent } from '../types.js';
 
 /** Extract @mentions from comment content (patterns like +user@example.com or @user@example.com). */
-function extractMentions(content: string): string[] {
+export function extractMentions(content: string): string[] {
   const matches = content.match(/[+@]([\w.+-]+@[\w.-]+\.\w+)/g);
   if (!matches) return [];
   return matches.map((m) => m.slice(1)); // strip leading + or @
@@ -23,7 +23,7 @@ function extractMentions(content: string): string[] {
  * Extract the document ID from a Pub/Sub message.
  * Checks ce-subject (has the file path) and payload.comment.fileId.
  */
-function extractDocumentId(message: Message, payload: Record<string, any>): string {
+export function extractDocumentId(message: Message, payload: Record<string, any>): string {
   // ce-subject format: googleapis.com/drive/v3/files/DOC_ID
   const subject = message.attributes?.['ce-subject'] ?? '';
   const subjectMatch = subject.match(/\/files\/([a-zA-Z0-9_-]+)/);
@@ -41,7 +41,7 @@ function extractDocumentId(message: Message, payload: Record<string, any>): stri
 }
 
 /** Parse minimal info from a Pub/Sub message. Returns null if not a comment event. */
-function parseEventStub(message: Message): {
+export function parseEventStub(message: Message): {
   eventType: string;
   documentId: string;
   commentId: string;

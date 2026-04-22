@@ -827,19 +827,15 @@ describe('pipeline: agent edit → applied doc (table edits)', () => {
         },
       },
     ]);
-    const { markdown: base } = docsToMarkdownWithMapping(document);
+    const { markdown: base, indexMap } = docsToMarkdownWithMapping(document);
     const ours = base.replace('| a | b |', '| A | b |');
 
     const theirs = base;
-    const diff = await computeDocDiff(base, ours, theirs, document, [], 'test-agent');
-    // docsToMarkdownWithMapping emits one indexMap entry per structural
-    // element — use the real one:
-    const { indexMap } = docsToMarkdownWithMapping(document);
-    const diffReal = await computeDocDiff(base, ours, theirs, document, indexMap, 'test-agent');
+    const diff = await computeDocDiff(base, ours, theirs, document, indexMap, 'test-agent');
 
     // No structural row ops — it's a cell edit.
-    expect(diffReal.requests.some((r) => r.insertTableRow)).toBe(false);
-    expect(diffReal.requests.some((r) => r.deleteTableRow)).toBe(false);
+    expect(diff.requests.some((r) => r.insertTableRow)).toBe(false);
+    expect(diff.requests.some((r) => r.deleteTableRow)).toBe(false);
 
     // There should be a text replacement scoped to the "a" cell's
     // paragraph range. The doc has: heading (Heading\n at [1, 9)),
@@ -849,8 +845,8 @@ describe('pipeline: agent edit → applied doc (table edits)', () => {
     // Row 1: row at 23, col 0 cell at 24, paragraph at 25 ("a\n"),
     // endIndex 27, col 1 cell at 27, paragraph at 28 ("b\n"), endIndex 30.
     // So the "a" paragraph is at [25, 27).
-    const deletes = diffReal.requests.filter((r) => r.deleteContentRange);
-    const inserts = diffReal.requests.filter((r) => r.insertText);
+    const deletes = diff.requests.filter((r) => r.deleteContentRange);
+    const inserts = diff.requests.filter((r) => r.insertText);
 
     const aDelete = deletes.find(
       (r) => r.deleteContentRange?.range?.startIndex === 25,
@@ -872,9 +868,6 @@ describe('pipeline: agent edit → applied doc (table edits)', () => {
     // And the header row (doc row 0) is NOT touched.
     expect(deletes.find((r) => r.deleteContentRange?.range?.startIndex === 12)).toBeUndefined();
     expect(deletes.find((r) => r.deleteContentRange?.range?.startIndex === 18)).toBeUndefined();
-
-    // Unused to avoid lint warnings.
-    void diff;
   });
 
   it('adds a table row via insertTableRow + per-cell insertText', async () => {
@@ -894,7 +887,7 @@ describe('pipeline: agent edit → applied doc (table edits)', () => {
     const { markdown: base, indexMap } = docsToMarkdownWithMapping(document);
     const ours = base.replace('| c | d |', '| c | d |\n| e | f |');
 
-    const diff = await computeDocDiff(base, ours, document.body!.content ? base : base, document, indexMap, 'test-agent');
+    const diff = await computeDocDiff(base, ours, base, document, indexMap, 'test-agent');
 
     const rowInserts = diff.requests.filter((r) => r.insertTableRow);
     expect(rowInserts.length).toBe(1);

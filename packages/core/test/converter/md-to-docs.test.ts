@@ -403,10 +403,6 @@ describe('markdownToDocsRequests', () => {
   it(
     'applies inline formatting (bold) inside a table cell at the cell range',
     () => {
-      // A 2x2 table at index 1 with "**bold**" in cell (1,0). The bold
-      // range must fall entirely within the cell's FINAL position in
-      // the document (after every earlier cell's text has been inserted
-      // and shifted this cell's content forward by its own length).
       const md = '| A | B |\n| - | - |\n| **bold** | 42 |';
       const { requests } = markdownToDocsRequests(md, 1);
 
@@ -415,11 +411,6 @@ describe('markdownToDocsRequests', () => {
         (r) => r.insertText && r.insertText.text === 'bold',
       );
       expect(boldCellInsert).toBeDefined();
-      // insertText.location is the empty-table cellContentIndex — valid
-      // AT INSERT TIME (earlier cells haven't been inserted yet since
-      // cells are filled in reverse). By the time styles run, earlier
-      // cells have shifted this cell's content forward by the total
-      // text length of every cell preceding it in row-major order.
       const insertIdx = boldCellInsert!.insertText!.location!.index!;
       const earlierCellsTextLen = 'A'.length + 'B'.length;
       const expectedCellStart = insertIdx + earlierCellsTextLen;
@@ -439,6 +430,32 @@ describe('markdownToDocsRequests', () => {
       const range = dataBold!.updateTextStyle!.range!;
       expect(range.startIndex).toBe(expectedCellStart);
       expect(range.endIndex).toBe(expectedCellEnd);
+
+      // Header-row bold requests (for "A" and "B") must have ranges
+      // DISTINCT from each other and from the data-cell "bold" range.
+      // Collect every bold-true request, assert there are exactly
+      // three, and assert all three start indices are unique.
+      const allBolds = requests.filter(
+        (r) => r.updateTextStyle?.textStyle?.bold === true,
+      );
+      expect(allBolds).toHaveLength(3);
+      const boldStarts = allBolds.map(
+        (r) => r.updateTextStyle!.range!.startIndex!,
+      );
+      expect(new Set(boldStarts).size).toBe(3);
+
+      // The three bold ranges must have lengths {1, 1, 4}: two 1-char
+      // header cells ("A","B") and one 4-char data cell ("bold"). No
+      // bold request with length 2 (matching the non-bold "42" cell)
+      // can exist.
+      const boldLens = allBolds
+        .map(
+          (r) =>
+            r.updateTextStyle!.range!.endIndex! -
+            r.updateTextStyle!.range!.startIndex!,
+        )
+        .sort();
+      expect(boldLens).toEqual([1, 1, 4]);
     },
   );
 
@@ -691,12 +708,21 @@ describe('markdownToDocsRequests', () => {
     );
     expect(quotePara).toBeDefined();
 
-    // The cell must have a coloured left border (the visual "quote bar").
+    // The cell must have a coloured left border (the visual "quote bar")
+    // of exactly 3pt gray (0.6,0.6,0.6), plus invisible top/right/bottom
+    // borders.
     const cellStyle = requests.find((r) => r.updateTableCellStyle);
     expect(cellStyle).toBeDefined();
-    expect(
-      cellStyle!.updateTableCellStyle!.tableCellStyle!.borderLeft,
-    ).toBeDefined();
+    const style = cellStyle!.updateTableCellStyle!.tableCellStyle!;
+    expect(style.borderLeft!.width!.magnitude).toBe(3);
+    expect(style.borderLeft!.color!.color!.rgbColor).toEqual({
+      red: 0.6,
+      green: 0.6,
+      blue: 0.6,
+    });
+    expect(style.borderTop!.width!.magnitude).toBe(0);
+    expect(style.borderRight!.width!.magnitude).toBe(0);
+    expect(style.borderBottom!.width!.magnitude).toBe(0);
   });
 
   // ── Horizontal rule ────────────────────────────────────────────
@@ -704,24 +730,36 @@ describe('markdownToDocsRequests', () => {
   it('converts a horizontal rule to a visible divider line in the inserted text', () => {
     // HR is rendered as an em-dash run so the visual break survives in
     // plain-text readbacks; the surrounding paragraphs keep NORMAL_TEXT
-    // paragraph style.
+    // paragraph style. The HR paragraph itself ALSO gets NORMAL_TEXT so
+    // it doesn't inherit whatever style came before the insertion point.
     const md = 'Before\n\n---\n\nAfter';
-    const { text, requests } = markdownToDocsRequests(md);
+    const { text, requests } = markdownToDocsRequests(md, 1);
 
     // Exactly one insertText request carries all three paragraphs.
     const insert = requests.find((r) => r.insertText);
     expect(insert).toBeDefined();
     expect(insert!.insertText!.text).toBe('Before\n———\nAfter');
 
-    // Exactly two NORMAL_TEXT requests — one for "Before" and one for
-    // "After". The HR's em-dash paragraph carries no paragraph-style
-    // request today (which is fine: its text is inserted inside the
-    // same insertText as the two surrounding paragraphs).
+    // Three NORMAL_TEXT requests — one for "Before", one for the HR body
+    // ("———\n"), and one for "After".
     const normals = requests.filter(
       (r) =>
         r.updateParagraphStyle?.paragraphStyle?.namedStyleType === 'NORMAL_TEXT',
     );
-    expect(normals).toHaveLength(2);
+    expect(normals).toHaveLength(3);
+
+    // The HR's NORMAL_TEXT range must cover the "———\n" body. The
+    // insertText starts at index 1, "Before\n" is 7 chars, so the HR
+    // range is [8, 12) (4 chars: three em-dashes plus \n).
+    const hrStart = 1 + 'Before\n'.length;
+    const hrEnd = hrStart + '———\n'.length;
+    const hrNormal = normals.find(
+      (r) =>
+        r.updateParagraphStyle!.range!.startIndex === hrStart &&
+        r.updateParagraphStyle!.range!.endIndex === hrEnd,
+    );
+    expect(hrNormal).toBeDefined();
+    expect(hrNormal!.updateParagraphStyle!.fields).toBe('namedStyleType');
   });
 
   // ── Determinism ────────────────────────────────────────────────

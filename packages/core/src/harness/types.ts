@@ -55,7 +55,7 @@ export interface QueueStore {
   /** Get distinct agent names that have pending items. */
   pendingAgents(): string[];
   /** Reset 'processing' items back to 'pending' (crash recovery). Returns count reset. */
-  resetStaleProcessing(): number;
+  resetAllProcessing(): number;
   /** Remove completed/failed items older than the given age. Returns count removed. */
   purgeOld(olderThanSeconds: number): number;
 }

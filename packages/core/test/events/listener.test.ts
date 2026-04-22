@@ -1,14 +1,20 @@
 import { describe, it, expect } from 'vitest';
+import type { Message } from '@google-cloud/pubsub';
+import {
+  extractMentions,
+  extractDocumentId,
+  parseEventStub,
+} from '../../src/events/listener.js';
 
-// We can't import the private functions directly, so we test them
-// through a thin re-export. For now, extract and test the pure logic inline.
-
-// ── extractMentions ──────────────────────────────────────────────
-
-function extractMentions(content: string): string[] {
-  const matches = content.match(/[+@]([\w.+-]+@[\w.-]+\.\w+)/g);
-  if (!matches) return [];
-  return matches.map((m) => m.slice(1));
+function makeMessage(
+  attributes: Record<string, string>,
+  data: Buffer | Record<string, any>,
+): Message {
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(JSON.stringify(data));
+  return {
+    attributes,
+    data: buffer,
+  } as unknown as Message;
 }
 
 describe('extractMentions', () => {
@@ -48,129 +54,58 @@ describe('extractMentions', () => {
   });
 });
 
-// ── extractDocumentId ────────────────────────────────────────────
-
-function extractDocumentId(
-  attributes: Record<string, string>,
-  payload: Record<string, any>,
-): string {
-  // ce-subject format: googleapis.com/drive/v3/files/DOC_ID
-  const subject = attributes['ce-subject'] ?? '';
-  const subjectMatch = subject.match(/\/files\/([a-zA-Z0-9_-]+)/);
-  if (subjectMatch) return subjectMatch[1];
-
-  // Fallback: payload.comment.fileId
-  if (payload?.comment?.fileId) return payload.comment.fileId;
-
-  // Last resort: try ce-source (older format)
-  const source = attributes['ce-source'] ?? '';
-  const sourceMatch = source.match(/\/documents\/(.+)$/);
-  if (sourceMatch) return sourceMatch[1];
-
-  return '';
-}
-
 describe('extractDocumentId', () => {
   it('extracts from ce-subject (primary path)', () => {
-    const attrs = {
-      'ce-subject':
-        'googleapis.com/drive/v3/files/1DkgMuvq1aFDI3Hyo1gyJT1fmRfa7TE81jD4lFPMZXM4',
-    };
-    expect(extractDocumentId(attrs, {})).toBe(
+    const msg = makeMessage(
+      {
+        'ce-subject':
+          'googleapis.com/drive/v3/files/1DkgMuvq1aFDI3Hyo1gyJT1fmRfa7TE81jD4lFPMZXM4',
+      },
+      {},
+    );
+    expect(extractDocumentId(msg, {})).toBe(
       '1DkgMuvq1aFDI3Hyo1gyJT1fmRfa7TE81jD4lFPMZXM4',
     );
   });
 
   it('falls back to payload.comment.fileId', () => {
-    expect(
-      extractDocumentId({}, { comment: { fileId: 'abc123' } }),
-    ).toBe('abc123');
+    const msg = makeMessage({}, {});
+    expect(extractDocumentId(msg, { comment: { fileId: 'abc123' } })).toBe(
+      'abc123',
+    );
   });
 
   it('falls back to ce-source documents path', () => {
-    const attrs = {
-      'ce-source': '//docs.googleapis.com/documents/xyz789',
-    };
-    expect(extractDocumentId(attrs, {})).toBe('xyz789');
+    const msg = makeMessage(
+      { 'ce-source': '//docs.googleapis.com/documents/xyz789' },
+      {},
+    );
+    expect(extractDocumentId(msg, {})).toBe('xyz789');
   });
 
   it('prefers ce-subject over payload', () => {
-    const attrs = {
-      'ce-subject': 'googleapis.com/drive/v3/files/from-subject',
-    };
+    const msg = makeMessage(
+      { 'ce-subject': 'googleapis.com/drive/v3/files/from-subject' },
+      {},
+    );
     expect(
-      extractDocumentId(attrs, { comment: { fileId: 'from-payload' } }),
+      extractDocumentId(msg, { comment: { fileId: 'from-payload' } }),
     ).toBe('from-subject');
   });
 
   it('returns empty when nothing matches', () => {
-    expect(extractDocumentId({}, {})).toBe('');
+    const msg = makeMessage({}, {});
+    expect(extractDocumentId(msg, {})).toBe('');
   });
 });
 
-// ── parseEventStub ───────────────────────────────────────────────
-
-// Minimal mock of a Pub/Sub message for testing
-function makeMockMessage(
-  attributes: Record<string, string>,
-  data: Record<string, any>,
-) {
-  return {
-    attributes,
-    data: Buffer.from(JSON.stringify(data)),
-  };
-}
-
-function parseEventStub(message: {
-  attributes: Record<string, string>;
-  data: Buffer;
-}): {
-  eventType: string;
-  documentId: string;
-  commentId: string;
-  eventTime: string;
-} | null {
-  const eventType =
-    message.attributes?.['ce-type'] ??
-    message.attributes?.['event_type'] ??
-    '';
-  const eventTime =
-    message.attributes?.['ce-time'] ??
-    message.attributes?.['event_time'] ??
-    '';
-
-  if (!eventType.includes('comment')) {
-    return null;
-  }
-
-  let payload: Record<string, any> = {};
-  try {
-    const raw = message.data.toString('utf-8');
-    if (raw) payload = JSON.parse(raw);
-  } catch {
-    // continue
-  }
-
-  const subject = message.attributes?.['ce-subject'] ?? '';
-  const subjectMatch = subject.match(/\/files\/([a-zA-Z0-9_-]+)/);
-  const documentId = subjectMatch?.[1] ?? payload?.comment?.fileId ?? '';
-  const commentId = payload?.comment?.id ?? '';
-
-  if (!documentId || !commentId) {
-    return null;
-  }
-
-  return { eventType, documentId, commentId, eventTime };
-}
-
 describe('parseEventStub', () => {
   it('parses a valid comment event', () => {
-    const msg = makeMockMessage(
+    const msg = makeMessage(
       {
         'ce-type': 'google.workspace.drive.comment.v3.created',
         'ce-time': '2026-04-09T01:37:04.009Z',
-        'ce-subject':
-          'googleapis.com/drive/v3/files/doc123',
+        'ce-subject': 'googleapis.com/drive/v3/files/doc123',
       },
       { comment: { id: 'comment-abc', fileId: 'doc123' } },
     );
@@ -183,47 +118,70 @@ describe('parseEventStub', () => {
     });
   });
 
-  it('returns null for non-comment events', () => {
-    const msg = makeMockMessage(
+  it('parses a reply event with commentId from payload.reply.commentId', () => {
+    const msg = makeMessage(
+      {
+        'ce-type': 'google.workspace.drive.reply.v3.created',
+        'ce-time': '2026-04-09T02:00:00.000Z',
+        'ce-subject': 'googleapis.com/drive/v3/files/doc-reply',
+      },
+      { reply: { commentId: 'parent-comment-99' } },
+    );
+    const result = parseEventStub(msg);
+    expect(result).toEqual({
+      eventType: 'google.workspace.drive.reply.v3.created',
+      documentId: 'doc-reply',
+      commentId: 'parent-comment-99',
+      eventTime: '2026-04-09T02:00:00.000Z',
+    });
+  });
+
+  it('accepts comment events with missing commentId (returns empty string)', () => {
+    const msg = makeMessage(
+      {
+        'ce-type': 'google.workspace.drive.comment.v3.created',
+        'ce-subject': 'googleapis.com/drive/v3/files/doc123',
+      },
+      { comment: { fileId: 'doc123' } },
+    );
+    const result = parseEventStub(msg);
+    expect(result).not.toBeNull();
+    expect(result!.documentId).toBe('doc123');
+    expect(result!.commentId).toBe('');
+  });
+
+  it('returns null for non-comment, non-reply events', () => {
+    const msg = makeMessage(
       { 'ce-type': 'google.workspace.drive.file.v3.updated' },
       {},
     );
     expect(parseEventStub(msg)).toBeNull();
   });
 
-  it('returns null when missing comment ID', () => {
-    const msg = makeMockMessage(
-      {
-        'ce-type': 'google.workspace.drive.comment.v3.created',
-        'ce-subject': 'googleapis.com/drive/v3/files/doc123',
-      },
-      { comment: { fileId: 'doc123' } }, // no id
-    );
-    expect(parseEventStub(msg)).toBeNull();
-  });
-
   it('returns null when missing document ID', () => {
-    const msg = makeMockMessage(
+    const msg = makeMessage(
       { 'ce-type': 'google.workspace.drive.comment.v3.created' },
-      { comment: { id: 'c1' } }, // no fileId, no ce-subject
+      { comment: { id: 'c1' } },
     );
     expect(parseEventStub(msg)).toBeNull();
   });
 
   it('handles malformed JSON data gracefully', () => {
-    const msg = {
-      attributes: {
+    const msg = makeMessage(
+      {
         'ce-type': 'google.workspace.drive.comment.v3.created',
         'ce-subject': 'googleapis.com/drive/v3/files/doc123',
       },
-      data: Buffer.from('not json'),
-    };
-    // No fileId in payload and no comment id → null
-    expect(parseEventStub(msg)).toBeNull();
+      Buffer.from('not json'),
+    );
+    const result = parseEventStub(msg);
+    expect(result).not.toBeNull();
+    expect(result!.documentId).toBe('doc123');
+    expect(result!.commentId).toBe('');
   });
 
   it('uses event_type attribute as fallback', () => {
-    const msg = makeMockMessage(
+    const msg = makeMessage(
       {
         event_type: 'google.workspace.drive.comment.v3.created',
         'ce-subject': 'googleapis.com/drive/v3/files/doc456',
