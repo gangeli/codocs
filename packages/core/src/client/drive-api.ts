@@ -1,6 +1,12 @@
 import { google, type drive_v3 } from 'googleapis';
 import { Readable } from 'node:stream';
 
+// Escape a string for use inside a single-quoted Drive query term. Drive's
+// query grammar uses `\` to escape `'` and `\` itself.
+function escapeDriveQ(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 export class DriveApi {
   private drive: drive_v3.Drive;
 
@@ -60,7 +66,26 @@ export class DriveApi {
   async findFolder(name: string, parentId?: string): Promise<string | null> {
     const parent = parentId ?? 'root';
     const res = await this.drive.files.list({
-      q: `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${parent}' in parents and trashed=false`,
+      q: `name='${escapeDriveQ(name)}' and mimeType='application/vnd.google-apps.folder' and '${parent}' in parents and trashed=false`,
+      fields: 'files(id)',
+      spaces: 'drive',
+    });
+    return res.data.files?.[0]?.id ?? null;
+  }
+
+  /**
+   * Find a non-trashed file by exact name under a parent folder. Optionally
+   * filter by mimeType (e.g. 'application/vnd.google-apps.document' for Docs).
+   * Returns the file ID, or null if no match.
+   */
+  async findFile(
+    name: string,
+    parentId: string,
+    mimeType?: string,
+  ): Promise<string | null> {
+    const mimeFilter = mimeType ? ` and mimeType='${mimeType}'` : '';
+    const res = await this.drive.files.list({
+      q: `name='${escapeDriveQ(name)}'${mimeFilter} and '${parentId}' in parents and trashed=false`,
       fields: 'files(id)',
       spaces: 'drive',
     });

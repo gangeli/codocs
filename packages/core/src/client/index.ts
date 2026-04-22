@@ -200,6 +200,33 @@ export class CodocsClient {
   }
 
   /**
+   * Find an existing Google Doc by exact title in a named Drive folder, or
+   * create a new one if missing. Used by E2E test runners to reuse canvas
+   * docs across runs (so they don't accumulate in Drive).
+   *
+   * `reused === true` means the doc already existed; the caller is responsible
+   * for resetting its body (e.g. via writeMarkdown) — this method does NOT
+   * touch the doc's contents.
+   */
+  async findOrCreateDocInFolder(
+    title: string,
+    folderName: string = 'Codocs',
+  ): Promise<{ docId: string; folderId: string; reused: boolean }> {
+    const folderId = await this.driveApi.findOrCreateFolder(folderName);
+    const existing = await this.driveApi.findFile(
+      title,
+      folderId,
+      'application/vnd.google-apps.document',
+    );
+    if (existing) {
+      return { docId: existing, folderId, reused: true };
+    }
+    const docId = await this.docsApi.createDocument(title);
+    await this.driveApi.moveToFolder(docId, folderId);
+    return { docId, folderId, reused: false };
+  }
+
+  /**
    * Write markdown content to a Google Doc.
    *
    * By default, replaces the entire document body. Use `opts.mode = 'append'`
