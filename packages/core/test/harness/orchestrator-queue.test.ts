@@ -328,7 +328,7 @@ describe('AgentOrchestrator queue integration', () => {
     // that the orchestrator wrote with the freshly-fetched doc content.
     // Reading that file proves fresh state was both fetched AND delivered.
     const c2Prompt = calls[1].prompt;
-    const pathMatch = c2Prompt.match(/markdown file: (\S+)/);
+    const pathMatch = c2Prompt.match(/Design doc file: (\S+)/);
     expect(pathMatch).not.toBeNull();
     const designDocPath = pathMatch![1];
     const snapshot = await readFile(designDocPath, 'utf-8');

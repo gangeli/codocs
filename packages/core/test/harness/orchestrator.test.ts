@@ -365,7 +365,7 @@ describe('AgentOrchestrator E2E', () => {
     await orchestrator.waitForIdle();
 
     // Prompt should contain thread history
-    expect(capturedPrompt).toContain('ongoing conversation');
+    expect(capturedPrompt).toContain('ongoing thread');
     expect(capturedPrompt).toContain('Please fix this');
     expect(capturedPrompt).toContain('Done, fixed it');
     expect(capturedPrompt).toContain('Actually, change it back');
@@ -868,7 +868,7 @@ describe('AgentOrchestrator fork-per-comment', () => {
       const editingRunner: AgentRunner = {
         name: 'mock-edit',
         run: vi.fn(async (prompt: string, sessionId: string | null, runOpts?: any) => {
-          const pathMatch = prompt.match(/markdown file: (\S+)/);
+          const pathMatch = prompt.match(/Design doc file: (\S+)/);
           expect(pathMatch).not.toBeNull();
           const designDocPath = pathMatch![1];
           const { readFile, writeFile } = await import('node:fs/promises');
