@@ -53,13 +53,19 @@ describe('SessionStore', () => {
 
   it('touches last_used_at without changing session_id', () => {
     store.upsertSession('coder', 'doc-123', 'session-abc');
+    db.run(
+      `UPDATE agent_sessions SET last_used_at = '2020-01-01 00:00:00'
+       WHERE agent_name = ? AND document_id = ?`,
+      ['coder', 'doc-123'],
+    );
     const before = store.getSession('coder', 'doc-123')!;
+    expect(before.lastUsedAt).toBe('2020-01-01 00:00:00');
 
     store.touchSession('coder', 'doc-123');
     const after = store.getSession('coder', 'doc-123')!;
 
     expect(after.sessionId).toBe('session-abc');
-    expect(after.lastUsedAt).toBeTruthy();
+    expect(after.lastUsedAt > before.lastUsedAt).toBe(true);
   });
 
   it('deletes a session', () => {

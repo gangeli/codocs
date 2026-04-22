@@ -663,6 +663,27 @@ Agent modified.
     expect(result.conflictSections.length).toBeGreaterThan(0);
   });
 
+  // Companion to the it.fails above. Locks in the CURRENT (buggy) behavior
+  // so that when the edit/delete race is eventually surfaced as a conflict
+  // BOTH tests break and someone must come update this pair together.
+  it('CURRENT-BUG: silently keeps the agent edit when other side deleted the section', () => {
+    const base = `# A
+
+Original.
+`;
+    const ours = `# A
+
+Agent modified.
+`;
+    const theirs = ``;
+
+    const result = mergeDocuments(base, ours, theirs);
+
+    expect(result.hasConflicts).toBe(false);
+    expect(result.conflictSections).toHaveLength(0);
+    expect(result.mergedMarkdown).toContain('Agent modified.');
+  });
+
   it('conflicts when both sides add a new section with the same heading', () => {
     const base = `# A
 
@@ -756,6 +777,45 @@ Theirs.
     expect(mergeResult.mergedMarkdown).toContain('<<<<<<<');
     expect(mergeResult.mergedMarkdown).toContain('=======');
     expect(mergeResult.mergedMarkdown).toContain('>>>>>>>');
+  });
+
+  // Companion to the it.fails above. Locks in CURRENT (buggy) behavior:
+  // the middle `=======` separator is dropped from the emitted insertText
+  // requests even though mergeDocuments produces it. When the bug is
+  // fixed BOTH this test and its it.fails sibling must be updated together.
+  it('CURRENT-BUG: drops the ======= separator from insertText when resolver is a no-op', async () => {
+    const base = `# S
+
+Original.
+`;
+    const ours = `# S
+
+Ours.
+`;
+    const theirs = `# S
+
+Theirs.
+`;
+
+    const { doc, indexMap } = buildDocAndMap(theirs, [
+      { text: 'S', mdOffset: 0 },
+      { text: 'Theirs.', mdOffset: theirs.indexOf('Theirs.') },
+    ]);
+
+    const noopResolver = async (conflictText: string) => conflictText;
+
+    const result = await computeDocDiff(base, ours, theirs, doc, indexMap, 'test-agent', noopResolver);
+
+    const insertedText = result.requests
+      .filter((r) => r.insertText)
+      .map((r) => r.insertText!.text)
+      .join('');
+
+    expect(insertedText).toContain('<<<<<<<');
+    expect(insertedText).not.toContain('=======');
+
+    const mergeResult = mergeDocuments(base, ours, theirs);
+    expect(mergeResult.mergedMarkdown).toContain('=======');
   });
 
   test('preserves section reordering from theirs when ours is unchanged', () => {

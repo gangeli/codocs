@@ -223,6 +223,39 @@ describe('QueueStore', () => {
     expect(store.pendingCount('alice')).toBe(1);
   });
 
+  describe('markProcessing', () => {
+    it('claims a pending row and returns it in processing status', () => {
+      const id = store.enqueue('alice', 'doc-1', makeEvent());
+
+      const item = store.markProcessing(id);
+      expect(item).not.toBeNull();
+      expect(item!.id).toBe(id);
+      expect(item!.status).toBe('processing');
+      expect(item!.startedAt).toBeTruthy();
+    });
+
+    it('returns null for a row that is not pending (already processing)', () => {
+      const id = store.enqueue('alice', 'doc-1', makeEvent());
+      const first = store.markProcessing(id);
+      expect(first).not.toBeNull();
+
+      const second = store.markProcessing(id);
+      expect(second).toBeNull();
+    });
+
+    it('returns null for a completed row', () => {
+      const id = store.enqueue('alice', 'doc-1', makeEvent());
+      store.markProcessing(id);
+      store.markCompleted(id);
+
+      expect(store.markProcessing(id)).toBeNull();
+    });
+
+    it('returns null for a nonexistent id', () => {
+      expect(store.markProcessing(99999)).toBeNull();
+    });
+  });
+
   it('CommentEvent JSON round-trip preserves all fields', () => {
     const event = makeEvent({
       thread: [

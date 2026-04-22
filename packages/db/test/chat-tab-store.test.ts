@@ -162,9 +162,13 @@ describe('ChatTabStore', () => {
         agentName: 'planner',
       });
 
-      store.addMessage(tabId, 'user', 'How should we handle auth?');
-      store.addMessage(tabId, 'agent', 'I suggest using JWT tokens.');
-      store.addMessage(tabId, 'user', 'What about refresh tokens?');
+      const m1 = store.addMessage(tabId, 'user', 'How should we handle auth?');
+      const m2 = store.addMessage(tabId, 'agent', 'I suggest using JWT tokens.');
+      const m3 = store.addMessage(tabId, 'user', 'What about refresh tokens?');
+
+      db.run(`UPDATE chat_messages SET created_at = '2020-01-01 00:00:01' WHERE id = ?`, [m1]);
+      db.run(`UPDATE chat_messages SET created_at = '2020-01-01 00:00:02' WHERE id = ?`, [m2]);
+      db.run(`UPDATE chat_messages SET created_at = '2020-01-01 00:00:03' WHERE id = ?`, [m3]);
 
       const messages = store.getMessages(tabId);
       expect(messages).toHaveLength(3);
@@ -172,6 +176,8 @@ describe('ChatTabStore', () => {
       expect(messages[0].content).toBe('How should we handle auth?');
       expect(messages[1].role).toBe('agent');
       expect(messages[2].role).toBe('user');
+      expect(messages[0].createdAt < messages[1].createdAt).toBe(true);
+      expect(messages[1].createdAt < messages[2].createdAt).toBe(true);
     });
 
     it('respects limit parameter', () => {
@@ -182,14 +188,36 @@ describe('ChatTabStore', () => {
         agentName: 'planner',
       });
 
-      store.addMessage(tabId, 'user', 'First');
-      store.addMessage(tabId, 'agent', 'Second');
-      store.addMessage(tabId, 'user', 'Third');
+      const m1 = store.addMessage(tabId, 'user', 'First');
+      const m2 = store.addMessage(tabId, 'agent', 'Second');
+      const m3 = store.addMessage(tabId, 'user', 'Third');
+
+      db.run(`UPDATE chat_messages SET created_at = '2020-01-01 00:00:01' WHERE id = ?`, [m1]);
+      db.run(`UPDATE chat_messages SET created_at = '2020-01-01 00:00:02' WHERE id = ?`, [m2]);
+      db.run(`UPDATE chat_messages SET created_at = '2020-01-01 00:00:03' WHERE id = ?`, [m3]);
 
       const messages = store.getMessages(tabId, 2);
       expect(messages).toHaveLength(2);
       expect(messages[0].content).toBe('First');
       expect(messages[1].content).toBe('Second');
+    });
+
+    it('orders messages by created_at then id when timestamps tie', () => {
+      const tabId = store.create({
+        documentId: 'doc-1',
+        tabId: 'tab-abc',
+        title: 'Discussion',
+        agentName: 'planner',
+      });
+
+      const m1 = store.addMessage(tabId, 'user', 'A');
+      const m2 = store.addMessage(tabId, 'user', 'B');
+
+      db.run(`UPDATE chat_messages SET created_at = '2020-01-01 00:00:00' WHERE id = ?`, [m1]);
+      db.run(`UPDATE chat_messages SET created_at = '2020-01-01 00:00:00' WHERE id = ?`, [m2]);
+
+      const messages = store.getMessages(tabId);
+      expect(messages.map((m) => m.content)).toEqual(['A', 'B']);
     });
 
     it('returns empty array for no messages', () => {
@@ -212,12 +240,20 @@ describe('ChatTabStore', () => {
         agentName: 'planner',
       });
 
+      db.run(
+        `UPDATE chat_tabs SET updated_at = '2020-01-01 00:00:00' WHERE id = ?`,
+        [id],
+      );
+
       const before = store.getByTab('doc-1', 'tab-abc')!.updatedAt;
       store.addMessage(id, 'user', 'Hello');
       const after = store.getByTab('doc-1', 'tab-abc')!.updatedAt;
 
-      // updated_at should be updated (or at least not earlier)
-      expect(after >= before).toBe(true);
+      expect(after > before).toBe(true);
+    });
+
+    it('addMessage throws an FK violation for a nonexistent chat tab id', () => {
+      expect(() => store.addMessage(9999, 'user', 'hi')).toThrow();
     });
   });
 });

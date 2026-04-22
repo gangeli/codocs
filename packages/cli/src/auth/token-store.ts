@@ -47,11 +47,11 @@ function getDataDir(): string {
   return join(base, 'codocs');
 }
 
-function configPath(): string {
+export function configPath(): string {
   return join(getConfigDir(), 'config.json');
 }
 
-function tokensPath(): string {
+export function tokensPath(): string {
   return join(getDataDir(), 'auth.json');
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -8,6 +8,7 @@ import {
   readTokens,
   writeTokens,
   clearTokens,
+  tokensPath,
 } from '../../src/auth/token-store.js';
 
 let tempDir: string;
@@ -52,7 +53,7 @@ describe('config storage', () => {
   it('overwrites existing config', () => {
     writeConfig({ client_id: 'old', client_secret: 'old' });
     writeConfig({ client_id: 'new', client_secret: 'new' });
-    expect(readConfig()?.client_id).toBe('new');
+    expect(readConfig()).toEqual({ client_id: 'new', client_secret: 'new' });
   });
 });
 
@@ -81,8 +82,13 @@ describe('token storage', () => {
   });
 
   it('clearTokens is idempotent', () => {
-    // Should not throw when no tokens exist
     clearTokens();
     clearTokens();
+  });
+
+  it('writeTokens creates the file with mode 0o600', () => {
+    writeTokens({ access_token: 'a', refresh_token: 'r' });
+    const mode = statSync(tokensPath()).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 });

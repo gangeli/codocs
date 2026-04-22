@@ -673,10 +673,7 @@ describe('buildLineDocIndices: 1:1 extrapolation past the last indexMap entry', 
     const ours = base.replace('Old final line.', 'New final line rewritten.');
     const { result } = await runPipeline(document, bodyText, ours);
 
-    // The full "Old final line." is gone — no single-char residue.
-    expect(result).not.toContain('Old');
-    expect(result).not.toMatch(/\b[a-z]\bfinal/);
-    expect(result.trimEnd().endsWith('New final line rewritten.')).toBe(true);
+    expect(result).toBe('Heading\nSome intro text.\n\nNew final line rewritten.\n');
   });
 });
 

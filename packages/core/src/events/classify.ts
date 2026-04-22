@@ -54,8 +54,9 @@ export function classifyComment(
     return { type: 'bot', author: displayName || email || 'codocs' };
   }
 
-  // Match on email if available
-  if (email && opts.botEmails.some((botEmail) => email === botEmail)) {
+  // Match on email if available (case-insensitive — Drive normalizes, but
+  // user-provided bot emails in CLI config may have mixed case)
+  if (email && opts.botEmails.some((botEmail) => email.toLowerCase() === botEmail.toLowerCase())) {
     return { type: 'bot', author: displayName || email };
   }
 

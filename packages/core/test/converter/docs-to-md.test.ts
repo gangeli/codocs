@@ -248,7 +248,18 @@ describe('docsToMarkdown', () => {
 
   // ── Code block ──────────────────────────────────────────────────
 
-  it('wraps a Courier/shaded paragraph in a fenced code block', () => {
+  it('wraps a monospace-font paragraph in a fenced code block', () => {
+    const doc = makeSingleParagraphDoc(
+      'const x = 1;',
+      'NORMAL_TEXT',
+      {},
+      { weightedFontFamily: { fontFamily: 'Courier New' } },
+    );
+    const md = docsToMarkdown(doc);
+    expect(md).toBe('```\nconst x = 1;\n```\n');
+  });
+
+  it('does not fence a paragraph with only shading (no monospace font)', () => {
     const doc = makeSingleParagraphDoc(
       'const x = 1;',
       'NORMAL_TEXT',
@@ -259,10 +270,11 @@ describe('docsToMarkdown', () => {
           },
         },
       },
-      { weightedFontFamily: { fontFamily: 'Courier New' } },
+      {},
     );
     const md = docsToMarkdown(doc);
-    expect(md).toBe('```\nconst x = 1;\n```\n');
+    expect(md).not.toContain('```');
+    expect(md).toBe('const x = 1;\n');
   });
 
   // ── Emoji / CJK round-trip ─────────────────────────────────────

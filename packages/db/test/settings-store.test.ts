@@ -62,4 +62,62 @@ describe('SettingsStore', () => {
     const loaded = store.loadAll('/test', defaults);
     expect(loaded.defaultModel).toEqual({ claude: 'opus' });
   });
+
+  describe('direct get/set/getAll', () => {
+    it('set writes a raw value readable by get', () => {
+      store.set('/a', 'theme', '"dark"');
+      expect(store.get('/a', 'theme')).toBe('"dark"');
+    });
+
+    it('getAll returns every key/value pair for the directory', () => {
+      store.set('/a', 'theme', '"dark"');
+      expect(store.getAll('/a')).toEqual({ theme: '"dark"' });
+    });
+
+    it('get returns null for an unknown key', () => {
+      expect(store.get('/a', 'missing')).toBeNull();
+    });
+
+    it('set replaces the existing value on conflict', () => {
+      store.set('/a', 'theme', '"dark"');
+      store.set('/a', 'theme', '"light"');
+      expect(store.get('/a', 'theme')).toBe('"light"');
+    });
+  });
+
+  describe('cross-directory isolation', () => {
+    it('keeps /a and /b independent for the same key', () => {
+      store.set('/a', 'k', 'v1');
+      store.set('/b', 'k', 'v2');
+      expect(store.get('/a', 'k')).toBe('v1');
+      expect(store.get('/b', 'k')).toBe('v2');
+      expect(store.getAll('/a')).toEqual({ k: 'v1' });
+      expect(store.getAll('/b')).toEqual({ k: 'v2' });
+    });
+
+    it('ON CONFLICT(directory,key) does not bleed across directories', () => {
+      store.set('/a', 'shared', 'original-a');
+      store.set('/b', 'shared', 'original-b');
+      store.set('/a', 'shared', 'updated-a');
+      expect(store.get('/a', 'shared')).toBe('updated-a');
+      expect(store.get('/b', 'shared')).toBe('original-b');
+    });
+  });
+
+  describe('corrupt-JSON silent recovery', () => {
+    it('loadAll returns defaults when a stored value is not valid JSON', () => {
+      const defaults = {
+        defaultModel: {} as Record<string, string>,
+      };
+
+      store.set('/a', 'defaultModel', 'not-json');
+
+      let loaded: typeof defaults | undefined;
+      expect(() => {
+        loaded = store.loadAll('/a', defaults);
+      }).not.toThrow();
+
+      expect(loaded!.defaultModel).toEqual({});
+    });
+  });
 });

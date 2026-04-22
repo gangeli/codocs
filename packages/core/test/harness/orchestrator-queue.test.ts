@@ -88,13 +88,27 @@ function createControllableRunner() {
     sessionId: string | null;
     resolve: (r: AgentRunResult) => void;
     reject: (err: Error) => void;
+    resolved: boolean;
   }> = [];
 
   const runner: AgentRunner = {
     name: 'test',
     run: vi.fn((prompt: string, sessionId: string | null, _opts?: AgentRunOptions) => {
       return new Promise<AgentRunResult>((resolve, reject) => {
-        calls.push({ prompt, sessionId, resolve, reject });
+        const entry = {
+          prompt,
+          sessionId,
+          resolve: (r: AgentRunResult) => {
+            entry.resolved = true;
+            resolve(r);
+          },
+          reject: (err: Error) => {
+            entry.resolved = true;
+            reject(err);
+          },
+          resolved: false,
+        };
+        calls.push(entry);
       });
     }),
     getActiveProcesses: () => [],
@@ -245,6 +259,10 @@ describe('AgentOrchestrator queue integration', () => {
 
     // Both should be running in parallel
     await waitFor(() => expect(calls).toHaveLength(2));
+
+    // Prove parallelism: both calls are in-flight, neither has resolved.
+    expect(calls[0].resolved).toBe(false);
+    expect(calls[1].resolved).toBe(false);
 
     calls[0].resolve(makeResult());
     calls[1].resolve(makeResult());

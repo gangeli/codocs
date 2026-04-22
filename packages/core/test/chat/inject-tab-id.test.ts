@@ -59,7 +59,7 @@ describe('injectTabId', () => {
 
     const result = injectTabId(requests, 'tab-123');
     expect(result).toHaveLength(1);
-    // Should not crash
+    expect(JSON.stringify(result).includes('tabId')).toBe(false);
   });
 
   it('handles multiple requests', () => {
@@ -73,5 +73,76 @@ describe('injectTabId', () => {
     expect((result[0].insertText!.location as any).tabId).toBe('tab-xyz');
     expect((result[1].insertText!.location as any).tabId).toBe('tab-xyz');
     expect((result[2].deleteContentRange!.range as any).tabId).toBe('tab-xyz');
+  });
+
+  it('injects tabId into nested range inside updateTextStyle', () => {
+    const requests = [{
+      updateTextStyle: {
+        range: { startIndex: 1, endIndex: 10 },
+        textStyle: { bold: true },
+        fields: 'bold',
+      },
+    }];
+
+    const result = injectTabId(requests, 'tab-123');
+    expect((result[0].updateTextStyle!.range as any).tabId).toBe('tab-123');
+  });
+
+  it('does NOT inject tabId when index is not a number', () => {
+    const requests = [{
+      insertText: {
+        text: 'Hello',
+        location: { index: 'not-a-number' as any },
+      },
+    }];
+
+    const result = injectTabId(requests, 'tab-123');
+    expect((result[0].insertText!.location as any).tabId).toBeUndefined();
+  });
+
+  it('deep-clone invariant: original requests untouched (structuredClone snapshot)', () => {
+    const requests = [
+      { insertText: { text: 'A', location: { index: 1 } } },
+      { deleteContentRange: { range: { startIndex: 10, endIndex: 20 } } },
+      {
+        updateTextStyle: {
+          range: { startIndex: 5, endIndex: 8 },
+          textStyle: { bold: true },
+          fields: 'bold',
+        },
+      },
+    ];
+    const snapshot = structuredClone(requests);
+
+    injectTabId(requests, 'tab-xyz');
+
+    expect(requests).toEqual(snapshot);
+  });
+
+  it('does NOT inject tabId when object has startIndex but no endIndex', () => {
+    const requests = [{
+      foo: { startIndex: 5 },
+    } as any];
+
+    const result = injectTabId(requests, 'tab-123') as any[];
+    expect(result[0].foo.tabId).toBeUndefined();
+  });
+
+  it('injects tabId into multiple range-bearing fields within one request', () => {
+    const requests = [{
+      updateParagraphStyle: {
+        range: { startIndex: 1, endIndex: 10 },
+        paragraphStyle: { namedStyleType: 'HEADING_1' },
+        fields: 'namedStyleType',
+      },
+    } as any, {
+      deleteContentRange: {
+        range: { startIndex: 20, endIndex: 30 },
+      },
+    }];
+
+    const result = injectTabId(requests, 'tab-multi') as any[];
+    expect(result[0].updateParagraphStyle.range.tabId).toBe('tab-multi');
+    expect(result[1].deleteContentRange.range.tabId).toBe('tab-multi');
   });
 });

@@ -17,8 +17,19 @@ import {
   staleQueueItems,
   oldCompletedQueueItems,
   staleCodeTasks,
+  expiredSubscriptions,
 } from '../../src/repair/checks.js';
 import type { RepairContext } from '../../src/repair/types.js';
+
+vi.mock('@codocs/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@codocs/core')>();
+  return {
+    ...actual,
+    listSubscriptions: vi.fn(),
+  };
+});
+
+import { listSubscriptions } from '@codocs/core';
 
 const VALID_DOC = '1'.repeat(44);
 const BAD_DOC = '2'.repeat(45);
@@ -149,6 +160,19 @@ describe('repair/checks', () => {
       expect(issues).toHaveLength(1);
       expect(issues[0].code).toBe('invalid-session-docid');
     });
+
+    it('emits a reachability warning when getDocument rejects', async () => {
+      const store = new CodocsSessionStore(db);
+      store.upsert('/tmp', [VALID_DOC], 'claude');
+      const mockClient = {
+        getDocument: vi.fn().mockRejectedValue(new Error('404 Not found')),
+      } as any;
+      const ctx = makeCtx(db, { client: mockClient });
+      const issues = await sessionsWithBadDocIds.run(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].severity).toBe('warning');
+      expect(issues[0].code).toBe('unreachable-session-docid');
+    });
   });
 
   describe('sessionsForMissingDirectories', () => {
@@ -178,10 +202,12 @@ describe('repair/checks', () => {
     });
 
     it('flags processing items older than 30 minutes', async () => {
-      // Insert a processing row with an old started_at.
+      const queueStore = new QueueStore(db);
+      const id = queueStore.enqueue('alice', 'doc', { event: 1 });
+      queueStore.dequeue('alice');
       db.run(
-        `INSERT INTO agent_queue (agent_name, document_id, comment_event, status, started_at)
-         VALUES ('alice', 'doc', '{}', 'processing', datetime('now', '-2 hours'))`,
+        "UPDATE agent_queue SET started_at = datetime('now','-2 hours') WHERE id = ?",
+        [id],
       );
       const ctx = makeCtx(db);
       const issues = await staleQueueItems.run(ctx);
@@ -213,6 +239,53 @@ describe('repair/checks', () => {
       const issues = await staleCodeTasks.run(ctx);
       expect(issues).toHaveLength(1);
       expect(issues[0].code).toBe('stale-code-task');
+    });
+  });
+
+  describe('expiredSubscriptions', () => {
+    beforeEach(() => {
+      (listSubscriptions as any).mockReset();
+    });
+
+    it('flags expired subscriptions', async () => {
+      const store = new CodocsSessionStore(db);
+      store.upsert('/tmp', [VALID_DOC], 'claude');
+      (listSubscriptions as any).mockResolvedValue([
+        {
+          name: 'subscriptions/abc',
+          expireTime: new Date(Date.now() - 60_000).toISOString(),
+        },
+      ]);
+      const ctx = makeCtx(db, { auth: {} as any });
+      const issues = await expiredSubscriptions.run(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('expired-subscription');
+      expect(issues[0].severity).toBe('warning');
+      expect(issues[0].context).toMatchObject({
+        subscriptionName: 'subscriptions/abc',
+        docId: VALID_DOC,
+      });
+    });
+
+    it('does not flag non-expired subscriptions', async () => {
+      const store = new CodocsSessionStore(db);
+      store.upsert('/tmp', [VALID_DOC], 'claude');
+      (listSubscriptions as any).mockResolvedValue([
+        {
+          name: 'subscriptions/future',
+          expireTime: new Date(Date.now() + 60_000).toISOString(),
+        },
+      ]);
+      const ctx = makeCtx(db, { auth: {} as any });
+      expect(await expiredSubscriptions.run(ctx)).toEqual([]);
+    });
+
+    it('swallows listSubscriptions rejection without crashing', async () => {
+      const store = new CodocsSessionStore(db);
+      store.upsert('/tmp', [VALID_DOC], 'claude');
+      (listSubscriptions as any).mockRejectedValue(new Error('API down'));
+      const ctx = makeCtx(db, { auth: {} as any });
+      await expect(expiredSubscriptions.run(ctx)).resolves.toEqual([]);
     });
   });
 });

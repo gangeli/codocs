@@ -122,8 +122,8 @@ export class ChatTabStore {
   /** Get chat messages in chronological order, optionally limited. */
   getMessages(chatTabId: number, limit?: number): ChatMessage[] {
     const sql = limit
-      ? 'SELECT * FROM chat_messages WHERE chat_tab_id = ? ORDER BY created_at ASC LIMIT ?'
-      : 'SELECT * FROM chat_messages WHERE chat_tab_id = ? ORDER BY created_at ASC';
+      ? 'SELECT * FROM chat_messages WHERE chat_tab_id = ? ORDER BY created_at ASC, id ASC LIMIT ?'
+      : 'SELECT * FROM chat_messages WHERE chat_tab_id = ? ORDER BY created_at ASC, id ASC';
     const params = limit ? [chatTabId, limit] : [chatTabId];
     const rows = this.db.exec(sql, params);
     if (rows.length === 0) return [];

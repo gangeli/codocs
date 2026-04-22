@@ -105,22 +105,43 @@ describe('assignAgent', () => {
   });
 
   it('breaks ties by largest contiguous overlap', () => {
-    // "AABBAA" — agentA has 2+2=4 total, agentB has 2+2=4 total
-    // but agentA and agentB have same max contiguous (2)
-    // Let's make agentA have one bigger contiguous block
-    const doc = makeDoc('AAABB');
-    const attributions = [
-      makeSpan('agentA', 1, 4),  // AAA (3 chars)
-      makeSpan('agentB', 4, 6),  // BB (2 chars)
+    // Both agents have total overlap of 4, but agentA has a single
+    // 4-char contiguous span while agentB has two 2-char spans.
+    // Tie-break on maxContiguous should pick agentA.
+    const doc = makeDoc('AAAABBBB');
+    const attributions: AttributionSpan[] = [
+      {
+        agentName: 'agentA',
+        namedRangeId: 'rA',
+        ranges: [{ startIndex: 1, endIndex: 5 }], // AAAA — 4 contiguous
+        text: '',
+      },
+      {
+        agentName: 'agentB',
+        namedRangeId: 'rB',
+        ranges: [
+          { startIndex: 5, endIndex: 7 }, // BB — 2 chars
+          { startIndex: 7, endIndex: 9 }, // BB — 2 chars
+        ],
+        text: '',
+      },
     ];
-    expect(assignAgent('AAABB', attributions, doc, config)).toBe('agentA');
+    expect(assignAgent('AAAABBBB', attributions, doc, config)).toBe('agentA');
   });
 
   it('handles partial overlap with quoted text', () => {
     const doc = makeDoc('Hello World Foo');
-    // attribution covers "Hello World Foo" (1-16)
-    // but quoted text is just "World" (7-12)
-    const attributions = [makeSpan('coder', 1, 16)];
+    // Attribution covers indices 5..9 (partway into quoted range).
+    // Quoted text "World" is at indices 7..12, so overlap is only
+    // [7,9) = 2 chars — genuinely partial, not fully contained.
+    const attributions: AttributionSpan[] = [
+      {
+        agentName: 'coder',
+        namedRangeId: 'r1',
+        ranges: [{ startIndex: 5, endIndex: 9 }],
+        text: '',
+      },
+    ];
     expect(assignAgent('World', attributions, doc, config)).toBe('coder');
   });
 

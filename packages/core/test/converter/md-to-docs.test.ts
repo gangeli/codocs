@@ -246,27 +246,40 @@ describe('markdownToDocsRequests', () => {
 
   it('prepends reset + delete requests when clearFirst is true', () => {
     const { requests } = markdownToDocsRequests('Hello', 1, true, 50);
-    // The reset trio must come BEFORE any insertText — anything else
-    // would either wipe the just-inserted text or fail to clear the
-    // residual style/bullet state on the surviving anchor paragraph.
-    // Order within the trio: paragraph-style reset, bullet clear,
-    // content delete. (Order of style/bullet doesn't strictly matter
-    // for indices, but the documented contract pins it.)
     expect(requests[0].updateParagraphStyle).toBeDefined();
     expect(requests[0].updateParagraphStyle!.range!.startIndex).toBe(1);
     expect(requests[0].updateParagraphStyle!.range!.endIndex).toBe(49);
     expect(
       requests[0].updateParagraphStyle!.paragraphStyle!.namedStyleType,
     ).toBe('NORMAL_TEXT');
-    // Field mask must include namedStyleType (the most common leak)
-    // plus the paragraph-level layout properties. `headingId` is
-    // deliberately excluded — the Docs API rejects it in
-    // updateParagraphStyle as a read-only field.
-    const fields = requests[0].updateParagraphStyle!.fields ?? '';
-    expect(fields).toContain('namedStyleType');
-    expect(fields).not.toContain('headingId');
-    expect(fields).toContain('alignment');
-    expect(fields).toContain('indentStart');
+    const expectedFields =
+      'namedStyleType,direction,alignment,' +
+      'indentStart,indentEnd,indentFirstLine,' +
+      'spaceAbove,spaceBelow,lineSpacing,spacingMode,' +
+      'keepWithNext,keepLinesTogether,avoidWidowAndOrphan';
+    expect(requests[0].updateParagraphStyle!.fields).toBe(expectedFields);
+    const fieldList = expectedFields.split(',');
+    expect(fieldList).toContain('namedStyleType');
+    expect(fieldList).toContain('direction');
+    expect(fieldList).toContain('alignment');
+    expect(fieldList).toContain('indentStart');
+    expect(fieldList).toContain('indentEnd');
+    expect(fieldList).toContain('indentFirstLine');
+    expect(fieldList).toContain('spaceAbove');
+    expect(fieldList).toContain('spaceBelow');
+    expect(fieldList).toContain('lineSpacing');
+    expect(fieldList).toContain('spacingMode');
+    expect(fieldList).toContain('keepWithNext');
+    expect(fieldList).toContain('keepLinesTogether');
+    expect(fieldList).toContain('avoidWidowAndOrphan');
+    expect(fieldList).not.toContain('headingId');
+    expect(fieldList).not.toContain('shading');
+    expect(fieldList).not.toContain('pageBreakBefore');
+    expect(fieldList).not.toContain('borderTop');
+    expect(fieldList).not.toContain('borderBottom');
+    expect(fieldList).not.toContain('borderLeft');
+    expect(fieldList).not.toContain('borderRight');
+    expect(fieldList).not.toContain('tabStops');
 
     expect(requests[1].deleteParagraphBullets).toBeDefined();
     expect(requests[1].deleteParagraphBullets!.range!.startIndex).toBe(1);
@@ -276,7 +289,6 @@ describe('markdownToDocsRequests', () => {
     expect(requests[2].deleteContentRange!.range!.startIndex).toBe(1);
     expect(requests[2].deleteContentRange!.range!.endIndex).toBe(49);
 
-    // Exactly one delete request — no stray duplicates.
     const deleteReqs = requests.filter((r) => r.deleteContentRange);
     expect(deleteReqs).toHaveLength(1);
     const bulletClears = requests.filter((r) => r.deleteParagraphBullets);
@@ -366,14 +378,13 @@ describe('markdownToDocsRequests', () => {
     const md = '| Name | Value |\n| --- | --- |\n| foo | 42 |';
     const { requests } = markdownToDocsRequests(md);
 
-    // Should have an insertTable request
     const tableReq = requests.find((r) => r.insertTable);
     expect(tableReq).toBeDefined();
     expect(tableReq!.insertTable!.rows).toBe(2);
     expect(tableReq!.insertTable!.columns).toBe(2);
     expect(tableReq!.insertTable!.location!.index).toBe(1);
+    const tableStart = tableReq!.insertTable!.location!.index! + 1;
 
-    // Should have insertText requests for cell content
     const cellInserts = requests.filter(
       (r) => r.insertText && r.insertText !== tableReq?.insertText,
     );
@@ -383,21 +394,144 @@ describe('markdownToDocsRequests', () => {
     expect(cellTexts).toContain('foo');
     expect(cellTexts).toContain('42');
 
-    // Should have header row styling (bold + background)
-    const boldReq = requests.find(
+    const MIN_COL_WIDTH_PT = 60;
+    const SHORT_VALUE_THRESHOLD = 10;
+    const THICK_MAGNITUDE = 2;
+    const THIN_MAGNITUDE = 1;
+    const R = 2;
+    const C = 2;
+    const rows = [
+      ['Name', 'Value'],
+      ['foo', '42'],
+    ];
+    const cellIndex = (row: number, col: number): number => {
+      let idx = tableStart + 3 + row * (2 * C + 1) + 2 * col;
+      for (let r = 0; r < rows.length; r++) {
+        for (let c = 0; c < C; c++) {
+          if (r < row || (r === row && c < col)) {
+            idx += (rows[r][c] ?? '').length;
+          }
+        }
+      }
+      return idx;
+    };
+
+    const cellStyleReqs = requests.filter((r) => r.updateTableCellStyle);
+
+    const topRuleReq = cellStyleReqs.find(
+      (r) =>
+        r.updateTableCellStyle!.fields === 'borderTop' &&
+        r.updateTableCellStyle!.tableCellStyle?.borderTop?.width?.magnitude ===
+          THICK_MAGNITUDE &&
+        r.updateTableCellStyle!.tableRange!.tableCellLocation!.rowIndex === 0,
+    );
+    expect(topRuleReq).toBeDefined();
+    expect(topRuleReq!.updateTableCellStyle!.tableRange!.rowSpan).toBe(1);
+    expect(topRuleReq!.updateTableCellStyle!.tableRange!.columnSpan).toBe(C);
+
+    const thinHeaderRuleReq = cellStyleReqs.find(
+      (r) =>
+        r.updateTableCellStyle!.fields === 'borderBottom' &&
+        r.updateTableCellStyle!.tableCellStyle?.borderBottom?.width?.magnitude ===
+          THIN_MAGNITUDE &&
+        r.updateTableCellStyle!.tableRange!.tableCellLocation!.rowIndex === 0,
+    );
+    expect(thinHeaderRuleReq).toBeDefined();
+    expect(thinHeaderRuleReq!.updateTableCellStyle!.tableRange!.rowSpan).toBe(1);
+    expect(thinHeaderRuleReq!.updateTableCellStyle!.tableRange!.columnSpan).toBe(
+      C,
+    );
+
+    const bottomRuleReq = cellStyleReqs.find(
+      (r) =>
+        r.updateTableCellStyle!.fields === 'borderBottom' &&
+        r.updateTableCellStyle!.tableCellStyle?.borderBottom?.width?.magnitude ===
+          THICK_MAGNITUDE &&
+        r.updateTableCellStyle!.tableRange!.tableCellLocation!.rowIndex ===
+          R - 1,
+    );
+    expect(bottomRuleReq).toBeDefined();
+    expect(bottomRuleReq!.updateTableCellStyle!.tableRange!.rowSpan).toBe(1);
+    expect(bottomRuleReq!.updateTableCellStyle!.tableRange!.columnSpan).toBe(C);
+
+    const vertSuppressReq = cellStyleReqs.find(
+      (r) =>
+        r.updateTableCellStyle!.fields === 'borderLeft,borderRight' &&
+        r.updateTableCellStyle!.tableCellStyle?.borderLeft?.width?.magnitude ===
+          0 &&
+        r.updateTableCellStyle!.tableCellStyle?.borderRight?.width?.magnitude ===
+          0,
+    );
+    expect(vertSuppressReq).toBeDefined();
+    expect(vertSuppressReq!.updateTableCellStyle!.tableRange!.rowSpan).toBe(R);
+    expect(vertSuppressReq!.updateTableCellStyle!.tableRange!.columnSpan).toBe(
+      C,
+    );
+
+    const innerTopSuppressReq = cellStyleReqs.find(
+      (r) =>
+        r.updateTableCellStyle!.fields === 'borderTop' &&
+        r.updateTableCellStyle!.tableCellStyle?.borderTop?.width?.magnitude ===
+          0 &&
+        r.updateTableCellStyle!.tableRange!.tableCellLocation!.rowIndex === 1,
+    );
+    expect(innerTopSuppressReq).toBeDefined();
+
+    const innerBottomSuppressReq = cellStyleReqs.find(
+      (r) =>
+        r.updateTableCellStyle!.fields === 'borderBottom' &&
+        r.updateTableCellStyle!.tableCellStyle?.borderBottom?.width?.magnitude ===
+          0 &&
+        r.updateTableCellStyle!.tableRange!.tableCellLocation!.rowIndex === 0 &&
+        r.updateTableCellStyle!.tableRange!.rowSpan === R - 1,
+    );
+    expect(innerBottomSuppressReq).toBeDefined();
+
+    const nameCellIdx = cellIndex(0, 0);
+    const valueCellIdx = cellIndex(0, 1);
+    const boldReqs = requests.filter(
       (r) => r.updateTextStyle?.textStyle?.bold === true,
     );
-    expect(boldReq).toBeDefined();
+    const nameBold = boldReqs.find(
+      (r) =>
+        r.updateTextStyle!.range!.startIndex === nameCellIdx &&
+        r.updateTextStyle!.range!.endIndex === nameCellIdx + 'Name'.length,
+    );
+    const valueBold = boldReqs.find(
+      (r) =>
+        r.updateTextStyle!.range!.startIndex === valueCellIdx &&
+        r.updateTextStyle!.range!.endIndex === valueCellIdx + 'Value'.length,
+    );
+    expect(nameBold).toBeDefined();
+    expect(valueBold).toBeDefined();
+    expect(boldReqs).toHaveLength(2);
 
-    const headerBgReq = requests.find((r) => r.updateTableCellStyle);
-    expect(headerBgReq).toBeDefined();
-    expect(
-      headerBgReq!.updateTableCellStyle!.tableRange!.tableCellLocation!.rowIndex,
-    ).toBe(0);
-
-    // Should have column width requests
     const colWidthReqs = requests.filter((r) => r.updateTableColumnProperties);
-    expect(colWidthReqs).toHaveLength(2);
+    expect(colWidthReqs).toHaveLength(C);
+    for (const w of colWidthReqs) {
+      const mag = w.updateTableColumnProperties!.tableColumnProperties!.width!
+        .magnitude!;
+      expect(mag).toBeGreaterThanOrEqual(MIN_COL_WIDTH_PT);
+    }
+
+    for (let c = 0; c < C; c++) {
+      const isShort = rows.every(
+        (row) => (row[c] ?? '').length <= SHORT_VALUE_THRESHOLD,
+      );
+      if (!isShort) continue;
+      for (let r = 0; r < R; r++) {
+        const cellContentIndex = cellIndex(r, c);
+        const cellText = rows[r][c];
+        const centerReq = requests.find(
+          (req) =>
+            req.updateParagraphStyle?.paragraphStyle?.alignment === 'CENTER' &&
+            req.updateParagraphStyle.range?.startIndex === cellContentIndex &&
+            req.updateParagraphStyle.range?.endIndex ===
+              cellContentIndex + cellText.length + 1,
+        );
+        expect(centerReq).toBeDefined();
+      }
+    }
   });
 
   it(

@@ -159,6 +159,7 @@ export async function openDatabase(path?: string): Promise<Database> {
     db = new SQL.Database();
   }
 
+  db.run('PRAGMA foreign_keys = ON');
   db.run(SCHEMA);
 
   // Additive migration: drive_file_id was added after the initial release.

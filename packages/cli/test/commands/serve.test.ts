@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { metaRestartShutdown, type MetaRestartShutdownCtx } from '../../src/commands/meta-restart.js';
 
 /**
@@ -58,27 +58,32 @@ describe('metaRestartShutdown', () => {
     expect(cleared).toEqual(['doc-A', 'doc-B']);
   });
 
-  it('stops the heartbeat timer before clearing so it cannot re-write', async () => {
-    // If clearServerHeartbeat resolves but the heartbeatTimer is still live,
-    // setServerHeartbeat will fire again inside the make-rebuild window (up
-    // to 120s), re-planting the lock and re-triggering the bug.
-    let timerFiredAfterClear = false;
-    let heartbeatCleared = false;
+  it('executes shutdown steps in the required order', async () => {
+    const order: string[] = [];
 
-    const heartbeatTimer = setInterval(() => {
-      if (heartbeatCleared) timerFiredAfterClear = true;
-    }, 5);
+    const realClearInterval = globalThis.clearInterval;
+    const clearIntervalSpy = vi
+      .spyOn(globalThis, 'clearInterval')
+      .mockImplementation((handle: any) => {
+        order.push('clearInterval');
+        return realClearInterval(handle);
+      });
 
     const ctx: MetaRestartShutdownCtx = {
-      orchestrator: { cancelIdleCheck: () => {} },
+      orchestrator: {
+        cancelIdleCheck: () => { order.push('cancelIdleCheck'); },
+      },
       renewalTimer: null,
-      heartbeatTimer,
-      listener: null,
-      db: { close: () => {} },
+      heartbeatTimer: setInterval(() => {}, 60_000),
+      listener: {
+        close: async () => { order.push('listenerClose'); },
+      },
+      db: {
+        close: () => { order.push('dbClose'); },
+      },
       lockClient: {
-        clearServerHeartbeat: async () => {
-          heartbeatCleared = true;
-          await new Promise((r) => setTimeout(r, 30));
+        clearServerHeartbeat: async (_docId: string) => {
+          order.push('clearServerHeartbeat');
         },
       },
       docIds: ['doc-A'],
@@ -86,7 +91,15 @@ describe('metaRestartShutdown', () => {
 
     await metaRestartShutdown(ctx);
 
-    expect(timerFiredAfterClear).toBe(false);
+    expect(order).toEqual([
+      'cancelIdleCheck',
+      'clearInterval',
+      'clearServerHeartbeat',
+      'listenerClose',
+      'dbClose',
+    ]);
+
+    clearIntervalSpy.mockRestore();
   });
 
   it('still closes listener and db even if heartbeat clearing throws', async () => {

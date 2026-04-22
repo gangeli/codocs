@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { truncate } from '../src/util.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { truncate, withErrorHandler } from '../src/util.js';
 
 describe('truncate', () => {
   it('returns short text unchanged', () => {
@@ -26,8 +26,72 @@ describe('truncate', () => {
   });
 
   it('handles newlines before truncation', () => {
-    // Newlines are replaced before length check
     expect(truncate('a\nb', 4)).toBe('a\\nb');
-    // After replacement 'a\\nb' is 4 chars, fits in maxLen 4
+  });
+});
+
+describe('withErrorHandler', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('handles 401 status errors with auth message', async () => {
+    const wrapped = withErrorHandler(async () => {
+      throw new Error('Request failed with 401 Unauthorized');
+    });
+
+    await wrapped();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const allOutput = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(allOutput).toMatch(/Authentication failed/);
+    expect(allOutput).toMatch(/codocs login/);
+  });
+
+  it('handles invalid_grant errors with auth message', async () => {
+    const wrapped = withErrorHandler(async () => {
+      throw new Error('invalid_grant: Token has been expired or revoked.');
+    });
+
+    await wrapped();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const allOutput = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(allOutput).toMatch(/Authentication failed/);
+  });
+
+  it('handles 404 errors with doc access message', async () => {
+    const wrapped = withErrorHandler(async () => {
+      throw new Error('Document not found (404)');
+    });
+
+    await wrapped();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const allOutput = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(allOutput).toMatch(/Check the document ID/);
+  });
+
+  it('handles generic runtime errors', async () => {
+    const wrapped = withErrorHandler(async () => {
+      throw new Error('Something totally unexpected happened');
+    });
+
+    await wrapped();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const allOutput = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(allOutput).toMatch(/Error: Something totally unexpected happened/);
+    expect(allOutput).not.toMatch(/Authentication failed/);
+    expect(allOutput).not.toMatch(/Check the document ID/);
   });
 });

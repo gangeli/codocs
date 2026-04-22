@@ -219,4 +219,126 @@ describe('routeComment', () => {
     );
     expect(result.type).toBe('chat');
   });
+
+  it('Strategy 4 ambiguity: quoted text matching multiple tabs falls back to doc', async () => {
+    const tab1 = makeChatTab({ id: 1, tabId: 'tab-1', activeCommentId: 'active-1' });
+    const tab2 = makeChatTab({ id: 2, tabId: 'tab-2', activeCommentId: 'active-2' });
+    const store = mockChatTabStore([tab1, tab2]);
+
+    const sharedText = 'this text appears in both chat tabs';
+    const client = {
+      getDocumentWithTabs: vi.fn(async () => ({
+        tabs: [
+          {
+            tabProperties: { tabId: 'tab-1' },
+            documentTab: {
+              body: {
+                content: [{
+                  paragraph: {
+                    elements: [{ textRun: { content: `${sharedText}\n` } }],
+                  },
+                  startIndex: 1,
+                  endIndex: 50,
+                }],
+              },
+            },
+          },
+          {
+            tabProperties: { tabId: 'tab-2' },
+            documentTab: {
+              body: {
+                content: [{
+                  paragraph: {
+                    elements: [{ textRun: { content: `${sharedText}\n` } }],
+                  },
+                  startIndex: 1,
+                  endIndex: 50,
+                }],
+              },
+            },
+          },
+        ],
+      })),
+    } as unknown as CodocsClient;
+
+    const result = await routeComment(
+      makeEvent({ quotedText: sharedText, id: 'unmatched-comment' }),
+      store,
+      client,
+    );
+    expect(result.type).toBe('doc');
+  });
+
+  it('Strategy 4 exception: getDocumentWithTabs throws → doc', async () => {
+    const tab = makeChatTab({ activeCommentId: 'active-1' });
+    const store = mockChatTabStore([tab]);
+
+    const client = {
+      getDocumentWithTabs: vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    } as unknown as CodocsClient;
+
+    const result = await routeComment(
+      makeEvent({ quotedText: 'some long enough text', id: 'unmatched' }),
+      store,
+      client,
+    );
+    expect(result.type).toBe('doc');
+  });
+
+  it('Strategy 2 multi-tab disambiguation: anchor + unique content picks right tab', async () => {
+    const tab1 = makeChatTab({ id: 1, tabId: 'tab-1', activeCommentId: 'active-1' });
+    const tab2 = makeChatTab({ id: 2, tabId: 'tab-2', activeCommentId: 'active-2' });
+    const store = mockChatTabStore([tab1, tab2]);
+
+    const anchoredQuote = `some context line\n${CHAT_INPUT_ANCHOR}`;
+    const client = {
+      getDocumentWithTabs: vi.fn(async () => ({
+        tabs: [
+          {
+            tabProperties: { tabId: 'tab-1' },
+            documentTab: {
+              body: {
+                content: [{
+                  paragraph: {
+                    elements: [{ textRun: { content: 'unrelated tab 1 content\n' } }],
+                  },
+                  startIndex: 1,
+                  endIndex: 30,
+                }],
+              },
+            },
+          },
+          {
+            tabProperties: { tabId: 'tab-2' },
+            documentTab: {
+              body: {
+                content: [{
+                  paragraph: {
+                    elements: [{ textRun: { content: `${anchoredQuote}\n` } }],
+                  },
+                  startIndex: 1,
+                  endIndex: 80,
+                }],
+              },
+            },
+          },
+        ],
+      })),
+    } as unknown as CodocsClient;
+
+    const result = await routeComment(
+      makeEvent({
+        quotedText: anchoredQuote,
+        id: 'unmatched-comment',
+      }),
+      store,
+      client,
+    );
+    expect(result.type).toBe('chat');
+    if (result.type === 'chat') {
+      expect(result.chatTab.tabId).toBe('tab-2');
+    }
+  });
 });

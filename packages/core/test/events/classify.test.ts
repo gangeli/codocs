@@ -146,4 +146,58 @@ describe('classifyComment', () => {
     const result = classifyComment(comment, { botEmails: BOT_EMAILS, ownReplyIds });
     expect(result.type).toBe('bot');
   });
+
+  it('does not classify a root comment as bot even if its id is in ownReplyIds', () => {
+    const comment = makeComment({
+      id: 'comment-1',
+      author: { displayName: 'Gabor', emailAddress: 'user@example.com' },
+      replies: [],
+    });
+    const ownReplyIds = new Set(['comment-1']);
+    const result = classifyComment(comment, { botEmails: [], ownReplyIds });
+    expect(result.type).toBe('human');
+    expect(result).toEqual({ type: 'human', author: 'Gabor' });
+  });
+
+  it('classifies as bot using botDisplayNames option', () => {
+    const comment = makeComment({
+      author: { displayName: 'my-bot', emailAddress: 'notabot@example.com' },
+    });
+    const result = classifyComment(comment, {
+      botEmails: [],
+      botDisplayNames: ['my-bot'],
+    });
+    expect(result.type).toBe('bot');
+    expect(result).toEqual({ type: 'bot', author: 'my-bot' });
+  });
+
+  it('falls back to root comment when all replies are actions', () => {
+    const comment = makeComment({
+      author: { displayName: 'Codocs Bot', emailAddress: BOT_EMAILS[0] },
+      replies: [
+        { id: 'r1', content: '', action: 'resolve', author: { displayName: 'Human', emailAddress: 'human@example.com' } },
+        { id: 'r2', content: '', action: 'reopen', author: { displayName: 'Human', emailAddress: 'human@example.com' } },
+        { id: 'r3', content: '', action: 'resolve', author: { displayName: 'Human', emailAddress: 'human@example.com' } },
+      ],
+    });
+    const result = classifyComment(comment, { botEmails: BOT_EMAILS });
+    expect(result.type).toBe('bot');
+    expect(result).toEqual({ type: 'bot', author: 'Codocs Bot' });
+  });
+
+  it('bot result falls back to email for author when displayName is missing', () => {
+    const comment = makeComment({
+      author: { emailAddress: BOT_EMAILS[0] },
+    });
+    const result = classifyComment(comment, { botEmails: BOT_EMAILS });
+    expect(result).toEqual({ type: 'bot', author: BOT_EMAILS[0] });
+  });
+
+  it('matches bot email case-insensitively', () => {
+    const comment = makeComment({
+      author: { displayName: 'Codocs Bot', emailAddress: 'HUMAN@example.com' },
+    });
+    const result = classifyComment(comment, { botEmails: ['human@example.com'] });
+    expect(result.type).toBe('bot');
+  });
 });

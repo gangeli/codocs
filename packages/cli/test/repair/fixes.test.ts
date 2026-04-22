@@ -113,11 +113,14 @@ describe('repair/fixes', () => {
   describe('queue fixes', () => {
     it('resetStaleQueueFix resets processing items', async () => {
       ctx.queueStore.enqueue('alice', VALID_DOC_A, { event: 1 });
-      ctx.queueStore.dequeue('alice'); // -> processing
+      ctx.queueStore.dequeue('alice');
       const result = await resetStaleQueueFix.apply(ctx, issue({}));
       expect(result.ok).toBe(true);
       expect(result.message).toMatch(/Reset 1/);
       expect(ctx.queueStore.isAgentBusy('alice')).toBe(false);
+      expect(ctx.queueStore.peek('alice')).not.toBeNull();
+      const reclaimed = ctx.queueStore.dequeue('alice');
+      expect(reclaimed).not.toBeNull();
     });
 
     it('resetStaleQueueFix handles empty queue', async () => {
@@ -130,6 +133,25 @@ describe('repair/fixes', () => {
       const result = await purgeOldQueueFix.apply(ctx, issue({}));
       expect(result.ok).toBe(true);
       expect(result.message).toMatch(/Nothing to purge/);
+    });
+
+    it('purgeOldQueueFix removes 60-day-old items but keeps recent ones', async () => {
+      const recentId = ctx.queueStore.enqueue('alice', VALID_DOC_A, { event: 1 });
+      ctx.queueStore.markCompleted(recentId);
+      const oldId = ctx.queueStore.enqueue('alice', VALID_DOC_A, { event: 2 });
+      ctx.queueStore.markCompleted(oldId);
+      ctx.db.run(
+        "UPDATE agent_queue SET completed_at = datetime('now','-60 days') WHERE id = ?",
+        [oldId],
+      );
+
+      const result = await purgeOldQueueFix.apply(ctx, issue({}));
+      expect(result.ok).toBe(true);
+      expect(result.message).toMatch(/Purged 1/);
+
+      const rows = ctx.db.exec('SELECT id FROM agent_queue ORDER BY id ASC');
+      const remainingIds = rows[0]?.values.map((r) => r[0] as number) ?? [];
+      expect(remainingIds).toEqual([recentId]);
     });
   });
 
