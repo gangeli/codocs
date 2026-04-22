@@ -29,6 +29,8 @@ export interface SpawnAgentOptions {
   sessionId?: string;
   /** Optional data to write to stdin before closing it. */
   stdinData?: string;
+  /** Environment for the child. Defaults to inheriting process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -49,7 +51,7 @@ export function spawnAgent(
     const child = spawn(binary, args, {
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: opts.env ?? { ...process.env },
     });
 
     active.set(trackingId, {

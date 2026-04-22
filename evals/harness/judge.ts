@@ -17,7 +17,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Judge } from '../types.js';
 
-export const JUDGE_MODEL = 'claude-sonnet-4-6';
+export const JUDGE_MODEL = 'claude-haiku-4-5-20251001';
 
 /**
  * Keep the judge prompt boring and explicit. The goal is NOT to get

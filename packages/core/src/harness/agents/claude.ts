@@ -141,11 +141,19 @@ export class ClaudeRunner implements AgentRunner {
       args.push('--resume');
     }
 
+    // Strip ANTHROPIC_API_KEY so the child authenticates via the stored
+    // Claude Code subscription credential rather than billing the API.
+    // The eval harness sets ANTHROPIC_API_KEY for the judge SDK client;
+    // letting that leak here would silently reroute agent calls to API
+    // billing.
+    const { ANTHROPIC_API_KEY: _unused, ...childEnv } = process.env;
+
     return spawnAgent(this.binaryPath, args, {
       cwd: opts?.workingDirectory,
       timeout: opts?.timeout ?? DEFAULT_TIMEOUT,
       agentName: opts?.agentName,
       sessionId: effectiveSessionId,
+      env: childEnv,
     }, this.active);
   }
 
