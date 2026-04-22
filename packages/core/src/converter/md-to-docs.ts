@@ -44,16 +44,23 @@ function buildBodyResetRequests(endIndex: number): docs_v1.Schema$Request[] {
         // Broad mask: anything a prior write could have set on the
         // anchor paragraph. `namedStyleType` covers heading levels and
         // title; the rest covers direct formatting that survives a
-        // content delete. headingId is included so heading bookmarks
-        // don't dangle on the now-NORMAL_TEXT paragraph.
+        // content delete.
+        //
+        // NOTE: the reset range can cover table paragraphs (cells),
+        // and Docs rejects several ParagraphStyle fields on table
+        // paragraphs ("Cannot update X when the range contains
+        // paragraphs in a table"). The mask here sticks to fields the
+        // server accepts across both normal paragraphs AND table
+        // cells. `headingId` is read-only (server-assigned on heading
+        // creation) and `tabStops` / `pageBreakBefore` / `shading` /
+        // borders are all rejected when any cell paragraph is in
+        // range. Dangling headingId on the NORMAL_TEXT anchor is
+        // harmless (nothing renders from it).
         fields:
-          'namedStyleType,headingId,direction,alignment,' +
+          'namedStyleType,direction,alignment,' +
           'indentStart,indentEnd,indentFirstLine,' +
           'spaceAbove,spaceBelow,lineSpacing,spacingMode,' +
-          'keepWithNext,keepLinesTogether,avoidWidowAndOrphan,' +
-          'shading,pageBreakBefore,' +
-          'borderBetween,borderTop,borderBottom,borderLeft,borderRight,' +
-          'tabStops',
+          'keepWithNext,keepLinesTogether,avoidWidowAndOrphan',
       },
     },
     {
@@ -387,6 +394,31 @@ function processTextSegment(
  *   (plus 1 for the trailing paragraph \n)
  */
 
+/**
+ * Final doc index of cell (r, c)'s text start AFTER every cell's text
+ * has been inserted. Equals the empty-table `cellContentIndex` plus the
+ * total text length of every cell that comes before (r, c) in
+ * row-major order. Matches `cellIndex` in table-style.ts — kept local
+ * here to avoid a cross-file dependency for a one-off calculation.
+ */
+function finalCellContentIndex(
+  tableStart: number,
+  row: number,
+  col: number,
+  numColumns: number,
+  rows: string[][],
+): number {
+  let idx = tableStart + 3 + row * (2 * numColumns + 1) + 2 * col;
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < numColumns; c++) {
+      if (r < row || (r === row && c < col)) {
+        idx += (rows[r][c] ?? '').length;
+      }
+    }
+  }
+  return idx;
+}
+
 function processTableSegment(
   segment: TableSegment,
   docIndex: number,
@@ -427,12 +459,22 @@ function processTableSegment(
       });
 
       // Apply inline styles (bold/italic/strikethrough/link) captured
-      // inside this cell. Offsets are 0-based relative to cellText; shift
-      // them to the cell's absolute doc index.
+      // inside this cell. The offsets are 0-based relative to cellText.
+      //
+      // We need to shift them to the ABSOLUTE position the cell's text
+      // will occupy AFTER all cells are filled — not the empty-table
+      // cellContentIndex used for the insert request itself. Styles are
+      // emitted at the end of the batch (after every insertText has
+      // run), and by then every cell earlier in doc-order has pushed
+      // this cell's text forward by its own text length. Using the
+      // empty-table index here makes the bold/italic/link ranges land
+      // on neighbouring cells (or on structural indices) in the
+      // finalised table.
       const styles = segment.cellStyles[r]?.[c];
       if (styles) {
+        const cellFinalStart = finalCellContentIndex(tableStart, r, c, C, segment.rows);
         for (const style of styles) {
-          adjustRequestIndex(style, cellContentIndex);
+          adjustRequestIndex(style, cellFinalStart);
           allStyles.push(style);
         }
       }

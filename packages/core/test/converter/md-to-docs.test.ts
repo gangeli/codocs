@@ -259,10 +259,12 @@ describe('markdownToDocsRequests', () => {
       requests[0].updateParagraphStyle!.paragraphStyle!.namedStyleType,
     ).toBe('NORMAL_TEXT');
     // Field mask must include namedStyleType (the most common leak)
-    // and the bullet/heading-related properties.
+    // plus the paragraph-level layout properties. `headingId` is
+    // deliberately excluded — the Docs API rejects it in
+    // updateParagraphStyle as a read-only field.
     const fields = requests[0].updateParagraphStyle!.fields ?? '';
     expect(fields).toContain('namedStyleType');
-    expect(fields).toContain('headingId');
+    expect(fields).not.toContain('headingId');
     expect(fields).toContain('alignment');
     expect(fields).toContain('indentStart');
 
@@ -401,10 +403,10 @@ describe('markdownToDocsRequests', () => {
   it(
     'applies inline formatting (bold) inside a table cell at the cell range',
     () => {
-      // A 2x2 table at index 1 with "**bold**" in cell (1,0). The insertText
-      // for that cell lands at the cell's start index; the bold range must
-      // fall entirely within the inserted-text span for that cell — NOT in
-      // the header row and NOT in a neighboring cell.
+      // A 2x2 table at index 1 with "**bold**" in cell (1,0). The bold
+      // range must fall entirely within the cell's FINAL position in
+      // the document (after every earlier cell's text has been inserted
+      // and shifted this cell's content forward by its own length).
       const md = '| A | B |\n| - | - |\n| **bold** | 42 |';
       const { requests } = markdownToDocsRequests(md, 1);
 
@@ -413,14 +415,19 @@ describe('markdownToDocsRequests', () => {
         (r) => r.insertText && r.insertText.text === 'bold',
       );
       expect(boldCellInsert).toBeDefined();
-      const cellStart = boldCellInsert!.insertText!.location!.index!;
-      const cellEnd = cellStart + 'bold'.length;
+      // insertText.location is the empty-table cellContentIndex — valid
+      // AT INSERT TIME (earlier cells haven't been inserted yet since
+      // cells are filled in reverse). By the time styles run, earlier
+      // cells have shifted this cell's content forward by the total
+      // text length of every cell preceding it in row-major order.
+      const insertIdx = boldCellInsert!.insertText!.location!.index!;
+      const earlierCellsTextLen = 'A'.length + 'B'.length;
+      const expectedCellStart = insertIdx + earlierCellsTextLen;
+      const expectedCellEnd = expectedCellStart + 'bold'.length;
 
-      // There are two bold requests in this fixture: the header "A"/"B"
-      // cells (each 1-char range) and the data-cell "bold" (4-char range).
-      // We want the one that lands on the data cell, i.e. whose range length
-      // is 4. TODAY this returns undefined — the data-cell bold request is
-      // never emitted.
+      // There are three bold requests in this fixture: the two header
+      // cells (A, B — each 1-char range) and the data-cell "bold"
+      // (4-char range). We want the one whose range length is 4.
       const dataBold = requests.find(
         (r) =>
           r.updateTextStyle?.textStyle?.bold === true &&
@@ -430,8 +437,8 @@ describe('markdownToDocsRequests', () => {
       );
       expect(dataBold).toBeDefined();
       const range = dataBold!.updateTextStyle!.range!;
-      expect(range.startIndex).toBe(cellStart);
-      expect(range.endIndex).toBe(cellEnd);
+      expect(range.startIndex).toBe(expectedCellStart);
+      expect(range.endIndex).toBe(expectedCellEnd);
     },
   );
 

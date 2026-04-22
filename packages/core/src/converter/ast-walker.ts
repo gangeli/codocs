@@ -246,7 +246,7 @@ function walkNode(
       walkListItem(node as ListItem, ctx, listDepth, inBlockquote);
       break;
     case 'blockquote':
-      walkBlockquote(node as Blockquote, ctx, listDepth);
+      walkBlockquote(node as Blockquote, ctx, listDepth, inBlockquote);
       break;
     case 'table':
       walkTable(node as Table, ctx);
@@ -537,11 +537,53 @@ function walkListItem(
   }
 }
 
-function walkBlockquote(node: Blockquote, ctx: WalkContext, listDepth: number) {
-  // Render blockquotes as a 1x1 borderless table with a thick left bar. We
-  // walk the children into a fresh sub-context so the text/styles are
-  // captured in isolation, then emit a BlockquoteSegment the downstream
-  // processor can turn into a 1-cell table.
+function walkBlockquote(
+  node: Blockquote,
+  ctx: WalkContext,
+  listDepth: number,
+  inBlockquote: boolean,
+) {
+  if (inBlockquote) {
+    // Nested blockquote: Docs' 1×1-table blockquote shape doesn't
+    // natively compose (a nested BlockquoteSegment would escape to the
+    // top level as a sibling table, breaking adjacency). Render the
+    // inner quote as `> `-prefixed text inside the outer cell instead
+    // — this matches standard markdown nested-quote syntax on readback
+    // (parseBlockquoteTable re-wraps each line with another `> `).
+    //
+    // Tradeoff: inline styles/bullets INSIDE the nested quote are lost,
+    // since the inner text is captured as a single buf + prefixed as
+    // plain text. Good enough for the common "quoted reply inside a
+    // quote" case.
+    const innerBuf: string[] = [];
+    const probe: WalkContext = {
+      offset: 0,
+      buf: '',
+      styles: [],
+      bullets: [],
+      segments: [],
+      bold: ctx.bold,
+      italic: ctx.italic,
+      strikethrough: ctx.strikethrough,
+      code: ctx.code,
+      link: ctx.link,
+    };
+    walkChildren(node.children as Content[], probe, listDepth, true);
+    let innerText = probe.buf;
+    if (innerText.endsWith('\n')) innerText = innerText.slice(0, -1);
+    for (const line of innerText.split('\n')) {
+      innerBuf.push(line === '' ? '>' : '> ' + line);
+    }
+    const prefixed = innerBuf.join('\n');
+    ctx.buf += prefixed + '\n';
+    ctx.offset += prefixed.length + 1;
+    return;
+  }
+
+  // Top-level blockquote: render as a 1×1 borderless table with a thick
+  // left bar. Walk children into a fresh sub-context so the text/styles
+  // are captured in isolation, then emit a BlockquoteSegment the
+  // downstream processor turns into a 1-cell table.
   flushTextSegment(ctx);
 
   const savedBuf = ctx.buf;

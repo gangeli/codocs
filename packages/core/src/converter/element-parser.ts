@@ -537,21 +537,45 @@ function parseTable(
     const cellTexts: string[] = [];
 
     for (const cell of cells) {
-      let cellText = '';
+      // Run cell paragraphs through parseParagraph so inline formatting
+      // (bold, italic, code, links, …) round-trips as markdown instead
+      // of being flattened to plain text. Multi-paragraph cells (rare)
+      // collapse to a single line with paragraphs joined by a space.
+      const parts: string[] = [];
       for (const element of cell.content ?? []) {
-        if (element.paragraph) {
-          const elements = element.paragraph.elements ?? [];
-          for (const el of elements) {
-            if (el.textRun) {
-              cellText += el.textRun.content ?? '';
-            }
-          }
-        }
+        if (!element.paragraph) continue;
+        const md = parseParagraph(element.paragraph, element, ctx);
+        if (md === null || md === '') continue;
+        parts.push(md);
       }
-      // Clean up cell text
-      cellTexts.push(cellText.replace(/\n/g, ' ').trim());
+      // Any leading bullet/heading prefix parseParagraph emits doesn't
+      // belong in a cell — cells aren't lists or headings. Strip a
+      // leading `-`/`*`/`+`/`1.` or `#…` prefix plus its separating
+      // space.
+      const cellText = parts
+        .map((p) => p.replace(/^\s*(?:#+|[-*+]|\d+\.)\s+/, ''))
+        .join(' ')
+        .replace(/\n/g, ' ')
+        // Escape `|` so a literal pipe in a cell doesn't break the
+        // table row separator on round-trip.
+        .replace(/\|/g, '\\|')
+        .trim();
+      cellTexts.push(cellText);
     }
     mdRows.push(cellTexts);
+  }
+
+  // table-style.ts renders header cells with a writer-introduced bold
+  // wrapper as a visual convention (booktabs style). Strip that exact
+  // `**…**` wrapping from row-0 cells so the round-trip matches the
+  // source (markdown tables distinguish the header via the separator
+  // line, not by wrapping it in emphasis markers).
+  if (mdRows.length > 0) {
+    const headerBoldRe = /^\*\*([^*]+)\*\*$/;
+    mdRows[0] = mdRows[0].map((c) => {
+      const m = c.match(headerBoldRe);
+      return m ? m[1] : c;
+    });
   }
 
   if (mdRows.length === 0) return null;

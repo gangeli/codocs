@@ -12,8 +12,10 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkStringify from 'remark-stringify';
+import type { Root } from 'mdast';
 import type { IndexMapEntry } from '../converter/element-parser.js';
 import { markdownToDocsRequests } from '../converter/md-to-docs.js';
+import { walkAst, type TextSegment } from '../converter/ast-walker.js';
 import { createAttributionRequests } from '../attribution/named-ranges.js';
 
 /** A section of a markdown document, delimited by headings. */
@@ -68,72 +70,86 @@ function sectionKeysPositional(
 
 /**
  * Pair sections with keys chosen RELATIVE TO a reference side (e.g. base,
- * or the current doc). Same-heading sections are paired by content
- * equality first when the occurrence count differs — this is what lets
- * a surviving duplicate-headed section (after its neighbour was deleted
- * elsewhere) keep the reference's key for the matching content instead
- * of collapsing onto the first positional slot.
+ * or the current doc). Walks both sequences in order and greedily pairs
+ * each `sections[i]` with the earliest remaining reference section that
+ * matches, preferring content equality over a heading-only match. This
+ * is a mini LCS that handles the common cases where positional-only
+ * keying breaks:
  *
- * Reference sections that go unmatched retain their keys so callers can
+ *   - Duplicate heading, agent DELETED one: the surviving section gets
+ *     paired with the right reference slot (by content if unedited, by
+ *     "next reference with this heading" if also edited).
+ *   - Sections that share a heading survive reordering (matched by
+ *     content).
+ *   - Brand-new sections allocate fresh occurrence-indices past the
+ *     highest reference one for that heading.
+ *
+ * Reference sections that go unpaired keep their keys so callers can
  * still look them up by name (they represent sections only present in
- * the reference — e.g. deleted by the side we're keying).
+ * the reference — i.e. deleted by the side we're keying).
  */
 function sectionKeysRelativeTo(
   sections: MdSection[],
   reference: Array<{ key: string; section: MdSection }>,
 ): Array<{ key: string; section: MdSection }> {
-  type RefEntry = { key: string; section: MdSection; used: boolean };
-  const refByHeading = new Map<string, RefEntry[]>();
-  for (const entry of reference) {
-    const h = entry.section.heading ?? NULL_HEADING_KEY;
-    if (!refByHeading.has(h)) refByHeading.set(h, []);
-    refByHeading.get(h)!.push({ ...entry, used: false });
-  }
-  const sideCountsByHeading = new Map<string, number>();
-  for (const s of sections) {
-    const h = s.heading ?? NULL_HEADING_KEY;
-    sideCountsByHeading.set(h, (sideCountsByHeading.get(h) ?? 0) + 1);
+  const refUsed = new Array(reference.length).fill(false);
+  const refHeadings = reference.map(
+    (e) => e.section.heading ?? NULL_HEADING_KEY,
+  );
+  const refCountByHeading = new Map<string, number>();
+  for (const h of refHeadings) {
+    refCountByHeading.set(h, (refCountByHeading.get(h) ?? 0) + 1);
   }
 
   const result: Array<{ key: string; section: MdSection }> = [];
   const freshCounters = new Map<string, number>();
+  let refCursor = 0;
 
   for (const s of sections) {
     const h = s.heading ?? NULL_HEADING_KEY;
-    const refCount = refByHeading.get(h)?.length ?? 0;
-    const sideCount = sideCountsByHeading.get(h) ?? 0;
 
-    // Count mismatch → prefer content-equality pairing so the survivor
-    // of a deletion keeps its original reference key.
-    let matched: RefEntry | null = null;
-    if (refCount !== sideCount) {
-      for (const candidate of refByHeading.get(h) ?? []) {
-        if (candidate.used) continue;
-        if (candidate.section.content === s.content) {
-          matched = candidate;
+    // Pass 1: content-equality match, scanning from the cursor. Prefers
+    // a same-heading reference section with IDENTICAL content. Skipping
+    // a reference section here is OK — it means ours deleted it.
+    let matchedIdx = -1;
+    for (let bi = refCursor; bi < reference.length; bi++) {
+      if (refUsed[bi]) continue;
+      if (
+        refHeadings[bi] === h &&
+        reference[bi].section.content === s.content
+      ) {
+        matchedIdx = bi;
+        break;
+      }
+    }
+
+    // Pass 2: heading-only match (section was edited). Again from the
+    // cursor forward — this is what gives T1 the right answer: after the
+    // first `# Notes` is deleted and the survivor's body is ALSO
+    // rewritten, content-match can't find it, but the cursor has already
+    // advanced past the deleted slot so we pair with the NEXT `# Notes`.
+    if (matchedIdx < 0) {
+      for (let bi = refCursor; bi < reference.length; bi++) {
+        if (refUsed[bi]) continue;
+        if (refHeadings[bi] === h) {
+          matchedIdx = bi;
           break;
         }
       }
     }
 
-    let key: string;
-    if (matched) {
-      matched.used = true;
-      key = matched.key;
+    if (matchedIdx >= 0) {
+      refUsed[matchedIdx] = true;
+      refCursor = matchedIdx + 1;
+      result.push({ key: reference[matchedIdx].key, section: s });
     } else {
-      // Fallback: next-unused reference key for this heading, else a
-      // fresh occurrence-index past the highest reference one.
-      const unused = (refByHeading.get(h) ?? []).find((c) => !c.used);
-      if (unused) {
-        unused.used = true;
-        key = unused.key;
-      } else {
-        const n = freshCounters.get(h) ?? refCount;
-        freshCounters.set(h, n + 1);
-        key = `${h}\0${n}`;
-      }
+      // No reference match — section was added. Use a fresh
+      // occurrence-index past the highest reference one for this heading.
+      const refCount = refCountByHeading.get(h) ?? 0;
+      const n = freshCounters.get(h) ?? refCount;
+      freshCounters.set(h, n + 1);
+      result.push({ key: `${h}\0${n}`, section: s });
     }
-    result.push({ key, section: s });
   }
   return result;
 }
@@ -710,6 +726,7 @@ export async function computeDocDiff(
         continue;
       }
 
+
       const deleteStartIdx = Math.min(
         lineDocIndices[Math.min(oldOffset, lineDocIndices.length - 1)],
         bodyEndIndex - 1,
@@ -1181,17 +1198,84 @@ function normalizeForNoOpCheck(s: string): string {
     .trim();
 }
 
-// AST-based canonicalizer: parse with remark + GFM, stringify with fixed
-// options. Two markdown strings that parse to the same AST (e.g. `_em_`
-// vs `*em*`, or list-marker `-` vs `*`) canonicalize to the same output.
-// Used as a semantic-equivalence fallback in the no-op gate when the
-// cheap trailing-whitespace check fails.
+// AST-based canonicalizer: parse with remark + GFM, inline reference
+// links into their resolved URLs, then stringify with fixed options.
+// Two markdown strings that parse to the same AST (e.g. `_em_` vs `*em*`,
+// `-` vs `*` list markers, `[foo][r]\n\n[r]: url` vs `[foo](url)`)
+// canonicalize to the same output. Used as a semantic-equivalence
+// fallback in the no-op gate when the cheap trailing-whitespace check
+// fails.
 //
 // `any` here sidesteps unified's precise processor generics — the chain
 // `parse → GFM plugin → stringify` tightens the type to one we only need
 // to round-trip strings through. The processSync input/output are always
 // string ↔ string at runtime; the types just don't line up across the
 // plugin boundaries without verbose generic parameters.
+
+/** Walk the mdast tree: collect `definition` nodes and rewrite every
+ *  `linkReference` / `imageReference` into its inline equivalent. This
+ *  matches what most serializers emit anyway and makes the two forms
+ *  canonicalize to the same output. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function inlineReferencesPlugin(): (tree: any) => void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (tree: any) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const defs = new Map<string, { url: string; title?: string }>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function collect(node: any) {
+      if (node?.type === 'definition' && typeof node.identifier === 'string') {
+        defs.set(node.identifier.toLowerCase(), {
+          url: node.url ?? '',
+          title: node.title ?? undefined,
+        });
+      }
+      if (Array.isArray(node?.children)) {
+        for (const c of node.children) collect(c);
+      }
+    }
+    collect(tree);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function transform(node: any) {
+      if (!Array.isArray(node?.children)) return;
+      node.children = node.children
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((child: any) => {
+          if (child.type === 'linkReference') {
+            const def = defs.get((child.identifier ?? '').toLowerCase());
+            if (def) {
+              return {
+                type: 'link',
+                url: def.url,
+                title: def.title,
+                children: child.children ?? [],
+              };
+            }
+          }
+          if (child.type === 'imageReference') {
+            const def = defs.get((child.identifier ?? '').toLowerCase());
+            if (def) {
+              return {
+                type: 'image',
+                url: def.url,
+                title: def.title,
+                alt: child.alt ?? '',
+              };
+            }
+          }
+          return child;
+        })
+        // Drop the definition nodes themselves — they're redundant once
+        // every reference has been inlined.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .filter((child: any) => child.type !== 'definition');
+      for (const c of node.children) transform(c);
+    }
+    transform(tree);
+  };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _canonicalizer: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1200,6 +1284,7 @@ function getCanonicalizer(): any {
     _canonicalizer = unified()
       .use(remarkParse)
       .use(remarkGfm)
+      .use(() => inlineReferencesPlugin())
       .use(remarkStringify, {
         bullet: '-',
         emphasis: '*',
@@ -1215,11 +1300,15 @@ function getCanonicalizer(): any {
 
 function canonicalizeMarkdown(md: string): string {
   try {
-    return String(getCanonicalizer().processSync(md));
+    // Unicode NFC normalization treats different code-point sequences
+    // that encode the same grapheme (e.g. `é` as U+00E9 vs e + U+0301)
+    // as equal, so a formatting-only edit between the two variants is
+    // detected as a no-op instead of firing a real diff.
+    return String(getCanonicalizer().processSync(md)).normalize('NFC');
   } catch {
     // If remark throws on exotic input, fall back to the raw string so
     // the caller's equality check still runs deterministically.
-    return md;
+    return md.normalize('NFC');
   }
 }
 
@@ -1714,14 +1803,61 @@ function emitCellEdits(
       });
     }
     if (newCells[c].length > 0) {
+      // Parse the cell's markdown for inline styles (bold, italic,
+      // code, link, …). Without this, the new text gets a literal
+      // `**new** text` and Docs also re-inherits the DELETED text's
+      // trailing style (a bold run from the original cell makes the
+      // entire inserted text bold). We insert plain text, clear the
+      // inherited inline styles on the inserted range, then re-apply
+      // the agent's intended inline styles from the parsed markdown.
+      const { text, styles } = parseCellInlineMarkdown(newCells[c]);
       requests.push({
-        insertText: {
-          location: { index: range.startIndex },
-          text: newCells[c],
-        },
+        insertText: { location: { index: range.startIndex }, text },
       });
+      if (text.length > 0) {
+        requests.push({
+          updateTextStyle: {
+            range: {
+              startIndex: range.startIndex,
+              endIndex: range.startIndex + text.length,
+            },
+            textStyle: {},
+            fields:
+              'bold,italic,strikethrough,underline,link,' +
+              'weightedFontFamily,foregroundColor,backgroundColor',
+          },
+        });
+      }
+      for (const style of styles) {
+        if (style.updateTextStyle?.range) {
+          const r = style.updateTextStyle.range;
+          r.startIndex = (r.startIndex ?? 0) + range.startIndex;
+          r.endIndex = (r.endIndex ?? 0) + range.startIndex;
+          requests.push(style);
+        }
+      }
     }
   }
+}
+
+/** Parse an inline-markdown cell string (e.g. `**new** text`) into
+ *  plain text + inline-style requests with ranges relative to the
+ *  text's start. Only text-level styles are returned; paragraph-level
+ *  styles from the walker (NORMAL_TEXT, etc.) are dropped because the
+ *  surrounding cell paragraph already has its own style. */
+function parseCellInlineMarkdown(
+  md: string,
+): { text: string; styles: docs_v1.Schema$Request[] } {
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(md) as Root;
+  const { segments } = walkAst(tree);
+  const textSeg = segments.find((s) => s.type === 'text') as
+    | TextSegment
+    | undefined;
+  if (!textSeg) return { text: '', styles: [] };
+  // walkAst adds a trailing \n via ensureNewline; strip for cell context.
+  const text = textSeg.text.replace(/\n+$/, '');
+  const styles = textSeg.styles.filter((s) => s.updateTextStyle);
+  return { text, styles };
 }
 
 /**
@@ -1980,10 +2116,26 @@ function emitBlockquoteHunkRequests(
     });
   }
 
-  // Pure-delete (oldLength > newChunk.length): removing cell paragraphs
-  // entirely is out of scope for now — would require deleteContentRange
-  // spanning one or more whole paragraphs inside the cell plus careful
-  // handling of the cell's last paragraph (which can't be deleted).
-  // The common paragraph-count-preserving edits above cover the tests
-  // we have today.
+  // Pure-delete: remove whole cell paragraphs. Each old line maps to
+  // one cell paragraph; deleting [para.startIndex, para.endIndex) drops
+  // its text plus trailing \n so the next paragraph shifts up.
+  // Special-case the cell's LAST paragraph: Docs requires a cell to
+  // retain at least one paragraph, so we can't delete its terminating
+  // \n — only the text content.
+  if (hunk.newChunk.length === 0 && hunk.oldLength > 0) {
+    for (let i = hunk.oldLength - 1; i >= 0; i--) {
+      const paraIdx = hunk.oldOffset + i - region.startLine;
+      const para = cellParagraphs[paraIdx];
+      if (!para) continue;
+      const isLastCellPara = paraIdx === cellParagraphs.length - 1;
+      const endIdx = isLastCellPara ? para.endIndex - 1 : para.endIndex;
+      if (endIdx > para.startIndex) {
+        requests.push({
+          deleteContentRange: {
+            range: { startIndex: para.startIndex, endIndex: endIdx },
+          },
+        });
+      }
+    }
+  }
 }
