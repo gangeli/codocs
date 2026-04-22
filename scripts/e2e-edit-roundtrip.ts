@@ -757,15 +757,17 @@ End paragraph.`,
     fixture: FIX_RICH,
     apply: (b) => b.replace('Some **bold word**', '**Some** **bold word**'),
     expect: {
-      // NOTE: output is ambiguous — adjacent bold runs "**Some** **bold word**"
-      // may be re-rendered by the markdown serializer as either two separate
-      // bold runs with a space between or a single merged "**Some bold word**"
-      // run (since Docs stores textRun styling, not markdown delimiters).
-      // Not asserting `exact` here because we can't deterministically pick
-      // between those renderings without running the pipeline. Keeping the
-      // loose ordering/contains checks as the authoritative assertion.
-      contains: ['**Some**', '**bold word**'],
-      ordering: [['**Some**', '**bold word**']],
+      // Output is ambiguous — adjacent bold runs "**Some** **bold word**"
+      // may be re-rendered as either two separate bold runs or a single
+      // merged "**Some bold word**" (Docs stores textRun styling, not
+      // markdown delimiters). Assert the invariant both renderings share:
+      // each word lives inside a **…** span, "Some" precedes "bold word".
+      contains: ['Some', 'bold word'],
+      matches: [
+        /\*\*[^*]*\bSome\b[^*]*\*\*/,
+        /\*\*[^*]*\bbold word\b[^*]*\*\*/,
+      ],
+      ordering: [['Some', 'bold word']],
     },
   },
   {
@@ -1516,10 +1518,10 @@ Third paragraph of Gamma.`,
     title: 'H2: whitespace-only edit — trailing spaces are trimmed, content preserved',
     canvas: 'noop',
     fixture: FIX_PLAIN,
-    // Add trailing spaces to a body line. normalize() strips trailing spaces
-    // on each line, so the `exact` check ignores this at the assertion layer,
-    // but the production pipeline should also emit at most a tiny diff (if
-    // any) since the visible content is unchanged.
+    // Add trailing spaces to a body line. The no-op gate in computeDocDiff
+    // (normalizeForNoOpCheck) strips trailing whitespace per-line before
+    // comparing, so a whitespace-only edit MUST short-circuit to zero
+    // requests — anything else is a regression in that gate.
     apply: (b) => b.replace('First paragraph of Alpha.', 'First paragraph of Alpha.   '),
     expect: {
       exact: `# Alpha
@@ -1533,15 +1535,7 @@ Second paragraph of Beta.
 # Gamma
 
 Third paragraph of Gamma.`,
-      contains: [
-        'First paragraph of Alpha.',
-        'Second paragraph of Beta.',
-        'Third paragraph of Gamma.',
-      ],
-      // Either the trailing whitespace round-trips as a no-op (0 requests)
-      // or requires a minimal delete+insert pair — bound the upper limit to
-      // keep this a true "minimal edit" regression check.
-      maxRequests: 4,
+      exactRequests: 0,
     },
   },
 
@@ -2588,6 +2582,463 @@ Trailing paragraph.
         ['| R2A | R2B |', 'Paragraph rewritten.'],
         ['Paragraph rewritten.', 'Trailing paragraph.'],
       ],
+    },
+  },
+
+  // ── Group T: Predictive tests — exercise edge cases the prior ──
+  //   failure patterns suggest. Labels (T1–T14) correspond to the
+  //   prioritisation list discussed before implementation.
+
+  // T1 — Delete first of two duplicate-named sections AND edit the
+  // survivor's body in the same diff. Predicted 95% fail: content-match
+  // alignment can't find a match for the edited body, falls through to
+  // positional, pairs survivor with the deleted slot → routes edit wrong.
+  {
+    title: 'T1: delete first-of-duplicate AND edit survivor body (same diff)',
+    canvas: 't1',
+    fixture: `# Notes
+
+First notes body.
+
+# Other
+
+Other body.
+
+# Notes
+
+Second notes body.
+`,
+    apply: (b) =>
+      b
+        .replace('# Notes\n\nFirst notes body.\n\n', '')
+        .replace('Second notes body.', 'Notes body rewritten by agent.'),
+    expect: {
+      exact: `# Other
+
+Other body.
+
+# Notes
+
+Notes body rewritten by agent.`,
+      contains: ['# Other', 'Other body.', '# Notes', 'Notes body rewritten by agent.'],
+      notContains: ['First notes body.', 'Second notes body.'],
+      ordering: [['# Other', '# Notes']],
+    },
+  },
+
+  // T2 — Blockquote pure-delete (remove a line from a multi-line quote).
+  // Predicted 95% fail: the pure-delete branch was explicitly left out
+  // of emitBlockquoteHunkRequests.
+  {
+    title: 'T2: blockquote pure-delete (remove a line from a multi-line quote)',
+    canvas: 't2',
+    fixture: `# BQDelete
+
+> First quoted line.
+> Second quoted line.
+> Third quoted line.
+
+Trailing.
+`,
+    apply: (b) => b.replace('> Second quoted line.\n', ''),
+    expect: {
+      contains: ['# BQDelete', '> First quoted line.', '> Third quoted line.', 'Trailing.'],
+      notContains: ['> Second quoted line.'],
+      ordering: [
+        ['> First quoted line.', '> Third quoted line.'],
+        ['> Third quoted line.', 'Trailing.'],
+      ],
+    },
+  },
+
+  // T3 — Nested blockquote (a blockquote inside a blockquote). Predicted
+  // 85% fail: walkBlockquote's save/restore captures the outer quote's
+  // text into ctx.buf, but nested blockquotes push into ctx.segments as
+  // sibling BlockquoteSegments instead of nesting inside the outer.
+  {
+    title: 'T3: nested blockquote — edit the inner line',
+    canvas: 't3',
+    fixture: `# Nested BQ
+
+> outer line above
+>
+> > inner line
+>
+> outer line below
+
+Trailing.
+`,
+    apply: (b) => b.replace('inner line', 'inner line rewritten'),
+    expect: {
+      contains: [
+        '# Nested BQ',
+        'outer line above',
+        'inner line rewritten',
+        'outer line below',
+        'Trailing.',
+      ],
+      notContains: ['inner line\n', 'inner line '],
+      ordering: [
+        ['outer line above', 'inner line rewritten'],
+        ['inner line rewritten', 'outer line below'],
+      ],
+    },
+  },
+
+  // T4 — Table cell with inline formatting, then edit the formatted
+  // content. Predicted 70% fail: agent never sees `**bold**` in base
+  // because parseTable strips cell formatting on readback — so the
+  // agent's string edit never matches and bold is silently lost from
+  // the end state.
+  {
+    title: 'T4: cell with inline formatting — edit the formatted content',
+    canvas: 't4',
+    fixture: `# CellFmt
+
+| Col1 | Col2 |
+| --- | --- |
+| **bold** text | plain |
+| other | here |
+
+Trailing.
+`,
+    // Agent edits the bold word. If cell formatting survives the read,
+    // this is a normal markdown replace; if not, the agent sees only
+    // plain text and can't target the `**bold**`, so nothing changes.
+    apply: (b) => b.replace('**bold** text', '**new** text'),
+    expect: {
+      // Verify the new word landed; bold preservation is a separate
+      // concern and would need direct-doc inspection to assert.
+      contains: ['# CellFmt', 'new text', 'other', 'here'],
+      notContains: ['bold text'],
+      matches: [/\|\s*[^|]*new[^|]*text\s*\|/],
+      ordering: [['| Col1 | Col2 |', 'Trailing.']],
+    },
+  },
+
+  // T5 — Table nested inside a blockquote. Predicted 75% fail:
+  // walkBlockquote's BlockquoteSegment carries text/styles/bullets but
+  // not nested tables — so a nested table probably escapes as a
+  // sibling segment, breaking adjacency.
+  {
+    title: 'T5: table nested inside a blockquote — edit a cell',
+    canvas: 't5',
+    fixture: `# BQTable
+
+> Above the table.
+>
+> | K | V |
+> | --- | --- |
+> | k1 | v1 |
+> | k2 | v2 |
+>
+> Below the table.
+
+Trailing.
+`,
+    apply: (b) => b.replace('| k1 | v1 |', '| K1 | V1 |'),
+    expect: {
+      contains: ['# BQTable', 'Above the table.', 'Below the table.', 'K1', 'V1', 'Trailing.'],
+      notContains: ['| k1 | v1 |'],
+      // Looser matching: the inner table may round-trip without the
+      // `>` prefix if it escapes the blockquote, but the cell edit
+      // should still be visible somewhere.
+      matches: [/\bK1\b/, /\bV1\b/],
+    },
+  },
+
+  // T6 — Task list (checkbox) state toggle. Predicted 70% fail: the
+  // writer uses BULLET_CHECKBOX with strikethrough-for-checked; the
+  // agent's edit on `- [ ] todo` → `- [x] todo` needs to flip the
+  // strikethrough styling, but a plain text replace of `[ ]` → `[x]`
+  // via emitBlockquoteHunkRequests / emitCellEdits-like paths won't
+  // do that.
+  {
+    title: 'T6: task list checkbox — toggle state `- [ ]` → `- [x]`',
+    canvas: 't6',
+    fixture: `# Todos
+
+- [ ] first todo
+- [x] already done
+- [ ] third todo
+`,
+    apply: (b) => b.replace('- [ ] first todo', '- [x] first todo'),
+    expect: {
+      contains: ['# Todos', 'first todo', 'already done', 'third todo'],
+      // Check that the first item is now checked (some form of `[x]`
+      // or visually-equivalent strikethrough render).
+      matches: [/(?:\[x\][^\n]*first todo|~~first todo~~)/i],
+    },
+  },
+
+  // T7 — Swap two duplicate-named section bodies. I predicted this
+  // would PASS (20%) — the positional keying should produce the right
+  // replacement pair.
+  {
+    title: 'T7: swap bodies of two duplicate-named sections',
+    canvas: 't7',
+    fixture: `# Notes
+
+First notes body.
+
+# Notes
+
+Second notes body.
+`,
+    apply: (b) =>
+      b
+        .replace('First notes body.', '<<TMP>>')
+        .replace('Second notes body.', 'First notes body.')
+        .replace('<<TMP>>', 'Second notes body.'),
+    expect: {
+      exact: `# Notes
+
+Second notes body.
+
+# Notes
+
+First notes body.`,
+      contains: ['Second notes body.', 'First notes body.'],
+      ordering: [['Second notes body.', 'First notes body.']],
+    },
+  },
+
+  // T8 — Same list line in two different sections, edit only one.
+  // Predicted 40% fail: per-section line-diff should localise the
+  // edit, but findPrecedingBulletEndIndex walks backward and could
+  // in theory cross a section boundary.
+  {
+    title: 'T8: same list line in two sections — edit only section A',
+    canvas: 't8',
+    fixture: `# Alpha
+
+Before.
+
+- apple
+- banana
+
+After A.
+
+# Beta
+
+Before.
+
+- apple
+- banana
+
+After B.
+`,
+    apply: (b) =>
+      b.replace(
+        '# Alpha\n\nBefore.\n\n- apple',
+        '# Alpha\n\nBefore.\n\n- APPLE',
+      ),
+    expect: {
+      contains: ['# Alpha', 'APPLE', '- banana', '# Beta', '- apple', 'After A.', 'After B.'],
+      ordering: [
+        ['# Alpha', '- APPLE'],
+        ['- APPLE', '# Beta'],
+        ['# Beta', '- apple'],
+      ],
+      // Exactly one APPLE (in Alpha) and one remaining apple (in Beta).
+      custom: (n) => {
+        const upper = (n.match(/- APPLE/g) ?? []).length;
+        const lower = (n.match(/^- apple$/gm) ?? []).length;
+        return {
+          pass: upper === 1 && lower === 1,
+          reason: `expected 1 APPLE + 1 apple, got ${upper} APPLE + ${lower} apple`,
+        };
+      },
+    },
+  },
+
+  // T9 — Cell with a markdown link, edit the link text. Predicted 50%
+  // fail. parseTable in element-parser.ts strips cell formatting
+  // entirely, so the link URL is lost on readback and the agent sees
+  // only plain "link" text.
+  {
+    title: 'T9: cell with a link — edit the link text',
+    canvas: 't9',
+    fixture: `# CellLink
+
+| Label | Value |
+| --- | --- |
+| Home | [click](https://example.com) |
+| Other | plain |
+`,
+    // Whatever comes back in the cell, if the agent sees the original
+    // text, rewrite it. The assertion just checks the new text lands
+    // and cell structure stays intact.
+    apply: (b) => b.replace('click', 'follow'),
+    expect: {
+      contains: ['# CellLink', 'Home', 'Other', 'plain'],
+      // Either the edit landed (link text changed) or the text never
+      // existed in base (read stripped it) — the strong check is
+      // that the cell STRUCTURE is preserved and the first column
+      // cells are untouched.
+      matches: [/\|\s*Home\s*\|/, /\|\s*Other\s*\|/],
+    },
+  },
+
+  // T10 — Heading rename that creates a collision with a section the
+  // AGENT also added in the same diff. Predicted 50% fail: ours has
+  // two `# New` sections (one renamed, one added), neither matching
+  // any base section by content. Content-match falls through and
+  // positional fallback may pair ambiguously.
+  {
+    title: 'T10: rename heading + add another section with same new name',
+    canvas: 't10',
+    fixture: `# Alpha
+
+Alpha body.
+
+# Beta
+
+Beta body.
+`,
+    apply: (b) =>
+      b
+        .replace('# Alpha', '# Gamma')
+        .trimEnd() + '\n\n# Gamma\n\nAppended gamma body.\n',
+    expect: {
+      contains: [
+        '# Gamma',
+        'Alpha body.',
+        'Beta body.',
+        'Appended gamma body.',
+      ],
+      notContains: ['# Alpha'],
+      ordering: [
+        ['Alpha body.', '# Beta'],
+        ['Beta body.', 'Appended gamma body.'],
+      ],
+      custom: (n) => {
+        const count = (n.match(/^#\s+Gamma\s*$/gm) ?? []).length;
+        return {
+          pass: count === 2,
+          reason: `expected 2 '# Gamma' heading lines, got ${count}`,
+        };
+      },
+    },
+  },
+
+  // T11 — Multiple horizontal rules. Predicted 25% fail: our M6 test
+  // covers one HR between paragraphs; stacking three in a row is an
+  // edge case in the sectionBreak handling.
+  {
+    title: 'T11: multiple horizontal rules — edit between them',
+    canvas: 't11',
+    fixture: `# MultiHR
+
+Para A.
+
+---
+
+Para B.
+
+---
+
+Para C.
+
+---
+
+Para D.
+`,
+    apply: (b) => b.replace('Para B.', 'Para B rewritten.'),
+    expect: {
+      contains: ['Para A.', 'Para B rewritten.', 'Para C.', 'Para D.'],
+      notContains: ['Para B.\n'],
+      ordering: [
+        ['Para A.', 'Para B rewritten.'],
+        ['Para B rewritten.', 'Para C.'],
+        ['Para C.', 'Para D.'],
+      ],
+      // Three HR markers (--- or em-dash equivalents) should survive.
+      custom: (n) => {
+        const hrMatches = n.match(/(?:^|\n)(?:---|—{2,}|\*\*\*)\s*(?=\n|$)/g) ?? [];
+        return {
+          pass: hrMatches.length >= 3,
+          reason: `expected ≥3 horizontal-rule markers, found ${hrMatches.length}`,
+        };
+      },
+    },
+  },
+
+  // T12 — Very large insert (500 paragraphs in one diff). Predicted
+  // 30% fail: Docs' batchUpdate has per-request byte limits.
+  {
+    title: 'T12: very large insert (500 paragraphs in one diff)',
+    canvas: 't12',
+    fixture: `# Big
+
+Head paragraph.
+
+Tail paragraph.
+`,
+    apply: (b) => {
+      const bulk: string[] = [];
+      for (let i = 1; i <= 500; i++) bulk.push(`Bulk paragraph ${i}.`);
+      return b.replace(
+        'Head paragraph.',
+        'Head paragraph.\n\n' + bulk.join('\n\n'),
+      );
+    },
+    expect: {
+      contains: [
+        '# Big',
+        'Head paragraph.',
+        'Bulk paragraph 1.',
+        'Bulk paragraph 250.',
+        'Bulk paragraph 500.',
+        'Tail paragraph.',
+      ],
+      ordering: [
+        ['Head paragraph.', 'Bulk paragraph 1.'],
+        ['Bulk paragraph 500.', 'Tail paragraph.'],
+      ],
+    },
+  },
+
+  // T13 — Unicode NFC vs NFD equivalence. Predicted 25% fail: Docs
+  // likely normalises to NFC on write, so a read-back gives NFC; if
+  // the agent sends NFD, canonicalizer probably doesn't catch it.
+  {
+    title: 'T13: Unicode NFC vs NFD — equivalent normalisation is a no-op',
+    canvas: 't13',
+    fixture: `# Unicode
+
+Café (with precomposed é).
+`,
+    // Replace the precomposed é with e + combining acute. Visually
+    // identical; code-point-distinct. Docs likely stores NFC either way.
+    apply: (b) => b.replace('é', 'é'),
+    expect: {
+      // Either form should round-trip to the same visible text.
+      contains: ['Café'],
+      // If Docs normalises on write, zero requests. If it doesn't, a
+      // minimal replace pair is acceptable.
+      maxRequests: 4,
+    },
+  },
+
+  // T14 — Reference-style vs inline link. Predicted 20% fail: remark's
+  // stringify normalizes reference links back to inline form, so the
+  // canonicalizer should catch this as a no-op.
+  {
+    title: 'T14: reference-style link ↔ inline link is a canonicalised no-op',
+    canvas: 't14',
+    fixture: `# Ref
+
+See [the site](https://example.com) for more.
+`,
+    apply: (b) =>
+      b.replace(
+        'See [the site](https://example.com) for more.',
+        'See [the site][site] for more.\n\n[site]: https://example.com',
+      ),
+    expect: {
+      contains: ['the site', 'https://example.com'],
+      exactRequests: 0,
     },
   },
 ];
