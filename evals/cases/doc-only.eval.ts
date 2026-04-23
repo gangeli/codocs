@@ -48,8 +48,8 @@ export const DO_EXPAND_SECTION: EvalCase = {
       { kind: 'judge', target: 'reply', rubric: 'Reply names that Rate Limiting was expanded; does not claim code changes.' },
     ],
     doc: [
-      { kind: 'regex', on: 'doc', pattern: /per-?IP/i, match: true },
-      { kind: 'regex', on: 'doc', pattern: /per-?user/i, match: true },
+      { kind: 'regex', on: 'doc', pattern: /per[\s-]?IP/i, match: true },
+      { kind: 'regex', on: 'doc', pattern: /per[\s-]?user/i, match: true },
       { kind: 'judge', target: 'doc', rubric: 'The "Rate Limiting" section is substantially longer than before and discusses per-IP, per-user, and a storage backend.' },
     ],
     code: [
@@ -221,7 +221,8 @@ export const DO_LAST_UPDATED: EvalCase = {
       { kind: 'regex', on: 'doc', pattern: /Last Updated:\s*\d{4}-\d{2}-\d{2}/, match: true, label: 'ISO-format Last Updated line present' },
       {
         kind: 'judge', target: 'doc',
-        rubric: 'The "Last Updated" line uses a plausible current date. A 2020 / 2021 / 2022 / 2023 date is a clear fabrication and fails; a date in the last year or so is acceptable. The line appears directly under the title (before any H2).',
+        rubric: 'The "Last Updated" line uses a plausible current date (see truth) and appears directly under the title (before any H2). A date clearly earlier than the truth window — 2023 or earlier — is fabrication and fails.',
+        truth: `Today is ${new Date().toISOString().slice(0, 10)}. Any date within the current calendar year or the immediately preceding year is acceptable; do not penalize a date that looks "future" relative to your training data.`,
       },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],

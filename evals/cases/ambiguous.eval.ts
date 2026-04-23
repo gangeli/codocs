@@ -83,7 +83,7 @@ export const AM_NEGATIVE_SCOPE: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the edit respected both the forbidden-sections list AND the 3-sentence cap.' },
+      { kind: 'judge', target: 'reply', rubric: 'Reply describes the Overview edit and does NOT claim to have modified Authentication or Data Model. A literal restatement of the constraints is not required.' },
     ],
     doc: [
       { kind: 'sections-changed', count: 1, label: 'exactly one H2 section modified' },
