@@ -1,6 +1,6 @@
 {
   "name": "@codocs/db",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "SQLite session store for codocs agent harness",
   "type": "module",
   "files": ["dist"],
