@@ -60,16 +60,18 @@ async function loadAllCases(): Promise<EvalCase[]> {
   return all;
 }
 
-function parseArgs(argv: string[]): { filter?: string; concurrency: number; model?: string } {
+function parseArgs(argv: string[]): { filter?: string; concurrency: number; model?: string; repeats: number } {
   let filter: string | undefined;
   let model: string | undefined;
   let concurrency = 2;
+  let repeats = 1;
   for (const a of argv) {
     if (a.startsWith('--filter=')) filter = a.slice('--filter='.length);
     else if (a.startsWith('--concurrency=')) concurrency = Math.max(1, Number(a.slice('--concurrency='.length)));
     else if (a.startsWith('--model=')) model = a.slice('--model='.length);
+    else if (a.startsWith('--repeats=')) repeats = Math.max(1, Number(a.slice('--repeats='.length)));
   }
-  return { filter, concurrency, model };
+  return { filter, concurrency, model, repeats };
 }
 
 async function runInPool<T, R>(items: T[], concurrency: number, fn: (t: T) => Promise<R>): Promise<R[]> {
@@ -129,17 +131,18 @@ class LiveTracker {
   private completed = 0;
   private passed = 0;
   private failed = 0;
-  private inFlight: string[] = [];
+  private inFlight: EvalCase[] = [];
   private startTime = Date.now();
-  private readonly stickyHeight = 3;
+  /** Height of the sticky block actually drawn last — variable because the
+   * "running" section grows one line per in-flight case. */
+  private lastStickyHeight = 0;
   private timer?: NodeJS.Timeout;
 
   constructor(private total: number) {
     if (TTY) {
-      // Reserve the sticky region with blank lines; cursor ends up directly
-      // below them so subsequent \x1b[<N>A escapes land at the top of the
-      // reserved region.
-      process.stdout.write('\n'.repeat(this.stickyHeight));
+      // Seed an empty sticky block so subsequent redraws have something to
+      // move up over. The initial block is just the progress line (no running
+      // cases yet), so 2 lines: divider + progress.
       this.writeSticky();
       this.timer = setInterval(() => this.writeSticky(), 500);
     }
@@ -147,19 +150,20 @@ class LiveTracker {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
-    if (TTY) {
+    if (TTY && this.lastStickyHeight > 0) {
       // Erase the sticky block so the final report starts on a clean line.
-      process.stdout.write(`\x1b[${this.stickyHeight}A\x1b[J`);
+      process.stdout.write(`\x1b[${this.lastStickyHeight}A\x1b[J`);
+      this.lastStickyHeight = 0;
     }
   }
 
   start(tc: EvalCase): void {
-    this.inFlight.push(tc.id);
-    this.writeLog(`${dim('▶')} ${cyan(padEndV(tc.id, 28))} ${dim(truncate(tc.summary, 70))}`);
+    this.inFlight.push(tc);
+    if (TTY) this.writeSticky();
   }
 
   complete(r: CaseResult): void {
-    const idx = this.inFlight.indexOf(r.caseId);
+    const idx = this.inFlight.findIndex((c) => c.id === r.caseId);
     if (idx >= 0) this.inFlight.splice(idx, 1);
     this.completed += 1;
     if (r.passed) this.passed += 1;
@@ -172,18 +176,22 @@ class LiveTracker {
       console.log(line);
       return;
     }
-    // Atomic: move up → clear rest of screen → print log → reprint sticky.
-    process.stdout.write(
-      `\x1b[${this.stickyHeight}A\x1b[J` + line + '\n' + this.renderSticky(),
-    );
+    // Atomic: move up over old sticky → clear → print log → reprint sticky.
+    const moveUp = this.lastStickyHeight > 0 ? `\x1b[${this.lastStickyHeight}A\x1b[J` : '';
+    const { block, height } = this.renderSticky();
+    this.lastStickyHeight = height;
+    process.stdout.write(moveUp + line + '\n' + block);
   }
 
   private writeSticky(): void {
     if (!TTY) return;
-    process.stdout.write(`\x1b[${this.stickyHeight}A\x1b[J` + this.renderSticky());
+    const moveUp = this.lastStickyHeight > 0 ? `\x1b[${this.lastStickyHeight}A\x1b[J` : '';
+    const { block, height } = this.renderSticky();
+    this.lastStickyHeight = height;
+    process.stdout.write(moveUp + block);
   }
 
-  private renderSticky(): string {
+  private renderSticky(): { block: string; height: number } {
     const cols = Math.max(40, (process.stdout.columns ?? 80) - 1);
     const elapsed = formatElapsed(Date.now() - this.startTime);
     const bar = pctBar(this.completed, this.total, 20);
@@ -193,15 +201,27 @@ class LiveTracker {
       red(`✗${this.failed}`);
     const progressLine = `  ${bold('progress')}  ${bar}  ${counts}   ${dim(`elapsed ${elapsed}`)}`;
 
-    const running =
-      this.inFlight.length === 0
-        ? dim('—')
-        : this.inFlight.slice(0, 3).join(', ') +
-          (this.inFlight.length > 3 ? dim(`  +${this.inFlight.length - 3} more`) : '');
-    const runningLine = `  ${bold('running ')}  ${truncateV(running, cols - 14)}`;
-
     const divider = dim('─'.repeat(cols));
-    return `${divider}\n${progressLine}\n${runningLine}\n`;
+    const lines: string[] = [divider, progressLine];
+
+    if (this.inFlight.length === 0) {
+      lines.push(`  ${bold('running ')}  ${dim('—')}`);
+    } else {
+      const MAX_ROWS = 5;
+      const shown = this.inFlight.slice(0, MAX_ROWS);
+      const overflow = this.inFlight.length - shown.length;
+      const idWidth = Math.max(...shown.map((c) => visibleLength(c.id)));
+      const summaryBudget = Math.max(10, cols - 14 - idWidth - 2);
+      shown.forEach((tc, i) => {
+        const label = i === 0 ? bold('running ') : '        ';
+        const id = cyan(padEndV(tc.id, idWidth));
+        const summary = dim(truncate(tc.summary, summaryBudget));
+        lines.push(`  ${label}  ${id}  ${summary}`);
+      });
+      if (overflow > 0) lines.push(`  ${'        '}  ${dim(`… +${overflow} more`)}`);
+    }
+
+    return { block: lines.map((l) => l + '\n').join(''), height: lines.length };
   }
 }
 
@@ -352,7 +372,7 @@ async function writeArtifacts(results: CaseResult[]): Promise<string> {
 async function main(): Promise<void> {
   await preflight();
 
-  const { filter, concurrency, model } = parseArgs(process.argv.slice(2));
+  const { filter, concurrency, model, repeats } = parseArgs(process.argv.slice(2));
   const all = await loadAllCases();
   const selected = filter
     ? all.filter((c) => c.id.toLowerCase().includes(filter.toLowerCase()) || c.category === filter)
@@ -363,14 +383,27 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // Expand repeats by cloning each case N times with a `#<n>` id suffix when
+  // N > 1. Cloned cases run as independent items in the pool so results
+  // aggregate naturally into the per-category summary.
+  const runs: EvalCase[] = [];
+  for (const c of selected) {
+    for (let i = 1; i <= repeats; i += 1) {
+      runs.push(repeats === 1 ? c : { ...c, id: `${c.id}#${i}` });
+    }
+  }
+
   const agentModel = model ?? 'sonnet';
-  console.log(bold(`Running ${selected.length}/${all.length} eval case(s), concurrency=${concurrency}, agent-model=${agentModel}`));
+  const header = repeats === 1
+    ? `Running ${selected.length}/${all.length} eval case(s), concurrency=${concurrency}, agent-model=${agentModel}`
+    : `Running ${runs.length} total (${selected.length}/${all.length} case(s) × ${repeats} repeats), concurrency=${concurrency}, agent-model=${agentModel}`;
+  console.log(bold(header));
   console.log('');
 
-  const tracker = new LiveTracker(selected.length);
+  const tracker = new LiveTracker(runs.length);
   let results: CaseResult[];
   try {
-    results = await runInPool(selected, concurrency, async (tc) => {
+    results = await runInPool(runs, concurrency, async (tc) => {
       tracker.start(tc);
       const r = await runCase(tc, { model: agentModel });
       tracker.complete(r);
