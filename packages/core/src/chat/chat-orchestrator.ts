@@ -102,7 +102,7 @@ export class ChatOrchestrator {
     if (comment.id) {
       try {
         thinkingReplyId = await this.replyClient.replyToComment(
-          documentId, comment.id, '\u{1F914}',
+          documentId, comment.id, '\u{1F916} is \u{1F914}',
         );
         this.replyTracker?.add(thinkingReplyId);
       } catch (err) {

@@ -331,7 +331,7 @@ export class AgentOrchestrator {
     // was picked up even if it's waiting in line behind another task.
     if (comment.id) {
       try {
-        const thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F914}');
+        const thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F916} is \u{1F914}');
         this.pendingThinkingReplies.set(queueItemId, thinkingReplyId);
         this.debug(`Posted thinking reply at enqueue (queue item ${queueItemId})`);
       } catch (err) {
@@ -560,7 +560,7 @@ export class AgentOrchestrator {
     let thinkingReplyId: string | null = preExistingThinkingReplyId;
     if (!thinkingReplyId && comment.id) {
       try {
-        thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F914}');
+        thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F916} is \u{1F914}');
       } catch (err) {
         this.debug(`Failed to post thinking reply: ${err}`);
       }

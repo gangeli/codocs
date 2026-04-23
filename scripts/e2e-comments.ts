@@ -528,7 +528,7 @@ const TC1: TestCase = {
     }
 
     // Exactly one final content reply (beyond the thinking emoji).
-    const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F914}');
+    const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F916} is \u{1F914}');
     expect(contentReplies.length === 1, `exactly one content reply was posted (saw ${contentReplies.length})`);
 
     // Because this is a doc-only edit, the worktree was torn down — the
@@ -601,7 +601,7 @@ const TC2: TestCase = {
     expect(/oauth/i.test(finalMd), 'final doc still mentions OAuth');
     expect(/audit/i.test(finalMd), 'final doc mentions audit logging');
 
-    const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F914}');
+    const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F916} is \u{1F914}');
     expect(contentReplies.length === 2, `exactly two final content replies posted (saw ${contentReplies.length})`);
   },
 };
@@ -951,7 +951,7 @@ const TC7: TestCase = {
     );
 
     // Exactly one final content reply was posted.
-    const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F914}');
+    const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F916} is \u{1F914}');
     expect(contentReplies.length === 1, `exactly one content reply (saw ${contentReplies.length})`);
   },
 };

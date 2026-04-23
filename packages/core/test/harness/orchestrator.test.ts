@@ -187,7 +187,7 @@ describe('AgentOrchestrator E2E', () => {
 
     // 2. Should post thinking emoji via replyClient
     const thinkingCall = callLog.find(
-      (c) => c.method === 'reply:replyToComment' && c.args[2] === '\u{1F914}',
+      (c) => c.method === 'reply:replyToComment' && c.args[2] === '\u{1F916} is \u{1F914}',
     );
     expect(thinkingCall).toBeDefined();
 
@@ -589,7 +589,7 @@ describe('AgentOrchestrator E2E', () => {
     // Both comments should have received a thinking emoji by now, even
     // though only the first has started running.
     const thinkingReplies = callLog.filter(
-      (c) => c.method === 'reply:replyToComment' && c.args[2] === '\u{1F914}',
+      (c) => c.method === 'reply:replyToComment' && c.args[2] === '\u{1F916} is \u{1F914}',
     );
     const thinkingCommentIds = thinkingReplies.map((c) => c.args[1]);
     expect(thinkingCommentIds).toContain('comment-first');
@@ -602,7 +602,7 @@ describe('AgentOrchestrator E2E', () => {
     // Each comment's thinking emoji should eventually be replaced by a
     // final reply — no stray thinking emojis left behind.
     const allReplyIdsPosted = callLog
-      .filter((c) => c.method === 'reply:replyToComment' && c.args[2] === '\u{1F914}')
+      .filter((c) => c.method === 'reply:replyToComment' && c.args[2] === '\u{1F916} is \u{1F914}')
       .map((_c, i) => `reply-${i + 1}`);
     const deletedReplyIds = callLog
       .filter((c) => c.method === 'reply:deleteReply')

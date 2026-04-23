@@ -144,7 +144,7 @@ export class RecordingRunner implements AgentRunner {
 export function getLastReplyForComment(client: FakeDocsClient, commentId: string): string | null {
   // The orchestrator posts a thinking-emoji placeholder first, then edits
   // it to the final content. We want the latest non-placeholder reply.
-  const THINKING = '\u{1F914}';
+  const THINKING = '\u{1F916} is \u{1F914}';
   const candidates = client.replies.filter((r) => r.commentId === commentId && r.content !== THINKING);
   return candidates.length > 0 ? candidates[candidates.length - 1].content : null;
 }
