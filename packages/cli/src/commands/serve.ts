@@ -54,7 +54,7 @@ function isAutoModeAvailable(): boolean {
     return false;
   }
 }
-import { App, Welcome, Generating, createInitialState, getStandalonePermissions, type TuiStateRef, type ActivityEvent, type WelcomeChoice } from '../tui/index.js';
+import { App, Welcome, Generating, GenerateFromRepo, createInitialState, getStandalonePermissions, type TuiStateRef, type ActivityEvent, type WelcomeChoice } from '../tui/index.js';
 
 export function isAgentType(value: string): value is AgentType {
   return value in AGENT_RUNNERS;
@@ -67,6 +67,37 @@ const AGENT_RUNNERS: Record<AgentType, () => AgentRunner> = {
   cursor: () => new CursorRunner(),
   opencode: () => new OpenCodeRunner(),
 };
+
+/**
+ * Grab a bounded slice of the repo's source text for the rain animation
+ * background. Best-effort: if the cwd isn't a git repo, or no source
+ * files are tracked, the rain falls back to a built-in sample.
+ */
+function gatherCodeSamples(cwd: string): string {
+  try {
+    const listed = spawnSync('git', ['ls-files'], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 1500,
+    });
+    if (listed.status !== 0 || !listed.stdout) return '';
+    const files = listed.stdout
+      .split('\n')
+      .filter((f) => /\.(ts|tsx|js|jsx|py|go|rs|java|kt|rb|swift|c|h|cpp|cs|php|sql|md|json|ya?ml)$/i.test(f))
+      .slice(0, 20);
+    let out = '';
+    for (const f of files) {
+      try {
+        const content = readFileSync(join(cwd, f), 'utf-8');
+        out += content + '\n';
+        if (out.length > 20_000) break;
+      } catch {}
+    }
+    return out;
+  } catch {
+    return '';
+  }
+}
 
 export function fallbackDocName(): string {
   const now = new Date();
@@ -340,8 +371,14 @@ async function resolveWelcomeChoice(
       // producing clean stdout-only output.
       const outputPath = join(process.cwd(), '.codocs', 'design-doc.md');
 
+      const codeSamples = gatherCodeSamples(process.cwd());
+      // Clear the welcome screen so the animation takes the full terminal.
+      if (process.stdout.isTTY) process.stdout.write('\x1b[2J\x1b[H');
       const { unmount } = render(
-        React.createElement(Generating, { message: 'Generating document from codebase...' }),
+        React.createElement(GenerateFromRepo, {
+          message: 'Generating document from codebase',
+          codeSamples,
+        }),
       );
 
       try {
