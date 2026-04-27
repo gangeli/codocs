@@ -56,7 +56,7 @@ export const FU_RENAME: EvalCase = {
   },
   comment: {
     threadId: 'FU-02-thread',
-    body: 'Rename `ping` to `health` throughout — code and doc. Same behavior.',
+    body: 'Rename `ping` to `health` throughout — code and doc. No alias, no backwards-compat shim — `ping` should be gone.',
   },
   expect: {
     reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply confirms the rename was applied in both code and doc.' }],

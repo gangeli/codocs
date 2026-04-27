@@ -50,7 +50,9 @@ export const BF_TRANSFORM_DROP: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply names the drop-vs-preserve behavior and confirms the code was fixed.' },
+      // Code-fix behavior is verified by the probe-transform run below.
+      // Reply just needs to identify the actual semantic (drop vs preserve).
+      { kind: 'judge', target: 'reply', rubric: 'Reply names the drop-vs-preserve behavior — i.e., that rows with empty/missing email are now preserved (not dropped).' },
     ],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
@@ -71,9 +73,7 @@ export const BF_GREET_OUTPUT: EvalCase = {
     body: "`cb-cli greet alice` currently prints `Hi, alice` but the doc says it should print `Hello, alice!`. Fix the code.",
   },
   expect: {
-    reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the code was fixed to match the documented output.' },
-    ],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
@@ -93,7 +93,7 @@ export const BF_PORT_DEFAULT: EvalCase = {
     body: 'When run without `--port`, `cb-cli serve` currently prints `serving on :8080`, but the doc says the default is 3000. Fix the code.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply confirms the default was changed in the code.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
@@ -115,7 +115,7 @@ export const BF_DEPLOY_REQUIRES_ENV: EvalCase = {
     body: '`cb-cli deploy` currently runs and defaults to staging when `--env` is not provided. Per the doc it should exit 2 with an error message. Fix the code.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply confirms a validation check was added without changing other deploy behavior.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
@@ -137,7 +137,11 @@ export const BF_PAGINATION: EvalCase = {
     body: 'GET /users is returning one more item than it should — the spec is the half-open range `[offset, offset+limit)`. Off-by-one in the slice. Fix the code.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply identifies the off-by-one and confirms the code fix.' }],
+    reply: [
+      // Code-fix behavior is verified by probe-users runs below. Reply
+      // just needs to diagnose the bug as an off-by-one.
+      { kind: 'judge', target: 'reply', rubric: 'Reply diagnoses the bug as a slice/range error returning one extra item — phrasings like "off-by-one", "ends one past the limit", or "slice goes too far" all qualify. The point is correct diagnosis, not specific wording.' },
+    ],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
@@ -165,12 +169,16 @@ export const BF_INGEST_EMPTY: EvalCase = {
     body: 'If you hand `ingest` an empty CSV, the pipeline currently crashes. The doc says empty input should yield an empty output with exit 0. Fix the code.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply names the empty-input crash and confirms it was fixed without changing the non-empty path.' }],
+    // The "non-empty path unchanged" claim is best verified by behavior,
+    // not phrasing in the reply. Reply just needs to identify the fix.
+    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply names the empty-input crash and confirms it was fixed.' }],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
       { kind: 'run', cmd: 'node', args: ['scripts/probe-ingest.mjs'], cwd: 'worktree',
         expect: { exit: 0, stdout: /rows=0/ }, label: 'empty CSV → rows=0, exit 0' },
+      { kind: 'run', cmd: 'node', args: ['-e', "import('./src/ingest.mjs').then(m => { const rows = m.ingest('id,email\\n1,a@x\\n2,b@x'); console.log(`rows=${rows.length}`); });"], cwd: 'worktree',
+        expect: { exit: 0, stdout: /rows=2/ }, label: 'non-empty CSV still produces rows (regression check)' },
     ],
   },
 };
@@ -190,14 +198,14 @@ export const BF_DEPLOY_WHITESPACE: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the whitespace fix in code and explicitly notes the doc did not need an update.' },
+      { kind: 'length', on: 'reply', min: 1 },
     ],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
       { kind: 'run', cmd: 'node', args: ['src/cli.mjs', 'deploy', '--env', 'prod'], cwd: 'worktree',
         expect: { exit: 0, stdout: /^deploying to prod/m }, label: 'no leading whitespace in deploy output' },
-      { kind: 'file-contains', path: 'src/commands/deploy.mjs', pattern: /\\t|^\s+deploying/, match: false, label: 'source no longer prefixes a tab' },
+      { kind: 'file-contains', path: 'src/commands/deploy.mjs', pattern: /\\t|\tdeploying/, match: false, label: 'source no longer prefixes a tab (escape sequence or raw)' },
     ],
   },
 };

@@ -19,12 +19,11 @@ export const ED_NO_QUOTE: EvalCase = {
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /PII/i, match: true, label: 'PII caveat landed' },
-      // Deterministic: split baseline/final on ## headings; exactly one
-      // section should differ. Replaces an unreliable "other sections
-      // are byte-identical to baseline" judge rubric (the judge never
-      // sees the baseline, and with the enriched artifact it now does
-      // — but the deterministic check is cheaper and unambiguous).
-      { kind: 'sections-changed', count: 1, label: 'exactly one H2 section modified' },
+      // Either the agent slotted the caveat into one existing H2
+      // (sections-changed=1) or added a brand-new H2 dedicated to PII
+      // (sections-changed=2: the new bucket plus the bucket where it
+      // was inserted). Both are reasonable; a wider edit is not.
+      { kind: 'judge', target: 'doc', rubric: 'The PII caveat is a one-sentence addition placed in a sensible location (either appended to one existing section or as a small new section). Other sections were not substantively edited beyond the insertion.' },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
@@ -95,11 +94,12 @@ export const ED_CODE_FENCE: EvalCase = {
     body: "Add a small usage code block right after this Overview paragraph, fenced with ```sh, showing `cb-cli greet alice` and the expected output on the next line. Keep it to two lines.",
   },
   expect: {
-    reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms a small shell code block was added with the usage example.' },
-    ],
+    // The properties of the code block ("small", "shell", "usage example")
+    // are properties of the doc, so they're checked on the doc axis.
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /```sh[\s\S]*?cb-cli greet alice[\s\S]*?```/m, match: true, label: 'sh fence with the command present' },
+      { kind: 'judge', target: 'doc', rubric: 'The added shell code block is concise — roughly two lines: the command and its expected output. Not a verbose example with explanation paragraphs.' },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },

@@ -68,9 +68,7 @@ export const DO_ADD_SECTION: EvalCase = {
     body: "Add a new H2 section called 'Threat Model' that appears AFTER Data Model and BEFORE Rate Limiting. ~2 paragraphs on spoofing and credential stuffing.",
   },
   expect: {
-    reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Confirms the section was added in the requested position.' },
-    ],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /##\s+Threat Model/, match: true, label: 'Threat Model heading present' },
       { kind: 'judge', target: 'doc', rubric: 'The new "Threat Model" H2 section appears AFTER the "Data Model" section and BEFORE the "Rate Limiting" section in the document order.' },
@@ -88,11 +86,9 @@ export const DO_BULLETS_TO_PROSE: EvalCase = {
     body: 'Convert this whole doc from bullets to tight prose. Preserve every piece of information; attribute actions to the right person. Do not delete any items.',
   },
   expect: {
-    reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Briefly confirms the conversion.' },
-    ],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
-      { kind: 'judge', target: 'doc', rubric: 'The converted doc preserves every named person (alice, bob, carol) and every action item previously listed.', truth: 'Original contained: alice drafts rate-limiting RFC, bob audits /login, carol files typo tickets.' },
+      { kind: 'judge', target: 'doc', rubric: 'The converted doc preserves every named person (alice, bob, carol), every action item previously listed, AND the original person↔action attribution (alice → rate-limiting RFC, bob → /login audit, carol → typo tickets). Swapping who does what is a failure.', truth: 'Original contained: alice drafts rate-limiting RFC, bob audits /login, carol files typo tickets.' },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
@@ -112,8 +108,8 @@ export const DO_ADD_TABLE_ROW: EvalCase = {
       { kind: 'judge', target: 'reply', rubric: 'Reply confirms the table row was added. Pass as long as the reply does not affirmatively claim the `status` subcommand itself was implemented in code — silence on implementation is fine; an explicit disclaimer is not required.' },
     ],
     doc: [
-      { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli status`?\s*\|/, match: true, label: 'status row present' },
-      { kind: 'judge', target: 'doc', rubric: 'The Commands table is still a well-formed markdown table (same column count as before) and existing rows are intact.' },
+      { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli status`?\s*\|[^|]*\S[^|]*\|/, match: true, label: 'status row present with a non-empty behavior cell' },
+      { kind: 'judge', target: 'doc', rubric: 'The Commands table is still a well-formed markdown table (same column count as before) and existing rows are intact. The new `cb-cli status` row has a behavior cell that describes the intended behavior (a one-line summary of auth + queue state, or a close paraphrase) — an empty cell, a placeholder like "TBD", or a row that just repeats the command name is NOT acceptable.' },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits', label: 'no code changes' }],
   },
@@ -129,7 +125,7 @@ export const DO_SHORTEN: EvalCase = {
     body: 'Shorten this Overview section by roughly half while preserving every named component and the overall meaning.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply briefly confirms the shortening.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'judge', target: 'doc', rubric: 'The Overview section is meaningfully shorter than before — anywhere in the ballpark of one-third to two-thirds of the original length is acceptable (target is roughly half). It still mentions the HTTP service, login, and paginated listing.' },
     ],
@@ -147,7 +143,9 @@ export const DO_FILL_TBD: EvalCase = {
     body: 'Fill in this section with concrete placeholder numbers for p99 latency, throughput (rows/sec), and memory ceiling (MB). Note that these are targets, not measurements.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply confirms that concrete numbers were added for p99 latency, throughput, and memory. (The reply does not need to use the word "placeholder" verbatim — merely reporting what was added is enough.)' }],
+    // The numbers and placeholder framing are fully verified on the doc
+    // axis below. The reply only needs to be present.
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\bTBD\b/, match: false, label: 'TBD removed' },
       { kind: 'regex', on: 'doc', pattern: /p99|latency/i, match: true },
@@ -170,7 +168,11 @@ export const DO_CROSS_REF: EvalCase = {
     body: 'Add an in-doc cross-reference to the Schema section where relevant. Use standard markdown link syntax.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply briefly confirms the link was added.' }],
+    // Reply just needs to be non-empty; the link landing is fully verified
+    // on the doc axis below. The previous "briefly confirms the link was
+    // added" judge was redundant with the doc-axis regex and kept tripping
+    // on phrasing.
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\[[^\]]+\]\(#schema\)/i, match: true, label: 'markdown anchor link to #schema' },
     ],
@@ -214,9 +216,7 @@ export const DO_LAST_UPDATED: EvalCase = {
     body: "Add a `Last Updated: <today>` line directly under the title, ISO-8601 format (YYYY-MM-DD). Use today's date.",
   },
   expect: {
-    reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply briefly confirms the line was added with a current date.' },
-    ],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /Last Updated:\s*\d{4}-\d{2}-\d{2}/, match: true, label: 'ISO-format Last Updated line present' },
       {
@@ -239,7 +239,7 @@ export const DO_TENSE: EvalCase = {
     body: 'Reword this section so every verb is in the simple present tense. Keep the meaning identical.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Briefly confirms the tense edit.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'judge', target: 'doc', rubric: 'The Data Model section is all in present tense and preserves the original meaning.' },
     ],

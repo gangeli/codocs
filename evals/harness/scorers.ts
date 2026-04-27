@@ -220,6 +220,7 @@ function checkBehaviorExpectations(
   if (expect.stdout && !expect.stdout.test(stdout)) failures.push(`stdout !~ ${expect.stdout}`);
   if (expect.stderr && !expect.stderr.test(stderr)) failures.push(`stderr !~ ${expect.stderr}`);
   if (expect.notStdout && expect.notStdout.test(stdout)) failures.push(`stdout ~ ${expect.notStdout} (should not)`);
+  if (expect.notStderr && expect.notStderr.test(stderr)) failures.push(`stderr ~ ${expect.notStderr} (should not)`);
   const passed = failures.length === 0;
   const detail = passed
     ? `ok (exit=${exit}, stdout=${oneLine(stdout, 60)})`

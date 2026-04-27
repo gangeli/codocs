@@ -18,7 +18,9 @@ export const AM_VAGUE: EvalCase = {
       { kind: 'judge', target: 'reply', rubric: 'Reply EITHER asks a concrete clarifying question OR states a narrow interpretation (one sentence of what was done). Not a giant untracked rewrite.' },
     ],
     doc: [
-      { kind: 'judge', target: 'doc', rubric: 'If the doc was edited at all, changes are small and surgical — NOT a full rewrite. Byte length should not balloon beyond ~1.5× original.' },
+      // Baseline doc-auth.md is ~1900 bytes; cap at 1.5× ≈ 2900.
+      { kind: 'length', on: 'doc', max: 2900, label: 'doc did not balloon beyond ~1.5× baseline' },
+      { kind: 'judge', target: 'doc', rubric: 'If the doc was edited at all, changes are small and surgical — NOT a full rewrite.' },
     ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
@@ -117,7 +119,7 @@ export const AM_FIX_OR_DOC: EvalCase = {
     reply: [
       {
         kind: 'judge', target: 'reply',
-        rubric: 'Reply explicitly chooses to fix the CODE (not the doc) and articulates that the doc is the intended/spec behavior — the code has a bug. Merely picking one without reasoning is insufficient.',
+        rubric: 'Reply explicitly chooses to fix the CODE (not the doc) and gives ANY concrete reason — e.g. "401 is the correct status for auth failures", "the doc captures intended behavior", "500 is a bug, not a contract". A coin-flip with no reasoning is insufficient; specific phrasing like "spec" or "intended" is NOT required.',
       },
     ],
     doc: [{ kind: 'doc-unchanged', label: 'doc unchanged — agent picked code fix' }, { kind: 'no-batch-update' }],

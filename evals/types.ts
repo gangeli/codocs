@@ -100,6 +100,7 @@ export type Behavior = {
     stdout?: RegExp;
     stderr?: RegExp;
     notStdout?: RegExp;
+    notStderr?: RegExp;
   };
   label?: string;
 };

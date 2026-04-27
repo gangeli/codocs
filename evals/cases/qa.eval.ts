@@ -33,9 +33,15 @@ export const QA_FAILURE_MAP: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply maps each doc failure mode to a file path or explicitly says no code handles it. Does not fabricate file paths.' },
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply maps each of the three doc failure modes to a real file path or explicitly says no code handles it. Mappings must match the truth below; fabricated file paths or wrong attributions are failures.',
+        truth: 'Three doc failure modes: (1) malformed CSV cell counts — handled in src/ingest.mjs (header-aligned loop with `cells[i] ?? ""`); (2) empty input → empty out, exit 0 — NOT handled (BF-07 bug: src/ingest.mjs throws on empty input by dereferencing lines[0]); (3) unwritable output path propagates — implicitly handled in src/load.mjs (writeFile rejection bubbles up; nothing catches it).',
+      },
     ],
-    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    // Doc may be silently annotated with which modes are actually handled;
+    // that is encouraged behavior. The reply remains the deliverable.
+    doc: [],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
 };
@@ -69,7 +75,11 @@ export const QA_SUMMARIZE_OPEN: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply is a tight bullet list summarizing the 3 open questions without fabricating new ones.' },
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply is a tight bullet list summarizing the 3 open questions without fabricating new ones. Each of the three documented questions is represented (bcrypt migration, structured audit logging, SQLite store) — paraphrasing is fine; new questions not in the doc are failures.',
+        truth: 'The Open Questions section lists exactly three: (1) when to migrate to bcrypt and how to handle existing plaintext rows, (2) whether to add structured audit logging at the handler boundary, (3) whether the in-memory user store gets replaced with SQLite or punted indefinitely.',
+      },
     ],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
@@ -99,7 +109,9 @@ export const QA_USER_ORDER: EvalCase = {
         truth: 'src/db.mjs seeds USERS = new Map([["alice",...],["bob",...],["carol",...]]); listUsers returns [...USERS.keys()] — insertion order. JS Map iteration order is insertion-order by spec, so this is stable.',
       },
     ],
-    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    // Doc may be silently extended to record the iteration-order guarantee;
+    // that is encouraged behavior. The reply remains the deliverable.
+    doc: [],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
 };
@@ -127,7 +139,9 @@ export const QA_DOC_LIES_LOGIN: EvalCase = {
         truth: 'src/server.mjs handleLogin throws on password mismatch; the outer handler catches and returns 500, not 401. The doc is wrong about current behavior.',
       },
     ],
-    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    // Doc may be silently aligned to current code reality (returns 500); that
+    // is encouraged behavior. The reply remains the deliverable.
+    doc: [],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
 };
@@ -183,7 +197,9 @@ export const QA_UNBOUNDED_LIMIT: EvalCase = {
         truth: 'src/server.mjs handleUsers coerces `limit` via Number() with a default of 10, but performs no validation or cap. Any integer the caller passes is accepted.',
       },
     ],
-    doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
+    // Doc may be silently extended to record the gap (no enforced cap); that
+    // is encouraged behavior. The reply remains the deliverable.
+    doc: [],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
 };

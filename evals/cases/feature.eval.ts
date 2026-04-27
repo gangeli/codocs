@@ -18,7 +18,7 @@ export const F_ADD_PING: EvalCase = {
     body: "Add a new `cb-cli ping` subcommand that prints `pong`. Wire it through src/cli.mjs. Add a row to this Commands table mirroring the new behavior.",
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply confirms both the code wiring AND the doc update were done.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli ping`?\s*\|/, match: true, label: 'ping row in Commands table' },
     ],
@@ -41,7 +41,7 @@ export const F_VALIDATE_STAGE: EvalCase = {
     body: 'Add a new `validate` stage between ingest and transform that checks each row has a non-empty `id`; drops rows with empty id. Wire it into scripts/run.mjs in the right position. Document the new stage here in the Stages list, between ingest and transform.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply describes the new stage, where it sits, and notes the doc was updated.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /validate/i, match: true, label: 'validate mentioned' },
       { kind: 'judge', target: 'doc', rubric: 'The Stages list now includes a validate step BETWEEN ingest and transform — not before ingest, not after transform.' },
@@ -63,7 +63,7 @@ export const F_DOCTOR: EvalCase = {
     body: "Ship the `doctor` subcommand. It should print `node=<version>` and exit 0. Wire through cli.mjs. Then update the doc: add a row to the Commands table, and REMOVE this item from Future Work (since it's no longer future).",
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply notes both the command landed and the Future Work entry was removed.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli doctor`?\s*\|/, match: true, label: 'doctor in Commands table' },
       { kind: 'judge', target: 'doc', rubric: 'The "doctor" bullet under Future Work has been removed (not just struck through).' },
@@ -112,13 +112,18 @@ export const F_STRUCTURED_LOGGING: EvalCase = {
     body: 'Add a single `console.log(JSON.stringify({stage, event, ...}))` call around each pipeline stage entry in scripts/run.mjs. Then update this section to note that each stage emits a structured log line.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply notes both code + doc updates.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'judge', target: 'doc', rubric: 'The Stages section now mentions that each stage emits a structured log line.' },
     ],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
-      { kind: 'grep-count', path: 'scripts/run.mjs', pattern: /console\.log\(JSON\.stringify/, min: 2, label: 'at least 2 structured log calls' },
+      { kind: 'grep-count', path: 'scripts/run.mjs', pattern: /console\.log\(JSON\.stringify/, min: 3, label: 'one structured log call per stage (ingest, transform, load)' },
+      // The user comment specified `{stage, event, ...}` shape — both keys
+      // must appear at least once in run.mjs (single quote, double quote,
+      // or unquoted property name all accepted).
+      { kind: 'file-contains', path: 'scripts/run.mjs', pattern: /["']?stage["']?\s*:/, match: true, label: 'log payload includes a `stage` field' },
+      { kind: 'file-contains', path: 'scripts/run.mjs', pattern: /["']?event["']?\s*:/, match: true, label: 'log payload includes an `event` field' },
     ],
   },
 };
@@ -132,7 +137,7 @@ export const F_GITIGNORE: EvalCase = {
     body: 'Add a .gitignore that excludes dist/ and .env. In the CLI doc, add a short section or line noting the ignored paths.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply names both the .gitignore and the doc update.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'judge', target: 'doc', rubric: 'Doc mentions the gitignored paths (dist/ and .env) somewhere — a dedicated section, a note, or an addition to an existing section all count.' },
     ],
@@ -185,7 +190,7 @@ export const F_REMOVE_GREET: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms both the code removal (dispatch + file) AND the doc row removal.' },
+      { kind: 'judge', target: 'reply', rubric: 'Reply confirms greet was removed end-to-end: dispatch, command file, AND doc row. Calling out at least two of the three is sufficient; silently saying only "removed greet" without naming what was touched is too thin.' },
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli greet`?/, match: false, label: 'greet row gone from Commands table' },
@@ -219,7 +224,10 @@ export const F_WRITE_TEST: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the probe was written AND the doc was updated. Does not claim to have changed src/ server code.' },
+      // Negative intent claim — the agent must not falsely claim to have
+      // changed src/ server code. (The actual src/ untouched-ness is
+      // verified deterministically on the code axis below.)
+      { kind: 'judge', target: 'reply', rubric: 'Reply does not claim to have changed src/ server code.' },
     ],
     doc: [
       { kind: 'judge', target: 'doc', rubric: 'The Pagination section mentions the new test / probe script. Other sections are untouched.' },
@@ -252,7 +260,7 @@ export const F_DEPRECATE_PORT: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply names both the stderr warning and the doc update. Confirms flag still works.' },
+      { kind: 'length', on: 'reply', min: 1 },
     ],
     doc: [
       { kind: 'judge', target: 'doc', rubric: 'The serve row in the Commands table notes that --port is deprecated (or similar wording like "deprecated — will be removed").' },
@@ -261,6 +269,10 @@ export const F_DEPRECATE_PORT: EvalCase = {
       { kind: 'git', assert: 'branch-pushed' },
       { kind: 'run', cmd: 'node', args: ['src/cli.mjs', 'serve', '--port', '9999'], cwd: 'worktree',
         expect: { exit: 0, stdout: /serving on :9999/, stderr: /deprecat/i }, label: '--port still works AND warns on stderr' },
+      // Without --port the warning must NOT fire — catches an agent that
+      // unconditionally prints the deprecation banner.
+      { kind: 'run', cmd: 'node', args: ['src/cli.mjs', 'serve'], cwd: 'worktree',
+        expect: { exit: 0, stdout: /serving on :3000/, notStderr: /deprecat/i }, label: 'no warning when --port omitted' },
     ],
   },
 };
@@ -283,7 +295,7 @@ export const F_CREATEDAT: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply notes changes across ingest/transform/load as needed AND the Schema doc update.' },
+      { kind: 'length', on: 'reply', min: 1 },
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /createdAt/, match: true, label: 'createdAt mentioned in doc' },
@@ -314,7 +326,7 @@ export const F_RENAME_ALICE: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms alice→ada across code and probe scripts and notes that the doc was left alone.' },
+      { kind: 'length', on: 'reply', min: 1 },
     ],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
@@ -344,7 +356,10 @@ export const F_REFACTOR_BODY: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the extraction AND explicitly says the doc was not changed (or otherwise makes clear this was an internal refactor only).' },
+      // Negative intent claim — refactor-only cases must not falsely claim
+      // a doc change. (The actual doc-unchanged-ness is verified on the
+      // doc axis below.)
+      { kind: 'judge', target: 'reply', rubric: 'Reply does not falsely claim a doc change was made.' },
     ],
     doc: [{ kind: 'doc-unchanged' }, { kind: 'no-batch-update' }],
     code: [
@@ -352,7 +367,10 @@ export const F_REFACTOR_BODY: EvalCase = {
       { kind: 'file-exists', path: 'src/body.mjs', expect: true },
       { kind: 'file-contains', path: 'src/body.mjs', pattern: /readJsonBody/, match: true, label: 'readJsonBody lives in body.mjs' },
       { kind: 'file-contains', path: 'src/server.mjs', pattern: /from\s+['"]\.\/body\.mjs['"]/, match: true, label: 'server.mjs imports from body.mjs' },
-      { kind: 'file-contains', path: 'src/server.mjs', pattern: /function\s+readJsonBody/, match: false, label: 'server.mjs no longer defines readJsonBody' },
+      // Match `function readJsonBody`, `const/let readJsonBody = function`,
+      // or `const/let readJsonBody = (...) =>` — server.mjs must not
+      // re-define the helper alongside the import.
+      { kind: 'file-contains', path: 'src/server.mjs', pattern: /function\s+readJsonBody|(?:const|let|var)\s+readJsonBody\s*=/, match: false, label: 'server.mjs no longer defines readJsonBody' },
       { kind: 'run', cmd: 'node', args: ['scripts/probe-login.mjs', '--good'], cwd: 'worktree',
         expect: { exit: 0, stdout: /status=200/ }, label: 'good login still works after refactor' },
       { kind: 'run', cmd: 'node', args: ['scripts/probe-users.mjs', '2', '0'], cwd: 'worktree',
@@ -377,14 +395,19 @@ export const F_README_SYNC: EvalCase = {
   },
   expect: {
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply names the code wiring, the doc row, AND the README update.' },
+      { kind: 'length', on: 'reply', min: 1 },
     ],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli status`?\s*\|/, match: true, label: 'status row in doc Commands table' },
     ],
     code: [
       { kind: 'git', assert: 'branch-pushed' },
-      { kind: 'file-contains', path: 'README.md', pattern: /status/, match: true, label: 'README mentions status' },
+      // README must mention the status command somewhere — format-agnostic
+      // (bullet, table row, section, etc.). The judge below checks that
+      // the entry is well-shaped; this regex just guards against an empty
+      // README update.
+      { kind: 'file-contains', path: 'README.md', pattern: /\bstatus\b/, match: true, label: 'README mentions status' },
+      { kind: 'judge', target: 'diff', rubric: 'README.md gained an entry for the new `status` command alongside a description of what it does (prints `ok`). Any reasonable formatting is fine — bullet, table row, section, etc. — as long as the entry is non-empty and a reader could tell what status does. An entry that is just the word "status" with no description fails.' },
       { kind: 'run', cmd: 'node', args: ['src/cli.mjs', 'status'], cwd: 'worktree',
         expect: { exit: 0, stdout: /ok/ } },
     ],
@@ -407,8 +430,10 @@ export const F_STDLIB_ONLY: EvalCase = {
     body: "Add validation to the transform stage: rows with an empty or missing `id` are dropped. Implement this with stdlib only — do NOT add any new runtime dependencies to package.json. Update the Schema section to note that rows with empty ids are dropped.",
   },
   expect: {
+    // "No new deps" is verified deterministically on the code axis
+    // (file-contains on package.json). Reply just confirms intent.
     reply: [
-      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the validation landed AND notes that no new dependencies were added.' },
+      { kind: 'judge', target: 'reply', rubric: 'Reply confirms id validation was added.' },
     ],
     doc: [
       { kind: 'judge', target: 'doc', rubric: 'The Schema section mentions that rows with empty/missing id are dropped in transform.' },
@@ -419,6 +444,11 @@ export const F_STDLIB_ONLY: EvalCase = {
       // No `dependencies` object should appear in package.json (the
       // fixture ships with none). `devDependencies` are fine.
       { kind: 'file-contains', path: 'package.json', pattern: /"dependencies"\s*:\s*\{[^}]*"[^"]+"\s*:/, match: false, label: 'no runtime dependencies added to package.json' },
+      // Runtime probe: rows with empty/missing id are dropped, valid rows
+      // survive with their id intact. All emails are non-empty so this is
+      // independent of BF-02's empty-email behavior.
+      { kind: 'run', cmd: 'node', args: ['-e', "import('./src/transform.mjs').then(m => { const o = m.transform([{id:'1',email:'a@x'},{id:'',email:'b@x'},{email:'c@x'},{id:'2',email:'d@x'}]); console.log(`kept=${o.length} ids=${o.map(r=>r.id).join(',')}`); });"], cwd: 'worktree',
+        expect: { exit: 0, stdout: /kept=2 ids=1,2/ }, label: 'empty/missing id rows dropped; valid ids survive' },
     ],
   },
 };
@@ -433,7 +463,7 @@ export const F_STATUS_CMD: EvalCase = {
     body: 'Add a `cb-cli status` subcommand that prints `ok` and exits 0. Add it to this Commands table.',
   },
   expect: {
-    reply: [{ kind: 'judge', target: 'reply', rubric: 'Reply confirms status command added + doc row added.' }],
+    reply: [{ kind: 'length', on: 'reply', min: 1 }],
     doc: [
       { kind: 'regex', on: 'doc', pattern: /\|\s*`?cb-cli status`?\s*\|/, match: true, label: 'status row in table' },
     ],
