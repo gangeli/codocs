@@ -1,0 +1,12 @@
+The document was edited by others while you were working. There are merge conflicts that need resolution.
+
+The conflict markers are in: /tmp/work/doc.md
+
+Conflicting content:
+<<<<<<< ours
+foo
+=======
+bar
+>>>>>>> theirs
+
+Please edit /tmp/work/doc.md to resolve the conflicts. Remove all <<<<<<< / ======= / >>>>>>> markers and produce the correct merged text.

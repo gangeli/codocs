@@ -60,7 +60,7 @@ export function buildPrompt(ctx: PromptContext): string {
     : `- **Code change** — code edits are disabled this run. Reply explaining what would need to change; don't edit source files.`;
 
   const followupLine = isFollowup
-    ? `\n- **Thread reply** — this is a follow-up. Re-read the files before editing; your prior context is stale and the doc/code already reflect earlier turns. If the request is to revert, tighten, or rename something from a prior turn, locate and actually edit the current content on disk.`
+    ? `\n- **Thread reply** — this is a follow-up. Re-read the files before editing; your prior context is stale and the doc/code already reflect earlier turns. Bias toward "already done" over "I edited again": if you can't point to a concrete delta from current state, reply that it's already addressed or ask which distinct issue they mean — don't fabricate a new edit to justify the turn. If the request is to revert, tighten, or rename something from a prior turn, locate and actually edit the current content on disk.`
     : '';
 
   return `You are agent "${ctx.agentName}", replying to a comment on a shared design doc in Google Docs. The doc describes the software; collaborators critique and evolve it via comments.
@@ -77,16 +77,25 @@ Just do what the comment calls for — don't classify out loud. The system detec
 - **Doc edit** — reword, restructure, or correct descriptions of *existing* behavior: use Edit/Write on ${ctx.designDocPath}. Reading alone isn't a change.
 ${codeLine}
 - **Both**: do both in the same run.${ctx.codeEnabled ? '' : ' (Code is disabled.)'}
-- **Question or verification** ("is X safe?", "how does Y work?", "which of these are implemented?"): answer in the reply and change nothing on disk. If you spot a discrepancy, report it and let the user decide. Reading and investigating is fine; the reply is the deliverable.
 - **Open-ended brainstorm** ("let's discuss…"): write \`{"title": "<~40 chars>"}\` to ${ctx.chatMarkerPath} and stop. Don't also edit.${followupLine}
+
+## Question vs. action
+
+The verbs in the comment determine the default response.
+
+- **Action phrasing** ("fix X", "add Y", "rename Z", "make the doc match the code"): act on it. For small, in-place tweaks (typos, wording, formatting, missing fields), just do it. For larger asks, do the literal request and stop.
+- **Question or investigation phrasing** ("is X safe?", "does Y work?", "why does Z…?", "verify", "check", "diagnose", "take a look"): the deliverable is the reply. Code is read-only — don't propose, draft, or apply a code fix even when the answer reveals one. The doc may be edited to bring its description in line with reality if you discover a factual gap while answering; keep those edits minimal and stay concise. If you find yourself typing "switch to…", "replace with…", "use X instead" — delete it. The user can ask for a fix in a follow-up.
+- **Pragmatic in-between** ("this looks wrong, can you check?"): answer with a recommendation; edit only if the request clearly implies go-ahead.
 
 Prose describing behavior does not build the behavior. If a doc update would describe something the code doesn't yet do, that's a code change (do the code, or reply that code changes aren't enabled).
 
 ## Before you edit
 
 - **Verify the anchor.** If the highlighted/quoted text isn't present in the current doc, say so in the reply and make no edit — don't pick a nearby target and act as if it were the ask.
+- **Search with variants when the named target is missing.** When the comment names a specific target (a typo, a section, a phrase) and exact search misses, retry with case-insensitive and near-spelling variants before reporting nothing to do. Declaring "not found" on a first miss is a common error mode.
 - **Check current state.** Read the relevant files first. If the state already matches the ask, reply saying so rather than producing a change to justify the turn.
 - **Narrow the interpretation.** For a vague request with no clear target, either ask one concrete clarifying question OR make a single narrow change and name it in one sentence. Never ship a sweeping rewrite.
+- **Fix exactly what was named.** If you notice unrelated issues nearby — adjacent bugs, formatting, stylistic tweaks, whitespace elsewhere — do not fix them this turn, even when the fix is obvious. Mention them at the end of the reply as one short bullet ("also noticed: …"); the user will request them next if they want them.
 
 ## Don't silently comply with risky requests
 
@@ -94,7 +103,7 @@ Push back in the reply — and don't produce the change — when the ask would c
 
 ## Reply
 
-Plain-text summary of what you actually did, posted as the Google Doc reply. Keep it short, honest, and concrete: identify what you touched by name. If you made no change, say so. Avoid tables and large code blocks. For diagrams inside the doc itself, use \`\`\`mermaid fences.
+Replies render in a Google Docs comment — keep them short and concrete, typically 1–3 sentences. Lead with an affirmative verb naming what you actually did ("added the link to Schema", "fixed the typo", "added the validation check"), not a description of the new state ("the link is now in place"). If you made no change, say so plainly. Avoid headers, tables, and large code blocks. For diagrams inside the doc itself, use \`\`\`mermaid fences.
 `;
 }
 
