@@ -6,6 +6,7 @@
  * depends on) during tests.
  */
 
+import { spawnSync } from 'node:child_process';
 import type { AgentOrchestrator, CommentListenerHandle } from '@codocs/core';
 
 /** Minimal shape of the CodocsClient used for the server lock (heartbeat). */
@@ -52,4 +53,36 @@ export async function metaRestartShutdown(ctx: MetaRestartShutdownCtx): Promise<
 
   if (ctx.listener) await ctx.listener.close();
   ctx.db.close();
+}
+
+/**
+ * Snapshot of the working tree used to decide whether `--meta` should
+ * rebuild on the next idle. We combine the committed HEAD with the
+ * porcelain status so that both new commits and uncommitted edits register
+ * as a change. An empty string means the snapshot couldn't be taken (no
+ * git, not a repo, etc.) and callers should treat the code as "always
+ * changed" so they fall back to the previous always-rebuild behaviour.
+ */
+export type CodeBaseline = string;
+
+function runGit(args: string[], cwd: string): string | null {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf-8' });
+  if (result.status !== 0) return null;
+  return result.stdout;
+}
+
+export function captureCodeBaseline(cwd: string = process.cwd()): CodeBaseline {
+  const head = runGit(['rev-parse', 'HEAD'], cwd);
+  const status = runGit(['status', '--porcelain'], cwd);
+  if (head === null || status === null) return '';
+  return `${head.trim()}\n${status}`;
+}
+
+export function hasCodeChanged(baseline: CodeBaseline, cwd: string = process.cwd()): boolean {
+  // If we never managed to capture a baseline, fall back to rebuilding so
+  // we don't silently skip a real change.
+  if (baseline === '') return true;
+  const current = captureCodeBaseline(cwd);
+  if (current === '') return true;
+  return current !== baseline;
 }

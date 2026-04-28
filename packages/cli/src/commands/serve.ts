@@ -27,7 +27,7 @@ import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js
 import { withErrorHandler } from '../util.js';
 import { renderExit } from '../exit.js';
 import { buildRepairContext, runStartupChecks, runRepairUi } from '../repair/index.js';
-import { metaRestartShutdown, type MetaRestartShutdownCtx } from './meta-restart.js';
+import { metaRestartShutdown, captureCodeBaseline, hasCodeChanged, type MetaRestartShutdownCtx, type CodeBaseline } from './meta-restart.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir, homedir, hostname } from 'node:os';
@@ -233,8 +233,22 @@ function handleSilenceHook(command: string, emit: EventEmitter): void {
 
 function handleMetaRestart(
   sessionId: string,
+  baseline: { current: CodeBaseline },
   ctx: MetaRestartShutdownCtx & { emit: EventEmitter },
 ): void {
+  if (!hasCodeChanged(baseline.current)) {
+    ctx.emit({
+      time: new Date(),
+      type: 'system',
+      content: 'All agents idle — no code changes since last build, skipping meta rebuild.',
+    });
+    return;
+  }
+  // Refresh the baseline so a follow-up reply that doesn't touch code
+  // doesn't trigger another rebuild after the child restarts. (The child
+  // captures its own baseline at startup, but we update ours too in case
+  // the restart never happens for any reason.)
+  baseline.current = captureCodeBaseline();
   ctx.emit({ time: new Date(), type: 'system', content: 'All agents idle — meta rebuild starting...' });
 
   (async () => {
@@ -979,6 +993,12 @@ export function registerServeCommand(program: Command) {
           }
         }
 
+        // Snapshot the working tree at startup so the --meta restart hook
+        // can skip rebuilding when the agent only posted replies and didn't
+        // touch the source. Mutable so a successful rebuild path can refresh
+        // it without a re-exec.
+        const metaBaseline: { current: CodeBaseline } = { current: opts.meta ? captureCodeBaseline() : '' };
+
         orchestrator = new AgentOrchestrator({
           client,
           replyClient,
@@ -1060,7 +1080,7 @@ export function registerServeCommand(program: Command) {
             emit({ time: new Date(), type: 'error', content: `Agent error: ${error}` });
           },
           onIdle: opts.meta
-            ? () => handleMetaRestart(codocsSession.id, {
+            ? () => handleMetaRestart(codocsSession.id, metaBaseline, {
                 orchestrator: orchestrator!,
                 renewalTimer,
                 heartbeatTimer,
