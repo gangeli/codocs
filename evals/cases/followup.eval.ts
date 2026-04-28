@@ -162,7 +162,7 @@ export const FU_IDEMPOTENT_REASK: EvalCase = {
  * "now integrate the prose with the rest of the doc, since the implementation
  * lives in code."
  */
-export const FU_CONDENSE_POST_IMPL: EvalCase = {
+export const FU_AUTO_CONDENSE_ON_IMPL: EvalCase = {
   id: 'FU-06-auto-condense-on-implement',
   category: 'followup',
   summary: '"great, let\'s implement this" should auto-condense the implementation-walkthrough prose, not just land code.',
@@ -200,6 +200,57 @@ export const FU_CONDENSE_POST_IMPL: EvalCase = {
     code: [
       { kind: 'git', assert: 'branch-pushed' },
       { kind: 'file-exists', path: 'src/rate-limit.mjs', expect: true, label: 'rate-limit stub landed' },
+    ],
+  },
+};
+
+/**
+ * Post-implementation condensation. The predecessor lands a feature AND
+ * writes a long, implementation-walkthrough-flavored prose section. The
+ * follow-up — a "great, ship it / now tidy up" turn — asks the agent to
+ * compress that section so it matches the brevity of the surrounding
+ * sections, since the implementation now lives in the code. Tests
+ * whether the agent can shrink design-doc prose post-implementation
+ * without nuking the high-level facts AND without re-touching the code.
+ */
+export const FU_CONDENSE_POST_IMPL: EvalCase = {
+  id: 'FU-06b-condense-post-impl',
+  category: 'followup',
+  summary: 'After "let\'s implement this" lands code + a detailed plan, condense the section to match the rest of the doc.',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  predecessor: {
+    id: 'FU-06b-pred',
+    category: 'followup',
+    summary: 'implement rate-limit stub + write a detailed plan into the doc',
+    fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+    comment: {
+      quote: '## Rate Limiting (TBD)',
+      body: "Great, let's implement this. (1) Land a `rateLimit()` no-op stub in `src/rate-limit.mjs` — don't wire it into the server yet. (2) Rewrite this Rate Limiting section in place into a detailed implementation walkthrough — at least four paragraphs covering the algorithm choice (token bucket), the per-IP and per-user keying, the in-process counter storage, and the staged rollout plan. Be thorough; readers should understand exactly how it will work.",
+      threadId: 'FU-06b-thread',
+    },
+  },
+  comment: {
+    threadId: 'FU-06b-thread',
+    body: "Great, the stub is in. Now condense this Rate Limiting section back down to match the brevity of the other sections in the doc (look at Authentication, Pagination, Data Model) — at most a short paragraph. The implementation walkthrough doesn't belong in the design doc now that the code lives in `src/rate-limit.mjs`. Keep the high-level facts: per-IP and per-user limits, stub exists but is not yet enabled.",
+  },
+  expect: {
+    reply: [
+      { kind: 'judge', target: 'reply', rubric: 'Reply confirms the section was condensed in the doc and that code was not re-touched.' },
+    ],
+    doc: [
+      { kind: 'regex', on: 'doc', pattern: /per-?IP/i, match: true, label: 'per-IP retained' },
+      { kind: 'regex', on: 'doc', pattern: /per-?user/i, match: true, label: 'per-user retained' },
+      {
+        kind: 'judge', target: 'doc',
+        rubric: 'The Rate Limiting section is now markedly shorter than the multi-paragraph implementation walkthrough the predecessor produced — roughly the length of the surrounding sections (Authentication, Pagination, Data Model), at most one short paragraph or a few sentences. It still mentions per-IP and per-user limits AND that a stub exists but is not yet enabled. Implementation-walkthrough detail (token-bucket algorithm steps, storage internals, staged rollout phases) is GONE. The condensed prose reads as integrated with the rest of the doc, not as a stub-summary tacked on top of the longer plan.',
+      },
+    ],
+    code: [
+      // Doc-only follow-up: the code branch should still carry exactly the
+      // one commit the predecessor landed (the rate-limit stub). A second
+      // commit means the agent re-touched code it shouldn't have.
+      { kind: 'git', assert: 'commit-on-branch', equals: 1, label: 'exactly one commit on branch (no extra code churn)' },
+      { kind: 'file-exists', path: 'src/rate-limit.mjs', expect: true, label: 'predecessor stub still present' },
     ],
   },
 };
