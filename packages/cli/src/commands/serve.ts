@@ -28,6 +28,7 @@ import { withErrorHandler } from '../util.js';
 import { renderExit } from '../exit.js';
 import { buildRepairContext, runStartupChecks, runRepairUi } from '../repair/index.js';
 import { metaRestartShutdown, type MetaRestartShutdownCtx } from './meta-restart.js';
+import { acquireServerLock } from './server-lock.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir, homedir, hostname } from 'node:os';
@@ -523,6 +524,7 @@ export function registerServeCommand(program: Command) {
     .option('--resume [id]', 'Resume a previous session (optionally by ID)')
     .option('--silence-hook <command>', 'Shell command to run when all agents are idle')
     .option('--meta', 'Auto-rebuild and restart when idle (for self-development)')
+    .option('--force-unlock', 'Bypass the per-doc server lock and claim it even if another server appears active')
     .action(
       withErrorHandler(async (docIds: string[], opts: {
         debug?: boolean;
@@ -534,6 +536,7 @@ export function registerServeCommand(program: Command) {
         resume?: string | boolean;
         silenceHook?: string;
         meta?: boolean;
+        forceUnlock?: boolean;
       }) => {
         const debugMode = opts.debug ?? false;
         const useTui = opts.tui !== false;
@@ -676,20 +679,20 @@ export function registerServeCommand(program: Command) {
         for (const docId of normalizedDocIds) {
           // Skip lock check for malformed doc IDs — the repair screen will flag them.
           if (!/^[a-zA-Z0-9_-]{40,44}$/.test(docId)) continue;
-          try {
-            const heartbeat = await lockClient.getServerHeartbeat(docId);
-            if (heartbeat) {
-              const age = Date.now() - heartbeat.timestamp;
-              if (age < HEARTBEAT_STALE_MS) {
-                printServerAlreadyRunning(docId);
-                process.exit(1);
-              }
-            }
-            // Claim the lock
-            await lockClient.setServerHeartbeat(docId, serverHash);
-          } catch (err: any) {
+          const result = await acquireServerLock(lockClient, docId, serverHash, {
+            staleMs: HEARTBEAT_STALE_MS,
+            force: opts.forceUnlock,
+          });
+          if (result.kind === 'locked') {
+            printServerAlreadyRunning(docId);
+            process.exit(1);
+          }
+          if (result.kind === 'error') {
             // Non-fatal: don't block startup if appProperties fails
-            console.error(`Warning: could not check server lock for ${docId.slice(0, 12)}...: ${err.message}`);
+            console.error(`Warning: could not check server lock for ${docId.slice(0, 12)}...: ${result.message}`);
+          }
+          if (result.kind === 'acquired' && result.forced) {
+            console.error(`[force-unlock] Bypassed existing lock for ${docId.slice(0, 12)}...`);
           }
         }
 
