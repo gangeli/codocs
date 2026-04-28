@@ -18,6 +18,7 @@ import { writeTempContext, cleanupTempFiles } from '../harness/context.js';
 import { docsToMarkdown } from '../converter/docs-to-md.js';
 import { docsToMarkdownWithMapping } from '../converter/docs-to-md.js';
 import { computeDocDiff } from '../harness/diff.js';
+import type { CommentAnchor } from '../harness/anchor-splice.js';
 import { buildConflictPrompt } from '../harness/prompt.js';
 
 export interface ChatOrchestratorConfig {
@@ -177,6 +178,16 @@ export class ChatOrchestrator {
         const currentDoc = await this.client.getDocument(documentId);
         const { markdown: theirs, indexMap } = docsToMarkdownWithMapping(currentDoc);
 
+        let commentAnchors: CommentAnchor[] = [];
+        try {
+          const allComments = await this.client.listComments(documentId);
+          commentAnchors = allComments
+            .filter((c) => !c.resolved && c.quotedText)
+            .map((c) => ({ commentId: c.id, quotedText: c.quotedText! }));
+        } catch (err: any) {
+          this.debug(`[chat] Could not list comments for anchor preservation: ${err.message ?? err}`);
+        }
+
         const diffResult = await computeDocDiff(
           base,
           editedMarkdown,
@@ -194,6 +205,7 @@ export class ChatOrchestrator {
             if (resolveResult.exitCode !== 0) return conflictText;
             return await readFile(editPath, 'utf-8');
           },
+          { commentAnchors },
         );
 
         if (diffResult.hasChanges) {

@@ -2260,3 +2260,184 @@ describe('interpolateDocIndex', () => {
     expect(mid).toBeLessThan(bodyEnd);
   });
 });
+
+// ── Comment-anchor preservation ────────────────────────────────────
+//
+// Google Docs comments are anchored to a quoted span of text. A
+// batchUpdate that deletes the bytes the anchor covers detaches the
+// comment ("the original content has been deleted"). The safeguards
+// below ensure that an agent edit which would erase a comment's anchor
+// text is reverted at the section level so the comment stays alive.
+// (Direct unit tests for `preserveCommentAnchors` live in
+// `diff-anchor-splice.test.ts`; this block tests the integration
+// through `computeDocDiff`.)
+
+describe('computeDocDiff › comment anchor preservation', () => {
+  it('does not delete an anchor line the agent rewrote', async () => {
+    const base = `# Intro
+
+Keep me, I am quoted.
+
+# Other
+
+Untouched.
+`;
+    // Agent's edit rewrites the anchor line.
+    const ours = `# Intro
+
+Rewritten line.
+
+# Other
+
+Untouched.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Intro', mdOffset: 0 },
+      { text: 'Keep me, I am quoted.', mdOffset: base.indexOf('Keep me') },
+      { text: 'Other', mdOffset: base.indexOf('# Other') },
+      { text: 'Untouched.', mdOffset: base.indexOf('Untouched.') },
+    ]);
+
+    const result = await computeDocDiff(
+      base, ours, theirs, doc, indexMap, 'test-agent',
+      undefined,
+      { commentAnchors: [{ commentId: 'c1', quotedText: 'Keep me, I am quoted.' }] },
+    );
+
+    // The anchor's containing section was reverted, so this edit
+    // collapses to a no-op (Intro reverted, Other unchanged).
+    expect(result.preservedAnchors.map((p) => p.quotedText)).toEqual(['Keep me, I am quoted.']);
+    expect(result.hasChanges).toBe(false);
+    // No deleteContentRange should target the anchor's doc range.
+    const anchorStart = indexMap.find((e) => e.mdOffset === base.indexOf('Keep me'))!.docIndex;
+    for (const r of result.requests) {
+      if (r.deleteContentRange) {
+        const start = r.deleteContentRange.range!.startIndex!;
+        const end = r.deleteContentRange.range!.endIndex!;
+        expect(anchorStart < start || anchorStart >= end).toBe(true);
+      }
+    }
+  });
+
+  it('keeps unrelated edits when one section has an anchor that must survive', async () => {
+    const base = `# Intro
+
+Keep me, I am quoted.
+
+# Other
+
+Old line.
+`;
+    // Agent edits BOTH the anchor section and an unrelated section.
+    const ours = `# Intro
+
+Replaced intro body.
+
+# Other
+
+New line.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'Intro', mdOffset: 0 },
+      { text: 'Keep me, I am quoted.', mdOffset: base.indexOf('Keep me') },
+      { text: 'Other', mdOffset: base.indexOf('# Other') },
+      { text: 'Old line.', mdOffset: base.indexOf('Old line.') },
+    ]);
+
+    const result = await computeDocDiff(
+      base, ours, theirs, doc, indexMap, 'test-agent',
+      undefined,
+      { commentAnchors: [{ commentId: 'c1', quotedText: 'Keep me, I am quoted.' }] },
+    );
+
+    expect(result.preservedAnchors.map((p) => p.quotedText)).toEqual(['Keep me, I am quoted.']);
+    expect(result.hasChanges).toBe(true);
+
+    // Apply the requests and verify the resulting doc body still
+    // contains the anchor and reflects the unrelated edit.
+    const initialBody = docBodyText(doc);
+    const finalBody = applyRequests(initialBody, result.requests);
+    expect(finalBody).toContain('Keep me, I am quoted.');
+    expect(finalBody).toContain('New line.');
+    expect(finalBody).not.toContain('Old line.');
+  });
+
+  it('restores a section the agent deleted entirely when it held an anchor', async () => {
+    const base = `# A
+
+A-body.
+
+# B
+
+Critical anchor in B.
+
+# C
+
+C-body.
+`;
+    // Agent removed the entire B section.
+    const ours = `# A
+
+A-body.
+
+# C
+
+C-body.
+`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A', mdOffset: 0 },
+      { text: 'A-body.', mdOffset: base.indexOf('A-body.') },
+      { text: 'B', mdOffset: base.indexOf('# B') },
+      { text: 'Critical anchor in B.', mdOffset: base.indexOf('Critical') },
+      { text: 'C', mdOffset: base.indexOf('# C') },
+      { text: 'C-body.', mdOffset: base.indexOf('C-body.') },
+    ]);
+
+    const result = await computeDocDiff(
+      base, ours, theirs, doc, indexMap, 'test-agent',
+      undefined,
+      { commentAnchors: [{ commentId: 'c1', quotedText: 'Critical anchor in B.' }] },
+    );
+
+    expect(result.preservedAnchors.map((p) => p.quotedText)).toEqual(['Critical anchor in B.']);
+    // Either no changes are emitted (B is restored to identical), or
+    // the requests don't actually delete the anchor's text. Verify the
+    // latter by simulating the request stream.
+    const initialBody = docBodyText(doc);
+    const finalBody = applyRequests(initialBody, result.requests);
+    expect(finalBody).toContain('Critical anchor in B.');
+  });
+
+  it('proceeds normally when no anchors would be lost', async () => {
+    const base = `# A\n\nUnchanged anchor.\n\nOther text.\n`;
+    const ours = `# A\n\nUnchanged anchor.\n\nDifferent other text.\n`;
+    const theirs = base;
+
+    const { doc, indexMap } = buildDocAndMap(base, [
+      { text: 'A', mdOffset: 0 },
+      { text: 'Unchanged anchor.', mdOffset: base.indexOf('Unchanged anchor.') },
+      { text: 'Other text.', mdOffset: base.indexOf('Other text.') },
+    ]);
+
+    const result = await computeDocDiff(
+      base, ours, theirs, doc, indexMap, 'test-agent',
+      undefined,
+      { commentAnchors: [{ commentId: 'c1', quotedText: 'Unchanged anchor.' }] },
+    );
+
+    // Anchor is on an unchanged line, so nothing was preserved; the
+    // edit goes through normally.
+    expect(result.preservedAnchors).toEqual([]);
+    expect(result.hasChanges).toBe(true);
+    const initialBody = docBodyText(doc);
+    const finalBody = applyRequests(initialBody, result.requests);
+    expect(finalBody).toContain('Unchanged anchor.');
+    expect(finalBody).toContain('Different other text.');
+  });
+});
