@@ -23,10 +23,15 @@ export interface CodeTask {
 export class CodeTaskStore {
   constructor(private db: Database) {}
 
-  /** Look up an existing code task for a comment thread. */
+  /**
+   * Look up an active code task for a comment thread. Tasks marked
+   * `completed` (e.g. by the auto-merge path) are skipped so that a
+   * follow-up comment creates a fresh worktree off the new base
+   * instead of reusing the merged-and-deleted branch.
+   */
   getByComment(documentId: string, commentId: string): CodeTask | null {
     const rows = this.db.exec(
-      'SELECT * FROM code_tasks WHERE document_id = ? AND comment_id = ?',
+      "SELECT * FROM code_tasks WHERE document_id = ? AND comment_id = ? AND status = 'active'",
       [documentId, commentId],
     );
     if (rows.length === 0 || rows[0].values.length === 0) return null;

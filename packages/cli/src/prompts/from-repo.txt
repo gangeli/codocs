@@ -34,7 +34,7 @@ This doc is ground truth. Commenters will trust it.
 - Do not invent rationale. If the code doesn't say why, don't speculate about "chosen for performance" or "to ensure consistency."
 - If tests and code disagree, describe what the code does and flag the divergence in the Open Questions section.
 - If a feature exists behind a disabled flag or is unreachable from any entry point, note it as such rather than presenting it as shipped.
-- Reference files by path (e.g., `packages/foo/src/bar.ts`) when it helps a reader find the code. Don't cite line numbers — they rot.
+- Describe behavior, not implementation surface. Don't anchor claims to specific class names, function names, or line numbers — those get renamed and refactored, and the doc rots. Refer to a component by its role ("the orchestrator," "the queue store"), not by a concrete identifier (`AgentOrchestrator`, `dequeue()`). File paths are fine when they help a reader find the code (e.g., `packages/foo/src/bar.ts`); class- and method-level pointers are not.
 
 ## Shape for commenting
 

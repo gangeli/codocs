@@ -146,3 +146,95 @@ export async function forcePushBranch(
 ): Promise<void> {
   await git(worktreePath, 'push', '--force-with-lease', 'origin', branchName);
 }
+
+export type SquashMergeResult =
+  | { success: true; mergedSha: string }
+  | { success: false; reason: string };
+
+/**
+ * Squash the worktree branch into the repo's base branch without touching
+ * either working tree's content beyond a fast-forward.
+ *
+ * Implementation uses plumbing — `commit-tree` builds a single commit
+ * that captures the worktree HEAD's tree on top of the current base, and
+ * `merge --ff-only` advances the base branch ref. The fast-forward keeps
+ * any uncommitted edits in the main checkout that don't overlap the
+ * merged change; if there is overlap (or the main checkout isn't on
+ * `baseBranch`) we bail with `success: false` and leave the agent
+ * branch alone for manual review.
+ */
+export async function squashMergeIntoBase(
+  repoRoot: string,
+  worktreePath: string,
+  baseBranch: string,
+  message: string,
+): Promise<SquashMergeResult> {
+  let currentBranch: string;
+  try {
+    currentBranch = await git(repoRoot, 'rev-parse', '--abbrev-ref', 'HEAD');
+  } catch (err: any) {
+    return { success: false, reason: `rev-parse-head-failed: ${err.message ?? err}` };
+  }
+  if (currentBranch !== baseBranch) {
+    return { success: false, reason: `repo-root-on-${currentBranch}-not-${baseBranch}` };
+  }
+
+  let tree: string;
+  let baseSha: string;
+  try {
+    tree = await git(worktreePath, 'rev-parse', 'HEAD^{tree}');
+    baseSha = await git(repoRoot, 'rev-parse', baseBranch);
+  } catch (err: any) {
+    return { success: false, reason: `rev-parse-failed: ${err.message ?? err}` };
+  }
+
+  if (tree === (await safeRevParse(repoRoot, `${baseBranch}^{tree}`))) {
+    return { success: false, reason: 'tree-identical-to-base' };
+  }
+
+  let mergedSha: string;
+  try {
+    mergedSha = await git(worktreePath, 'commit-tree', tree, '-p', baseSha, '-m', message);
+  } catch (err: any) {
+    return { success: false, reason: `commit-tree-failed: ${err.message ?? err}` };
+  }
+
+  try {
+    await git(repoRoot, 'merge', '--ff-only', mergedSha);
+  } catch (err: any) {
+    return { success: false, reason: `ff-merge-failed: ${err.message ?? err}` };
+  }
+
+  return { success: true, mergedSha };
+}
+
+async function safeRevParse(cwd: string, rev: string): Promise<string | null> {
+  try {
+    return await git(cwd, 'rev-parse', rev);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Delete a local branch (force; the branch is presumed merged via squash so
+ * git's "not fully merged" check would otherwise refuse).
+ */
+export async function deleteLocalBranch(cwd: string, branchName: string): Promise<void> {
+  try {
+    await git(cwd, 'branch', '-D', branchName);
+  } catch {
+    // Branch may already be gone (e.g. worktree removal pruned it).
+  }
+}
+
+/**
+ * Delete a remote branch on origin. Best-effort.
+ */
+export async function deleteRemoteBranch(cwd: string, branchName: string): Promise<void> {
+  try {
+    await git(cwd, 'push', 'origin', '--delete', branchName);
+  } catch {
+    // Branch may not exist on remote (was never pushed) or remote is offline.
+  }
+}

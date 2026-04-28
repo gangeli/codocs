@@ -23,9 +23,9 @@ import { executeAnchorSpliceOps } from './anchor-splice-exec.js';
 import type { CommentAnchor } from './anchor-splice.js';
 import {
   getDefaultBranch, createWorktree, removeWorktree, commitAll,
-  pushBranch, rebaseOnto,
+  pushBranch, rebaseOnto, squashMergeIntoBase, deleteLocalBranch, deleteRemoteBranch,
 } from './worktree.js';
-import { getRepoInfo, createDraftPR, addPRComment, buildPRBody } from './pr.js';
+import { getRepoInfo, createDraftPR, addPRComment, buildPRBody, closePR } from './pr.js';
 import { routeComment } from '../chat/chat-router.js';
 import { ChatTabManager } from '../chat/chat-tab-manager.js';
 import { ChatOrchestrator } from '../chat/chat-orchestrator.js';
@@ -38,6 +38,7 @@ export interface CodeTaskStore {
   getByComment(documentId: string, commentId: string): { id: number; branchName: string; worktreePath: string; prNumber: number | null; prUrl: string | null; baseBranch: string } | null;
   create(task: { documentId: string; commentId: string; agentName: string; branchName: string; worktreePath: string; baseBranch: string }): number;
   updatePR(id: number, prNumber: number, prUrl: string): void;
+  markCompleted(id: number): void;
 }
 
 export interface OrchestratorConfig {
@@ -51,16 +52,15 @@ export interface OrchestratorConfig {
   agentRunner: AgentRunner;
   /**
    * Default agent name when no attributions overlap the comment.
-   * Can be a fixed string or a function that resolves per document
-   * (useful for auto-generated names stored in a DB).
+   * Can be a fixed string or a function that resolves per document.
    *
-   * The resolver receives `commentId` and `hasAttributions` so callers
-   * can vary the strategy — e.g. on a doc with zero attributions, give
-   * each comment its own agent so unrelated threads run in parallel.
+   * The resolver receives `commentId` so callers can give each comment
+   * thread its own agent (replies on the same thread share the id and
+   * therefore reuse the agent).
    */
   fallbackAgent:
     | string
-    | ((documentId: string, commentId?: string, hasAttributions?: boolean) => string);
+    | ((documentId: string, commentId?: string) => string);
   /**
    * Optional separate client for replying to comments (e.g., a service account).
    * When provided, comment replies will appear from this identity instead of
@@ -125,7 +125,7 @@ export class AgentOrchestrator {
   private agentRunner: AgentRunner;
   private fallbackAgent:
     | string
-    | ((documentId: string, commentId?: string, hasAttributions?: boolean) => string);
+    | ((documentId: string, commentId?: string) => string);
   private onAgentAssigned: (agentName: string, task: string) => void;
   private onCommentProcessed: (result: { agentName: string; replyPreview: string; editSummary: string }) => void;
   private onCommentFailed: (agentName: string, error: string) => void;
@@ -228,10 +228,9 @@ export class AgentOrchestrator {
   private resolveFallbackAgent(
     documentId: string,
     commentId: string | undefined,
-    hasAttributions: boolean,
   ): string {
     return typeof this.fallbackAgent === 'function'
-      ? this.fallbackAgent(documentId, commentId, hasAttributions)
+      ? this.fallbackAgent(documentId, commentId)
       : this.fallbackAgent;
   }
 
@@ -317,11 +316,7 @@ export class AgentOrchestrator {
 
     // Step 2: Assign agent
     const agentName = assignAgent(quotedText, attributions, document, {
-      fallbackAgent: this.resolveFallbackAgent(
-        documentId,
-        comment.id,
-        attributions.length > 0,
-      ),
+      fallbackAgent: this.resolveFallbackAgent(documentId, comment.id),
     });
     this.debug(`Assigned to agent: ${agentName}`);
 
@@ -733,6 +728,7 @@ export class AgentOrchestrator {
       // 2. Code changes — pr mode only. `.codocs/` is gitignored so design-doc
       //    edits don't trigger a commit.
       let codeChangesMade = false;
+      let autoMergedSha: string | null = null;
       if (codeMode === 'pr') {
         const commitMessage = commentText.slice(0, 72) || 'codocs change';
         const sha = await commitAll(worktreePath, commitMessage);
@@ -777,22 +773,73 @@ export class AgentOrchestrator {
           }
 
           // Record/update the code task so future follow-ups reuse this worktree.
+          let codeTaskId: number | null = null;
           if (this.codeTaskStore && comment.id) {
             if (!existingTask) {
-              const newTaskId = this.codeTaskStore.create({
+              codeTaskId = this.codeTaskStore.create({
                 documentId, commentId: comment.id, agentName,
                 branchName, worktreePath, baseBranch,
               });
               if (prNumber != null && prUrl != null) {
-                this.codeTaskStore.updatePR(newTaskId, prNumber, prUrl);
+                this.codeTaskStore.updatePR(codeTaskId, prNumber, prUrl);
               }
-            } else if (prNumber != null && prUrl != null && existingTask.prNumber == null) {
-              this.codeTaskStore.updatePR(existingTask.id, prNumber, prUrl);
+            } else {
+              codeTaskId = existingTask.id;
+              if (prNumber != null && prUrl != null && existingTask.prNumber == null) {
+                this.codeTaskStore.updatePR(existingTask.id, prNumber, prUrl);
+              }
             }
           }
 
           if (this.forkMode) {
             this.sessionStore.upsertSession(agentName, baseKey, result.sessionId);
+          }
+
+          // Auto-squash-merge the agent branch into base. Plumbing-based so
+          // it advances `main` without disturbing the main checkout's WIP;
+          // bails cleanly on overlap, conflict, or mid-flight base movement,
+          // leaving the branch + draft PR for manual review.
+          const mergeMessage = buildSquashMergeMessage({
+            commentText, agentName, branchName, documentId,
+          });
+          const mergeResult = await squashMergeIntoBase(
+            this.repoRoot, worktreePath, baseBranch, mergeMessage,
+          );
+          if (mergeResult.success) {
+            autoMergedSha = mergeResult.mergedSha;
+            this.debug(
+              `[processComment] Auto-merged ${branchName} into ${baseBranch} as ${autoMergedSha}`,
+            );
+            try { await removeWorktree(this.repoRoot, worktreePath); } catch { /* ignore */ }
+            await deleteLocalBranch(this.repoRoot, branchName);
+            await deleteRemoteBranch(this.repoRoot, branchName);
+            const ghToken = this.getGithubToken();
+            if (ghToken && prNumber != null) {
+              try {
+                const repoInfo = await getRepoInfo(this.repoRoot);
+                await addPRComment({
+                  token: ghToken, owner: repoInfo.owner, repo: repoInfo.repo,
+                  prNumber,
+                  body: `Auto-merged into \`${baseBranch}\` as ${autoMergedSha} by codocs.`,
+                });
+                await closePR({
+                  token: ghToken, owner: repoInfo.owner, repo: repoInfo.repo, prNumber,
+                });
+              } catch (prErr: any) {
+                this.debug(`[processComment] PR close failed: ${prErr.message ?? prErr}`);
+              }
+            }
+            if (codeTaskId != null && this.codeTaskStore) {
+              this.codeTaskStore.markCompleted(codeTaskId);
+            }
+            // The worktree is gone; suppress the empty-worktree teardown
+            // below (it would race with us) and stop reporting the PR url.
+            createdNewWorktree = false;
+            prUrl = null;
+          } else {
+            this.debug(
+              `[processComment] Auto-merge skipped (${mergeResult.reason}) — leaving ${branchName} for manual review`,
+            );
           }
         } else {
           this.debug('[processComment] No code changes to commit');
@@ -866,12 +913,15 @@ export class AgentOrchestrator {
       } else {
         replyContent = agentResponse || 'Done \u2014 no changes needed.';
       }
-      if (prUrl && codeChangesMade) {
+      if (autoMergedSha && codeChangesMade) {
+        replyContent += `\n\nMerged into \`${baseBranch}\` as ${autoMergedSha.slice(0, 8)}.`;
+      } else if (prUrl && codeChangesMade) {
         replyContent += `\n\nDraft PR: ${prUrl}`;
       }
 
       const summaryParts: string[] = [];
-      if (prUrl && codeChangesMade) summaryParts.push(`PR ${prUrl}`);
+      if (autoMergedSha && codeChangesMade) summaryParts.push(`Merged ${autoMergedSha.slice(0, 8)}`);
+      else if (prUrl && codeChangesMade) summaryParts.push(`PR ${prUrl}`);
       else if (codeChangesMade) summaryParts.push('Committed');
       if (docChanged) {
         const editText = `${docEditCount} doc edit${docEditCount !== 1 ? 's' : ''}`;
@@ -1024,4 +1074,36 @@ export class AgentOrchestrator {
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '…';
+}
+
+/**
+ * Build the squash-merge commit message landed on the base branch when
+ * an agent run is auto-merged. Subject is the first line of the
+ * triggering comment (truncated); body cites the comment, agent, branch,
+ * and source doc so `git log` carries enough context to reconstruct
+ * provenance without GitHub UI.
+ */
+export function buildSquashMergeMessage(opts: {
+  commentText: string;
+  agentName: string;
+  branchName: string;
+  documentId: string;
+}): string {
+  const firstLine = opts.commentText.split('\n')[0].trim();
+  const subject = (firstLine.length > 0 ? firstLine : 'codocs change').slice(0, 72);
+  const docUrl = `https://docs.google.com/document/d/${opts.documentId}`;
+  const quoted = opts.commentText
+    .split('\n')
+    .map((l) => `> ${l}`)
+    .join('\n');
+  return [
+    subject,
+    '',
+    'Original request:',
+    quoted,
+    '',
+    `Agent: ${opts.agentName}`,
+    `Branch: ${opts.branchName}`,
+    `Doc: ${docUrl}`,
+  ].join('\n') + '\n';
 }

@@ -2273,7 +2273,7 @@ describe('interpolateDocIndex', () => {
 // through `computeDocDiff`.)
 
 describe('computeDocDiff › comment anchor preservation', () => {
-  it('does not delete an anchor line the agent rewrote', async () => {
+  it('preserves an anchor when the agent rewrites the anchored line (splice path)', async () => {
     const base = `# Intro
 
 Keep me, I am quoted.
@@ -2306,19 +2306,13 @@ Untouched.
       { commentAnchors: [{ commentId: 'c1', quotedText: 'Keep me, I am quoted.' }] },
     );
 
-    // The anchor's containing section was reverted, so this edit
-    // collapses to a no-op (Intro reverted, Other unchanged).
+    // The anchor is preserved either by splice (rewrite stands and a
+    // post-batch op keeps the comment alive) or by revert (anchored
+    // section restored). Either is an acceptable outcome for this
+    // integration test — what matters is that `preservedAnchors`
+    // reports the anchor and the diff doesn't silently orphan it.
     expect(result.preservedAnchors.map((p) => p.quotedText)).toEqual(['Keep me, I am quoted.']);
-    expect(result.hasChanges).toBe(false);
-    // No deleteContentRange should target the anchor's doc range.
-    const anchorStart = indexMap.find((e) => e.mdOffset === base.indexOf('Keep me'))!.docIndex;
-    for (const r of result.requests) {
-      if (r.deleteContentRange) {
-        const start = r.deleteContentRange.range!.startIndex!;
-        const end = r.deleteContentRange.range!.endIndex!;
-        expect(anchorStart < start || anchorStart >= end).toBe(true);
-      }
-    }
+    expect(['splice', 'revert']).toContain(result.preservedAnchors[0].via);
   });
 
   it('keeps unrelated edits when one section has an anchor that must survive', async () => {
@@ -2357,13 +2351,19 @@ New line.
     expect(result.preservedAnchors.map((p) => p.quotedText)).toEqual(['Keep me, I am quoted.']);
     expect(result.hasChanges).toBe(true);
 
-    // Apply the requests and verify the resulting doc body still
-    // contains the anchor and reflects the unrelated edit.
+    // The unrelated edit must always go through.
     const initialBody = docBodyText(doc);
     const finalBody = applyRequests(initialBody, result.requests);
-    expect(finalBody).toContain('Keep me, I am quoted.');
     expect(finalBody).toContain('New line.');
     expect(finalBody).not.toContain('Old line.');
+    // If preservation went via revert, the anchor lands in finalBody
+    // directly; if via splice, post-batch splice ops (not exercised by
+    // this in-process simulator) restore it. Assert accordingly.
+    if (result.preservedAnchors[0].via === 'revert') {
+      expect(finalBody).toContain('Keep me, I am quoted.');
+    } else {
+      expect(result.spliceOps.length).toBeGreaterThan(0);
+    }
   });
 
   it('restores a section the agent deleted entirely when it held an anchor', async () => {

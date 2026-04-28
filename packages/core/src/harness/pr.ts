@@ -115,6 +115,25 @@ export async function addPRComment(opts: {
 }
 
 /**
+ * Close a PR (without merging via the API). Used after we squash-merge
+ * the branch into base locally — closing the PR keeps GitHub's UI in
+ * sync so the PR doesn't sit forever as an open draft.
+ */
+export async function closePR(opts: {
+  token: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+}): Promise<void> {
+  await githubApi(
+    'PATCH',
+    `/repos/${opts.owner}/${opts.repo}/pulls/${opts.prNumber}`,
+    opts.token,
+    { state: 'closed' },
+  );
+}
+
+/**
  * Build a PR description body that links back to the Google Doc.
  */
 export function buildPRBody(opts: {

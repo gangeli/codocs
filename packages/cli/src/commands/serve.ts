@@ -23,6 +23,7 @@ import {
   type PermissionMode,
 } from '@codocs/core';
 import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore, CodeTaskStore, CodocsSessionStore, type CodocsSession } from '@codocs/db';
+import { makeFallbackAgentResolver } from '../agent/fallback-resolver.js';
 import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
 import { withErrorHandler } from '../util.js';
 import { renderExit } from '../exit.js';
@@ -910,25 +911,12 @@ export function registerServeCommand(program: Command) {
         const agentNameStore = new AgentNameStore(db);
         const codeTaskStore = new CodeTaskStore(db);
 
-        // Resolve fallback agent name: use explicit flag, or generate a
-        // cute two-word name (persisted so resumes keep the name).
-        //
-        // When the doc has zero attributions, give each comment thread its
-        // own agent so unrelated threads run in parallel. Replies on the
-        // same thread share comment.id and so retain the same agent. Once
-        // the doc accumulates attribution spans we fall back to a single
-        // per-doc name for "the rest" — the assumption being that those
-        // sections share an implicit owner.
+        // Resolve fallback agent name: use explicit flag, or give each
+        // comment thread its own generated name (persisted so resumes and
+        // replies on the same thread reuse it).
         const fallbackAgent = opts.fallbackAgent
           ? opts.fallbackAgent
-          : (documentId: string, commentId?: string, hasAttributions?: boolean) => {
-              if (commentId && !hasAttributions) {
-                return agentNameStore.getOrCreate(
-                  documentId, `comment:${commentId}`, generateAgentName,
-                );
-              }
-              return agentNameStore.getOrCreate(documentId, 'fallback', generateAgentName);
-            };
+          : makeFallbackAgentResolver(agentNameStore, generateAgentName);
 
         const client = new CodocsClient({
           oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
