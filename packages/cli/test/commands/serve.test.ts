@@ -1,5 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
-import { metaRestartShutdown, type MetaRestartShutdownCtx } from '../../src/commands/meta-restart.js';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import {
+  metaRestartShutdown,
+  captureCodeBaseline,
+  hasCodeChanged,
+  type MetaRestartShutdownCtx,
+} from '../../src/commands/meta-restart.js';
 import {
   buildRestartArgs,
   extractDocId,
@@ -129,6 +138,77 @@ describe('metaRestartShutdown', () => {
     expect(cancelIdleCalled()).toBe(true);
     expect(listenerClosed()).toBe(true);
     expect(dbClosed()).toBe(true);
+  });
+});
+
+describe('captureCodeBaseline / hasCodeChanged', () => {
+  function makeRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'codocs-meta-baseline-'));
+    spawnSync('git', ['init', '-q'], { cwd: dir });
+    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+    spawnSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    writeFileSync(join(dir, 'README.md'), 'initial\n');
+    spawnSync('git', ['add', '.'], { cwd: dir });
+    spawnSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir });
+    return dir;
+  }
+
+  it('reports unchanged when nothing has been written', () => {
+    const dir = makeRepo();
+    try {
+      const baseline = captureCodeBaseline(dir);
+      expect(baseline).not.toBe('');
+      expect(hasCodeChanged(baseline, dir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects an edited tracked file as a code change', () => {
+    const dir = makeRepo();
+    try {
+      const baseline = captureCodeBaseline(dir);
+      writeFileSync(join(dir, 'README.md'), 'changed\n');
+      expect(hasCodeChanged(baseline, dir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects an untracked file as a code change', () => {
+    const dir = makeRepo();
+    try {
+      const baseline = captureCodeBaseline(dir);
+      writeFileSync(join(dir, 'new.ts'), 'export {};\n');
+      expect(hasCodeChanged(baseline, dir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects a new commit as a code change', () => {
+    const dir = makeRepo();
+    try {
+      const baseline = captureCodeBaseline(dir);
+      writeFileSync(join(dir, 'README.md'), 'changed\n');
+      spawnSync('git', ['add', '.'], { cwd: dir });
+      spawnSync('git', ['commit', '-q', '-m', 'second'], { cwd: dir });
+      expect(hasCodeChanged(baseline, dir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to "changed" when no baseline could be captured', () => {
+    // Empty baseline = capture failed (no git, not a repo, etc.). Treat as
+    // changed so we don't silently skip a real rebuild.
+    const dir = mkdtempSync(join(tmpdir(), 'codocs-meta-no-git-'));
+    try {
+      expect(hasCodeChanged('', dir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
