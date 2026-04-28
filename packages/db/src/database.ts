@@ -81,9 +81,6 @@ const SCHEMA = `
     PRIMARY KEY (document_id, source_hash)
   );
 
-  CREATE INDEX IF NOT EXISTS idx_mermaid_mappings_file
-    ON mermaid_mappings (document_id, drive_file_id);
-
   CREATE TABLE IF NOT EXISTS chat_tabs (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id       TEXT NOT NULL,
@@ -164,12 +161,18 @@ export async function openDatabase(path?: string): Promise<Database> {
 
   // Additive migration: drive_file_id was added after the initial release.
   // CREATE TABLE IF NOT EXISTS leaves an existing table's columns untouched,
-  // so an ALTER is needed for older databases.
+  // so an ALTER is needed for older databases. Must run before any index
+  // that references the column.
   try {
     db.run('ALTER TABLE mermaid_mappings ADD COLUMN drive_file_id TEXT');
   } catch {
     // Already added — ignore.
   }
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_mermaid_mappings_file
+      ON mermaid_mappings (document_id, drive_file_id);
+  `);
 
   return db;
 }
