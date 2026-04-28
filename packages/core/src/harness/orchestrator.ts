@@ -158,6 +158,14 @@ export class AgentOrchestrator {
    * removed in the promise's finally handler.
    */
   private activePromises = new Map<string, Set<Promise<void>>>();
+  /**
+   * Per-document serialization tail for fork mode. Each entry is the
+   * promise of the most recently scheduled processComment for that doc;
+   * the next fork chains onto it so two forks never edit the same doc
+   * concurrently. Entries are removed once the chain settles. Different
+   * docs remain fully parallel.
+   */
+  private docLocks = new Map<string, Promise<unknown>>();
   /** Thinking-reply IDs posted at enqueue time, keyed by queue item id. */
   private pendingThinkingReplies = new Map<number, string>();
   /** Whether onIdle has already fired since the last busy state. */
@@ -381,22 +389,35 @@ export class AgentOrchestrator {
     const thinkingReplyId = this.pendingThinkingReplies.get(item.id) ?? null;
     this.pendingThinkingReplies.delete(item.id);
 
-    const promise: Promise<void> = Promise.resolve()
-      .then(async () => {
-        try {
-          const result = await this.processComment(
-            item.commentEvent as CommentEvent,
-            agentName,
-            thinkingReplyId,
-          );
-          this.queueStore.markCompleted(item.id);
-          this.onCommentProcessed({ agentName, ...result });
-        } catch (err: any) {
-          this.debug(`Failed to process queue item ${item.id}: ${err.message ?? err}`);
-          this.queueStore.markFailed(item.id, String(err));
-          this.onCommentFailed(agentName, err.message ?? String(err));
-        }
-      })
+    const documentId = (item.commentEvent as CommentEvent).documentId;
+    const run = async (): Promise<void> => {
+      try {
+        const result = await this.processComment(
+          item.commentEvent as CommentEvent,
+          agentName,
+          thinkingReplyId,
+        );
+        this.queueStore.markCompleted(item.id);
+        this.onCommentProcessed({ agentName, ...result });
+      } catch (err: any) {
+        this.debug(`Failed to process queue item ${item.id}: ${err.message ?? err}`);
+        this.queueStore.markFailed(item.id, String(err));
+        this.onCommentFailed(agentName, err.message ?? String(err));
+      }
+    };
+    // Chain on the doc's tail so two forks for the same doc never run
+    // concurrently. Both branches of `.then` run `run`, so a rejected tail
+    // (shouldn't happen — `run` catches its own errors) can't wedge the doc.
+    const prevDocTail = this.docLocks.get(documentId) ?? Promise.resolve();
+    const docTail = prevDocTail.then(run, run);
+    this.docLocks.set(documentId, docTail);
+    docTail.finally(() => {
+      if (this.docLocks.get(documentId) === docTail) {
+        this.docLocks.delete(documentId);
+      }
+    });
+
+    const promise: Promise<void> = docTail
       .finally(() => {
         const s = this.activePromises.get(agentName);
         if (s) {

@@ -760,7 +760,41 @@ describe('AgentOrchestrator fork-per-comment', () => {
     db.close();
   });
 
-  it('runs two new-thread comments for the same agent concurrently', async () => {
+  it('runs two new-thread comments on different docs concurrently', async () => {
+    const client = createMockClient(callLog);
+    const replyClient = createMockReplyClient(callLog);
+    const fr = createForkMockRunner();
+
+    const orchestrator = createOrchestrator({
+      client,
+      replyClient,
+      sessionStore: createMockSessionStore(),
+      queueStore,
+      agentRunner: fr.runner,
+      fallbackAgent: 'test-agent',
+    });
+
+    const a = makeCommentEvent({ documentId: 'doc-a' });
+    a.comment.id = 'thread-a';
+    const b = makeCommentEvent({ documentId: 'doc-b' });
+    b.comment.id = 'thread-b';
+
+    await orchestrator.handleComment(a);
+    await orchestrator.handleComment(b);
+    await settle();
+
+    // Both agent runs should be in flight simultaneously — different docs.
+    expect(fr.inFlight()).toBe(2);
+    expect(fr.calls.length).toBe(2);
+    // Each runner call got a distinct prompt — they correspond to the two
+    // different comment IDs rather than duplicating a single one.
+    expect(new Set(fr.calls.map((c) => c.prompt)).size).toBe(2);
+
+    fr.releaseAll();
+    await orchestrator.waitForIdle();
+  });
+
+  it('serializes two new-thread comments on the same doc', async () => {
     const client = createMockClient(callLog);
     const replyClient = createMockReplyClient(callLog);
     const fr = createForkMockRunner();
@@ -783,14 +817,16 @@ describe('AgentOrchestrator fork-per-comment', () => {
     await orchestrator.handleComment(b);
     await settle();
 
-    // Both agent runs should be in flight simultaneously.
-    expect(fr.inFlight()).toBe(2);
-    expect(fr.calls.length).toBe(2);
-    // Each runner call got a distinct prompt — they correspond to the two
-    // different comment IDs rather than duplicating a single one.
-    expect(new Set(fr.calls.map((c) => c.prompt)).size).toBe(2);
+    // Per-doc lock: only one of the two same-doc forks runs at a time.
+    expect(fr.inFlight()).toBe(1);
+    expect(fr.calls.length).toBe(1);
 
-    fr.releaseAll();
+    fr.releaseOne();
+    await settle();
+    expect(fr.inFlight()).toBe(1);
+    expect(fr.calls.length).toBe(2);
+
+    fr.releaseOne();
     await orchestrator.waitForIdle();
   });
 
@@ -998,8 +1034,9 @@ describe('AgentOrchestrator fork-per-comment', () => {
       fallbackAgent: 'test-agent',
     });
 
+    // Distinct docs — per-doc serialization shouldn't collapse them onto one.
     for (let i = 0; i < 5; i++) {
-      const e = makeCommentEvent();
+      const e = makeCommentEvent({ documentId: `doc-${i}` });
       e.comment.id = `thread-${i}`;
       await orchestrator.handleComment(e);
     }
@@ -1026,11 +1063,12 @@ describe('AgentOrchestrator fork-per-comment', () => {
     const fr = createForkMockRunner();
     const sessionStore = createMockSessionStore();
 
-    // Pre-seed 3 pending rows, same agent, distinct thread IDs.
+    // Pre-seed 3 pending rows on distinct docs so per-doc serialization
+    // doesn't collapse them onto one in-flight slot.
     for (let i = 0; i < 3; i++) {
-      const e = makeCommentEvent();
+      const e = makeCommentEvent({ documentId: `doc-recover-${i}` });
       e.comment.id = `thread-recover-${i}`;
-      queueStore.enqueue('test-agent', 'doc-123', e);
+      queueStore.enqueue('test-agent', `doc-recover-${i}`, e);
     }
 
     const orchestrator = createOrchestrator({
