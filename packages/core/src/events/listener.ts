@@ -96,6 +96,20 @@ export interface ListenOptions {
    *  loops when codocs replies using the user's own OAuth credentials —
    *  in that case the author looks identical to a human reply. */
   replyTracker?: { has(id: string): boolean };
+  /** Initial reconnect delay after the stream drops. Default 1000 ms. */
+  reconnectInitialDelayMs?: number;
+  /** Maximum backoff between reconnect attempts. Default 60_000 ms. */
+  reconnectMaxDelayMs?: number;
+  /** How often the watchdog checks subscription health. Default 60_000 ms.
+   *  Set to 0 to disable. */
+  healthCheckIntervalMs?: number;
+  /** Force a reconnect if no message has been seen for this long. Defensive
+   *  guard against half-open streams the library doesn't notice. Default
+   *  0 (disabled). */
+  idleReconnectMs?: number;
+  /** Called whenever the listener reconnects to the subscription. Useful for
+   *  surfacing reconnect events in UI/status. */
+  onReconnect?: (info: { attempt: number; reason: string }) => void;
 }
 
 /**
@@ -131,7 +145,6 @@ export function listenForComments(
       refresh_token: auth.refreshToken,
     },
   });
-  const subscription: Subscription = pubsub.subscription(fullSubName);
 
   // Create a Drive API client for fetching full comment details
   const driveAuth = createAuth({
@@ -143,9 +156,23 @@ export function listenForComments(
   });
   const driveApi = new DriveApi(driveAuth);
 
+  const initialDelay = options?.reconnectInitialDelayMs ?? 1000;
+  const maxDelay = options?.reconnectMaxDelayMs ?? 60_000;
+  const healthInterval = options?.healthCheckIntervalMs ?? 60_000;
+  const idleReconnectMs = options?.idleReconnectMs ?? 0;
+
+  let subscription: Subscription = pubsub.subscription(fullSubName);
+  let manuallyClosed = false;
+  let reconnectAttempt = 0;
+  let reconnectTimer: NodeJS.Timeout | null = null;
+  let healthTimer: NodeJS.Timeout | null = null;
+  let lastActivityAt = Date.now();
+
   debug('Subscription object created, waiting for messages...');
 
   const messageHandler = async (message: Message) => {
+    lastActivityAt = Date.now();
+    reconnectAttempt = 0;
     debug(`--- Raw Pub/Sub message received ---`);
     debug(`  Message ID: ${message.id}`);
     debug(`  Publish time: ${message.publishTime?.toISOString()}`);
@@ -266,18 +293,88 @@ export function listenForComments(
     });
   }
 
-  subscription.on('message', messageHandler);
-  subscription.on('error', errorHandler);
-
-  subscription.on('close', () => {
+  const closeHandler = () => {
     debug('Pub/Sub subscription stream closed');
-  });
+    if (manuallyClosed) return;
+    scheduleReconnect('subscription emitted close');
+  };
+
+  function attachHandlers(sub: Subscription) {
+    sub.on('message', messageHandler);
+    sub.on('error', errorHandler);
+    sub.on('close', closeHandler);
+  }
+
+  function detachHandlers(sub: Subscription) {
+    sub.removeListener('message', messageHandler);
+    sub.removeListener('error', errorHandler);
+    sub.removeListener('close', closeHandler);
+  }
+
+  function scheduleReconnect(reason: string) {
+    if (manuallyClosed || reconnectTimer) return;
+    const delay = Math.min(maxDelay, initialDelay * 2 ** reconnectAttempt);
+    reconnectAttempt += 1;
+    debug(`Scheduling reconnect (attempt ${reconnectAttempt}) in ${delay}ms — ${reason}`);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      reconnect(reason).catch((err) => {
+        debug(`Reconnect failed: ${(err as Error).message}`);
+        scheduleReconnect(`retry after failure: ${(err as Error).message}`);
+      });
+    }, delay);
+    if (typeof reconnectTimer.unref === 'function') reconnectTimer.unref();
+  }
+
+  async function reconnect(reason: string) {
+    if (manuallyClosed) return;
+    const old = subscription;
+    detachHandlers(old);
+    try {
+      await old.close();
+    } catch (err) {
+      debug(`Old subscription close errored (ignored): ${(err as Error).message}`);
+    }
+    if (manuallyClosed) return;
+    subscription = pubsub.subscription(fullSubName);
+    attachHandlers(subscription);
+    lastActivityAt = Date.now();
+    debug(`Reconnected to ${fullSubName} (attempt ${reconnectAttempt}, reason: ${reason})`);
+    options?.onReconnect?.({ attempt: reconnectAttempt, reason });
+  }
+
+  attachHandlers(subscription);
+
+  if (healthInterval > 0) {
+    healthTimer = setInterval(() => {
+      if (manuallyClosed) return;
+      if (!subscription.isOpen) {
+        debug('Health check: subscription not open, recycling');
+        scheduleReconnect('health check: not open');
+        return;
+      }
+      if (idleReconnectMs > 0 && Date.now() - lastActivityAt > idleReconnectMs) {
+        debug(`Health check: idle for ${Date.now() - lastActivityAt}ms, recycling`);
+        lastActivityAt = Date.now(); // avoid retrigger while reconnect is pending
+        scheduleReconnect('health check: idle');
+      }
+    }, healthInterval);
+    if (typeof healthTimer.unref === 'function') healthTimer.unref();
+  }
 
   return {
     async close() {
       debug('Closing listener...');
-      subscription.removeListener('message', messageHandler);
-      subscription.removeListener('error', errorHandler);
+      manuallyClosed = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (healthTimer) {
+        clearInterval(healthTimer);
+        healthTimer = null;
+      }
+      detachHandlers(subscription);
       await subscription.close();
       debug('Listener closed');
     },

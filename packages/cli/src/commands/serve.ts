@@ -1128,7 +1128,18 @@ export function registerServeCommand(program: Command) {
           (error: Error) => {
             emit({ time: new Date(), type: 'error', content: `Pub/Sub error: ${error.message}` });
           },
-          { debug, botEmails: botEmail ? [botEmail] : [], replyTracker },
+          {
+            debug,
+            botEmails: botEmail ? [botEmail] : [],
+            replyTracker,
+            onReconnect: ({ attempt, reason }: { attempt: number; reason: string }) => {
+              emit({
+                time: new Date(),
+                type: 'system',
+                content: `Pub/Sub reconnected (attempt ${attempt}, ${reason})`,
+              });
+            },
+          },
         );
 
         // ── Subscription renewal ──────────────────────────────────

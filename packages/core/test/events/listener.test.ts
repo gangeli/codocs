@@ -8,6 +8,7 @@ let currentSubscription: FakeSubscription | null = null;
 class FakeSubscription extends EventEmitter {
   subName: string;
   closed = false;
+  isOpen = true;
   constructor(name: string) {
     super();
     this.subName = name;
@@ -15,6 +16,7 @@ class FakeSubscription extends EventEmitter {
   }
   async close() {
     this.closed = true;
+    this.isOpen = false;
   }
 }
 
@@ -454,6 +456,95 @@ describe('listenForComments', () => {
     expect(sub.listenerCount('message')).toBe(0);
     expect(sub.listenerCount('error')).toBe(0);
     expect(sub.closed).toBe(true);
+  });
+
+  it("reconnects when the subscription emits 'close' (non-manual)", async () => {
+    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const handle = listenForComments(
+      'proj-1',
+      'sub-1',
+      auth,
+      () => {},
+      undefined,
+      {
+        reconnectInitialDelayMs: 0,
+        reconnectMaxDelayMs: 0,
+        healthCheckIntervalMs: 0,
+        onReconnect: (info) => reconnects.push(info),
+      },
+    );
+    const firstSub = currentSubscription!;
+    expect(firstSub.listenerCount('close')).toBe(1);
+
+    firstSub.emit('close');
+    // Allow the 0ms timeout + the async reconnect() body to run.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setImmediate(r));
+
+    expect(currentSubscription).not.toBe(firstSub);
+    expect(currentSubscription!.subName).toBe('projects/proj-1/subscriptions/sub-1');
+    expect(currentSubscription!.listenerCount('message')).toBe(1);
+    expect(reconnects).toEqual([
+      { attempt: 1, reason: 'subscription emitted close' },
+    ]);
+    expect(firstSub.closed).toBe(true);
+    await handle.close();
+  });
+
+  it("recycles via the watchdog when subscription.isOpen becomes false", async () => {
+    vi.useFakeTimers();
+    try {
+      const reconnects: Array<{ attempt: number; reason: string }> = [];
+      const handle = listenForComments(
+        'proj-1',
+        'sub-1',
+        auth,
+        () => {},
+        undefined,
+        {
+          reconnectInitialDelayMs: 0,
+          healthCheckIntervalMs: 50,
+          onReconnect: (info) => reconnects.push(info),
+        },
+      );
+      const firstSub = currentSubscription!;
+      // Simulate the gRPC stream silently dying without emitting 'close'.
+      firstSub.isOpen = false;
+
+      vi.advanceTimersByTime(60);
+      // Drain reconnect timer + async close.
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(currentSubscription).not.toBe(firstSub);
+      expect(reconnects[0]?.reason).toBe('health check: not open');
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('manual close cancels any pending reconnect', async () => {
+    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const handle = listenForComments(
+      'proj-1',
+      'sub-1',
+      auth,
+      () => {},
+      undefined,
+      {
+        reconnectInitialDelayMs: 50,
+        healthCheckIntervalMs: 0,
+        onReconnect: (info) => reconnects.push(info),
+      },
+    );
+    const firstSub = currentSubscription!;
+    firstSub.emit('close');
+    await handle.close();
+    // Wait past the would-be reconnect delay.
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(reconnects).toEqual([]);
+    expect(currentSubscription).toBe(firstSub);
   });
 
   it('treats tracked own-reply IDs as bot and suppresses the event', async () => {
