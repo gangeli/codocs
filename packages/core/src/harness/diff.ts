@@ -18,6 +18,12 @@ import { markdownToDocsRequests } from '../converter/md-to-docs.js';
 import { walkAst, type TextSegment } from '../converter/ast-walker.js';
 import { createAttributionRequests } from '../attribution/named-ranges.js';
 import { CODELANG_RANGE_PREFIX } from '../types.js';
+import {
+  planAnchorOutcomes,
+  type AnchorSpliceOp,
+  type CommentAnchor,
+} from './anchor-splice.js';
+export type { AnchorSpliceOp, CommentAnchor } from './anchor-splice.js';
 
 /** A section of a markdown document, delimited by headings. */
 export interface MdSection {
@@ -49,6 +55,28 @@ export interface DiffResult {
   requests: docs_v1.Schema$Request[];
   /** Number of conflicts that were resolved (via callback). */
   conflictsResolved: number;
+  /**
+   * Comment anchors (`quotedText` from comments) that the agent's edit
+   * would have orphaned. Each entry records the anchor and how it was
+   * preserved — by reverting the section to current doc state, or by
+   * the post-batch splice path (§3.7.1). Empty when no anchors were
+   * at risk.
+   */
+  preservedAnchors: PreservedAnchor[];
+  /**
+   * Anchor-splice operations to execute *after* the main batchUpdate
+   * lands. Each op is a two-step sequence (insert, then trim) that
+   * keeps a comment alive on rewritten text. Empty when no splice was
+   * applicable.
+   */
+  spliceOps: AnchorSpliceOp[];
+}
+
+export interface PreservedAnchor {
+  /** The original `quotedText` of the comment. */
+  quotedText: string;
+  /** How the anchor was preserved. */
+  via: 'revert' | 'splice';
 }
 
 // Heading regex: line starting with 1-6 `#` followed by a space
@@ -397,6 +425,142 @@ export function mergeDocuments(
 }
 
 /**
+ * Safeguard: keep comment-anchor text alive across an agent edit.
+ *
+ * Drive comments are pinned to a body-index range. If a `batchUpdate`
+ * deletes the range in a single call the comment is orphaned. This
+ * function decides, for each open comment whose anchor sits inside an
+ * edited section, whether to:
+ *
+ *   - **splice** — emit a post-batch op that rewrites the anchor's
+ *     content in two API calls (insert interior, then trim edges), so
+ *     the anchor survives covering exactly the new text (§3.7.1); or
+ *   - **revert** — when splice is ineligible (anchor too short,
+ *     anchor-crossing structural change, replacement empty, ambiguous
+ *     anchor, multi-edit section) — restore the affected section to
+ *     its pre-edit content so the anchor stays put.
+ *
+ * Splice is the primary path; revert is the floor for ineligible
+ * cases. Anchors that are unchanged by the edit are no-ops.
+ *
+ * @param mergedMarkdown  the agent's merged result before this safeguard
+ * @param theirs          the current doc as markdown
+ * @param anchors         comment anchors currently open on the doc
+ * @param indexMap        markdown→doc-body index mapping for `theirs`
+ * @param bodyEndIndex    end-of-body fallback for index interpolation
+ */
+export function preserveCommentAnchors(
+  mergedMarkdown: string,
+  theirs: string,
+  anchors: CommentAnchor[],
+  indexMap: IndexMapEntry[],
+  bodyEndIndex: number,
+): {
+  mergedMarkdown: string;
+  preservedAnchors: PreservedAnchor[];
+  spliceOps: AnchorSpliceOp[];
+} {
+  const cleaned = anchors.filter((a) => a.quotedText && a.quotedText.length > 0);
+  if (cleaned.length === 0) {
+    return { mergedMarkdown, preservedAnchors: [], spliceOps: [] };
+  }
+
+  const outcomes = planAnchorOutcomes({
+    anchors: cleaned,
+    theirs,
+    mergedMarkdown,
+    indexMap,
+    bodyEndIndex,
+  });
+
+  const preservedAnchors: PreservedAnchor[] = [];
+  const spliceOps: AnchorSpliceOp[] = [];
+  const revertAnchors: string[] = [];
+
+  for (const o of outcomes) {
+    if (o.kind === 'splice') {
+      spliceOps.push(o.op);
+      preservedAnchors.push({ quotedText: o.quotedText, via: 'splice' });
+    } else if (o.kind === 'revert') {
+      revertAnchors.push(o.quotedText);
+      preservedAnchors.push({ quotedText: o.quotedText, via: 'revert' });
+    }
+  }
+
+  let revisedMerged = mergedMarkdown;
+  if (revertAnchors.length > 0) {
+    revisedMerged = revertSectionsHoldingAnchors(mergedMarkdown, theirs, revertAnchors);
+  }
+
+  return { mergedMarkdown: revisedMerged, preservedAnchors, spliceOps };
+}
+
+/**
+ * Revert any merged section whose edit would lose a still-needed anchor
+ * back to its `theirs` content. Sections deleted by the agent that
+ * carried an anchor are restored at their original neighbourhood.
+ */
+function revertSectionsHoldingAnchors(
+  mergedMarkdown: string,
+  theirs: string,
+  lostAnchors: string[],
+): string {
+  const stillLost = lostAnchors.filter(
+    (a) => theirs.includes(a) && !mergedMarkdown.includes(a),
+  );
+  if (stillLost.length === 0) return mergedMarkdown;
+
+  const theirsSections = parseSections(theirs);
+  const mergedSections = parseSections(mergedMarkdown);
+
+  const theirsKeyed = sectionKeysPositional(theirsSections);
+  const mergedKeyed = sectionKeysRelativeTo(mergedSections, theirsKeyed);
+  const theirsByKey = new Map<string, MdSection>();
+  for (const e of theirsKeyed) theirsByKey.set(e.key, e.section);
+  const mergedKeySet = new Set(mergedKeyed.map((e) => e.key));
+
+  const revisedSections: MdSection[] = mergedSections.slice();
+  for (let i = 0; i < revisedSections.length; i++) {
+    const merged = revisedSections[i];
+    const theirsS = theirsByKey.get(mergedKeyed[i].key);
+    if (!theirsS) continue;
+    for (const anchor of stillLost) {
+      if (theirsS.content.includes(anchor) && !merged.content.includes(anchor)) {
+        revisedSections[i] = theirsS;
+        break;
+      }
+    }
+  }
+
+  // Restore deleted sections that held an anchor.
+  const findRevisedIdxByContent = (content: string): number =>
+    revisedSections.findIndex((s) => s.content === content);
+  type Restoration = { afterIdx: number; section: MdSection };
+  const restorations: Restoration[] = [];
+  for (let ti = 0; ti < theirsKeyed.length; ti++) {
+    const { key, section } = theirsKeyed[ti];
+    if (mergedKeySet.has(key)) continue;
+    const carries = stillLost.some((a) => section.content.includes(a));
+    if (!carries) continue;
+    let afterIdx = -1;
+    for (let pi = ti - 1; pi >= 0; pi--) {
+      const idx = findRevisedIdxByContent(theirsKeyed[pi].section.content);
+      if (idx >= 0) { afterIdx = idx; break; }
+    }
+    restorations.push({ afterIdx, section });
+  }
+  restorations.sort((a, b) => b.afterIdx - a.afterIdx);
+  for (const r of restorations) {
+    revisedSections.splice(r.afterIdx + 1, 0, r.section);
+  }
+
+  return (
+    revisedSections.map((s) => s.content).join('\n\n').replace(/\n{3,}/g, '\n\n').trimEnd() +
+    '\n'
+  );
+}
+
+/**
  * Run diff3 merge on a single section's content.
  */
 function diff3MergeSection(
@@ -429,6 +593,10 @@ function diff3MergeSection(
  * @param indexMap - Markdown-to-doc index mapping from docsToMarkdownWithMapping
  * @param agentName - Name of the agent making the edit (for attribution)
  * @param resolveConflicts - Optional callback to resolve conflicts (e.g., send back to agent)
+ * @param options - Extra knobs. `commentAnchors` lists open comments on
+ *   the live doc; sections that would orphan an anchor are either
+ *   spliced (post-batch op) or reverted (kept verbatim) — see
+ *   `preserveCommentAnchors` and §3.7.1.
  */
 export async function computeDocDiff(
   base: string,
@@ -438,6 +606,7 @@ export async function computeDocDiff(
   indexMap: IndexMapEntry[],
   agentName: string,
   resolveConflicts?: (conflictText: string) => Promise<string>,
+  options?: { commentAnchors?: CommentAnchor[] },
 ): Promise<DiffResult> {
   let mergeResult = mergeDocuments(base, ours, theirs);
   let conflictsResolved = 0;
@@ -456,6 +625,26 @@ export async function computeDocDiff(
     }
   }
 
+  const bodyEndIndex = getBodyEndIndex(document);
+
+  // Comment-anchor safeguard. Done after conflict resolution because
+  // the agent's resolution can re-introduce or drop anchor text; we
+  // only police the FINAL merged markdown.
+  let preservedAnchors: PreservedAnchor[] = [];
+  let spliceOps: AnchorSpliceOp[] = [];
+  if (options?.commentAnchors && options.commentAnchors.length > 0) {
+    const safeguarded = preserveCommentAnchors(
+      mergeResult.mergedMarkdown,
+      theirs,
+      options.commentAnchors,
+      indexMap,
+      bodyEndIndex,
+    );
+    mergeResult = { ...mergeResult, mergedMarkdown: safeguarded.mergedMarkdown };
+    preservedAnchors = safeguarded.preservedAnchors;
+    spliceOps = safeguarded.spliceOps;
+  }
+
   // Compare merged result with theirs (current doc) to find what changed
   const theirsSections = parseSections(theirs);
   const mergedSections = parseSections(mergeResult.mergedMarkdown);
@@ -466,7 +655,13 @@ export async function computeDocDiff(
   // readers/normalizers strip them, so producing a diff for them just
   // generates an immediately-discarded round-trip edit.
   if (normalizeForNoOpCheck(mergeResult.mergedMarkdown) === normalizeForNoOpCheck(theirs)) {
-    return { hasChanges: false, requests: [], conflictsResolved };
+    return {
+      hasChanges: spliceOps.length > 0,
+      requests: [],
+      conflictsResolved,
+      preservedAnchors,
+      spliceOps,
+    };
   }
 
   // AST-level equivalence fallback: markdown variants that parse to the
@@ -476,10 +671,14 @@ export async function computeDocDiff(
   if (
     canonicalizeMarkdown(mergeResult.mergedMarkdown) === canonicalizeMarkdown(theirs)
   ) {
-    return { hasChanges: false, requests: [], conflictsResolved };
+    return {
+      hasChanges: spliceOps.length > 0,
+      requests: [],
+      conflictsResolved,
+      preservedAnchors,
+      spliceOps,
+    };
   }
-
-  const bodyEndIndex = getBodyEndIndex(document);
   const requests: docs_v1.Schema$Request[] = [];
 
   // Pair theirs/merged sections by (heading, occurrence-index), with
@@ -964,7 +1163,13 @@ export async function computeDocDiff(
     }
   }
 
-  return { hasChanges: requests.length > 0, requests, conflictsResolved };
+  return {
+    hasChanges: requests.length > 0 || spliceOps.length > 0,
+    requests,
+    conflictsResolved,
+    preservedAnchors,
+    spliceOps,
+  };
 }
 
 /**
