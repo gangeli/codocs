@@ -27,7 +27,7 @@ deps:
 		echo "Installing bun..."; \
 		curl -fsSL https://bun.sh/install | bash; \
 	fi
-	@if [ ! -d node_modules ]; then \
+	@if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ] || [ package.json -nt node_modules ]; then \
 		echo "Installing npm packages..."; \
 		npm install; \
 	fi
