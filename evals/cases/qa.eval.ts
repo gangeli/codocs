@@ -41,7 +41,12 @@ export const QA_FAILURE_MAP: EvalCase = {
     ],
     // Doc may be silently annotated with which modes are actually handled;
     // that is encouraged behavior. The reply remains the deliverable.
-    doc: [],
+    // Loose ceiling on size; judge guards correctness if any edit is made.
+    // Baseline doc-etl.md is ~1100 bytes; cap at 1.5× ≈ 1700.
+    doc: [
+      { kind: 'length', on: 'doc', max: 1700, label: 'no doc rewrite' },
+      { kind: 'judge', target: 'doc', rubric: 'EITHER the doc is unchanged, OR any edits are small, targeted, and factually grounded in the code — no fabricated handlers, no hallucinated mappings.' },
+    ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
 };
@@ -111,7 +116,12 @@ export const QA_USER_ORDER: EvalCase = {
     ],
     // Doc may be silently extended to record the iteration-order guarantee;
     // that is encouraged behavior. The reply remains the deliverable.
-    doc: [],
+    // Loose ceiling on size; judge guards correctness if any edit is made.
+    // Baseline doc-auth.md is ~1900 bytes; cap at 1.5× ≈ 2900.
+    doc: [
+      { kind: 'length', on: 'doc', max: 2900, label: 'no doc rewrite' },
+      { kind: 'judge', target: 'doc', rubric: 'EITHER the doc is unchanged, OR any edits are small, targeted, and factually grounded in the code — no fabricated guarantees, no hallucinated rewrites.' },
+    ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
 };
@@ -141,7 +151,12 @@ export const QA_DOC_LIES_LOGIN: EvalCase = {
     ],
     // Doc may be silently aligned to current code reality (returns 500); that
     // is encouraged behavior. The reply remains the deliverable.
-    doc: [],
+    // Loose ceiling on size; judge guards correctness if any edit is made.
+    // Baseline doc-auth.md is ~1900 bytes; cap at 1.5× ≈ 2900.
+    doc: [
+      { kind: 'length', on: 'doc', max: 2900, label: 'no doc rewrite' },
+      { kind: 'judge', target: 'doc', rubric: 'EITHER the doc is unchanged, OR any edits are small, targeted, and factually grounded in the code — e.g., aligning the /login bad-password status to 500 (the current behavior). Edits that contradict the code or are unrelated rewrites fail.' },
+    ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
 };
@@ -199,7 +214,12 @@ export const QA_UNBOUNDED_LIMIT: EvalCase = {
     ],
     // Doc may be silently extended to record the gap (no enforced cap); that
     // is encouraged behavior. The reply remains the deliverable.
-    doc: [],
+    // Loose ceiling on size; judge guards correctness if any edit is made.
+    // Baseline doc-auth.md is ~1900 bytes; cap at 1.5× ≈ 2900.
+    doc: [
+      { kind: 'length', on: 'doc', max: 2900, label: 'no doc rewrite' },
+      { kind: 'judge', target: 'doc', rubric: 'EITHER the doc is unchanged, OR any edits are small, targeted, and factually grounded in the code — no fabricated cap (e.g. "100", "1000"), no hallucinated validation that does not exist.' },
+    ],
     code: [{ kind: 'git', assert: 'no-new-commits' }],
   },
 };
