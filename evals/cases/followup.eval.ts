@@ -152,6 +152,58 @@ export const FU_IDEMPOTENT_REASK: EvalCase = {
   },
 };
 
+/**
+ * Auto-condense on implement. The predecessor lands a long, multi-paragraph
+ * implementation walkthrough into the design doc (doc-only, no code). The
+ * follow-up is the canonical "great, let's implement this" turn — the agent
+ * should both (a) land a code stub AND (b) automatically rewrite the section
+ * down to the brevity of the surrounding sections, without being asked to
+ * condense. Tests whether the agent treats "implement this" as also implying
+ * "now integrate the prose with the rest of the doc, since the implementation
+ * lives in code."
+ */
+export const FU_CONDENSE_POST_IMPL: EvalCase = {
+  id: 'FU-06-auto-condense-on-implement',
+  category: 'followup',
+  summary: '"great, let\'s implement this" should auto-condense the implementation-walkthrough prose, not just land code.',
+  fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+  predecessor: {
+    id: 'FU-06-pred',
+    category: 'followup',
+    summary: 'expand rate-limit section into a long implementation walkthrough (doc only)',
+    fixture: { codebase: 'cb-auth', doc: 'doc-auth.md' },
+    comment: {
+      quote: '## Rate Limiting (TBD)',
+      body: 'Rewrite this Rate Limiting section in place into a detailed implementation walkthrough — at least four paragraphs covering the algorithm choice (token bucket), the per-IP and per-user keying, the in-process counter storage, and the staged rollout plan. Doc only — do not change any code yet.',
+      threadId: 'FU-06-thread',
+    },
+  },
+  comment: {
+    threadId: 'FU-06-thread',
+    body: "Great, let's implement this. Land a `rateLimit()` no-op stub in `src/rate-limit.mjs` — don't wire it into the server yet.",
+  },
+  expect: {
+    reply: [
+      {
+        kind: 'judge', target: 'reply',
+        rubric: 'Reply confirms BOTH that the stub was added AND that the Rate Limiting section was condensed/integrated to match the rest of the doc now that the implementation lives in code. A reply that only mentions the code change (and leaves the long walkthrough in place) is wrong.',
+      },
+    ],
+    doc: [
+      { kind: 'regex', on: 'doc', pattern: /per-?IP/i, match: true, label: 'per-IP retained' },
+      { kind: 'regex', on: 'doc', pattern: /per-?user/i, match: true, label: 'per-user retained' },
+      {
+        kind: 'judge', target: 'doc',
+        rubric: 'The Rate Limiting section is markedly shorter than the multi-paragraph implementation walkthrough the predecessor produced — roughly the length of the surrounding sections (Authentication, Pagination, Data Model), at most one short paragraph or a few sentences. It still mentions per-IP and per-user limits AND points to the stub in src/rate-limit.mjs (or otherwise notes a stub exists but is not yet enabled). Implementation-walkthrough detail (token-bucket algorithm steps, storage internals, staged rollout phases) is GONE. The condensed prose reads as integrated with the rest of the doc, not as a stub-summary tacked on top of the longer plan. Critically, the agent did this WITHOUT being asked to condense — the follow-up only asked to implement.',
+      },
+    ],
+    code: [
+      { kind: 'git', assert: 'branch-pushed' },
+      { kind: 'file-exists', path: 'src/rate-limit.mjs', expect: true, label: 'rate-limit stub landed' },
+    ],
+  },
+};
+
 export const FU_PARTIAL_REVERT: EvalCase = {
   id: 'FU-03-partial-revert',
   category: 'followup',
