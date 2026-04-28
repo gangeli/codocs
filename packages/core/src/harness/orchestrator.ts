@@ -807,6 +807,17 @@ export class AgentOrchestrator {
         this.debug(`Design doc changed: ${base.length} → ${editedMarkdown.length} chars`);
         const currentDoc = await this.client.getDocument(documentId);
         const { markdown: theirs, indexMap } = docsToMarkdownWithMapping(currentDoc);
+        // Collect anchored quotedText from open comments so the diff
+        // engine doesn't delete the passages they're attached to.
+        let commentAnchors: string[] = [];
+        try {
+          const allComments = await this.client.listComments(documentId);
+          commentAnchors = allComments
+            .filter((c) => !c.resolved && c.quotedText)
+            .map((c) => c.quotedText as string);
+        } catch (err: any) {
+          this.debug(`Could not list comments for anchor preservation: ${err.message ?? err}`);
+        }
         const diffResult = await computeDocDiff(
           base, editedMarkdown, theirs, currentDoc, indexMap, agentName,
           async (conflictText) => {
@@ -822,7 +833,13 @@ export class AgentOrchestrator {
             }
             return await readFile(designDocPath, 'utf-8');
           },
+          { commentAnchors },
         );
+        if (diffResult.preservedAnchors.length > 0) {
+          this.debug(
+            `Preserved ${diffResult.preservedAnchors.length} comment anchor(s) the agent tried to delete`,
+          );
+        }
         if (diffResult.hasChanges) {
           this.debug(`Applying ${diffResult.requests.length} doc operations (${diffResult.conflictsResolved} conflicts resolved)`);
           await this.client.batchUpdate(documentId, diffResult.requests);

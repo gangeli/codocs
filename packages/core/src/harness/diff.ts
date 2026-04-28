@@ -49,6 +49,13 @@ export interface DiffResult {
   requests: docs_v1.Schema$Request[];
   /** Number of conflicts that were resolved (via callback). */
   conflictsResolved: number;
+  /**
+   * Comment anchor texts (`quotedText` from comments) that the agent
+   * tried to delete but were preserved by reverting their containing
+   * section to the current doc state. Each entry is the anchor text
+   * that survived. Empty when no anchors were at risk.
+   */
+  preservedAnchors: string[];
 }
 
 // Heading regex: line starting with 1-6 `#` followed by a space
@@ -397,6 +404,116 @@ export function mergeDocuments(
 }
 
 /**
+ * Safeguard: keep comment-anchor text alive across an agent edit.
+ *
+ * Google Docs comments are anchored to a text range. If a batchUpdate
+ * deletes the bytes the anchor covers, the comment goes orphaned ("the
+ * original content has been deleted"). The line-level diff already
+ * preserves anchors that fall on UNCHANGED lines, but if the agent
+ * rewrites or removes the very passage someone is commenting on, the
+ * anchor disappears with it.
+ *
+ * For each anchor in `commentAnchors` that is present in `theirs` but
+ * missing from the merged result, find the section that originally held
+ * it and revert that section to the `theirs` content (or restore it
+ * verbatim if the agent dropped the section entirely). The agent's
+ * other edits stand. Returns the patched merged markdown plus the list
+ * of anchors that were preserved.
+ *
+ * Anchors are matched by exact substring against section text; near-
+ * misses (whitespace differences, partial overlap) are intentionally
+ * not corrected for — we'd rather drop a marginal anchor than randomly
+ * revert sections the agent meant to change.
+ */
+export function preserveCommentAnchors(
+  mergedMarkdown: string,
+  theirs: string,
+  commentAnchors: string[],
+): { mergedMarkdown: string; preservedAnchors: string[] } {
+  const cleanAnchors = commentAnchors.filter((a) => a && a.length > 0);
+  if (cleanAnchors.length === 0) {
+    return { mergedMarkdown, preservedAnchors: [] };
+  }
+
+  const lostAnchors = cleanAnchors.filter(
+    (a) => theirs.includes(a) && !mergedMarkdown.includes(a),
+  );
+  if (lostAnchors.length === 0) {
+    return { mergedMarkdown, preservedAnchors: [] };
+  }
+
+  const theirsSections = parseSections(theirs);
+  const mergedSections = parseSections(mergedMarkdown);
+
+  const theirsKeyed = sectionKeysPositional(theirsSections);
+  const mergedKeyed = sectionKeysRelativeTo(mergedSections, theirsKeyed);
+  const theirsByKey = new Map<string, MdSection>();
+  for (const e of theirsKeyed) theirsByKey.set(e.key, e.section);
+  const mergedKeySet = new Set(mergedKeyed.map((e) => e.key));
+
+  const preserved = new Set<string>();
+  // Step 1: revert any merged section that would lose an anchor by
+  // taking the agent's edit. Walks merged sections; each is paired
+  // (by sectionKeysRelativeTo) with a theirs-side section, if any.
+  const revisedSections: MdSection[] = mergedSections.slice();
+  for (let i = 0; i < revisedSections.length; i++) {
+    const merged = revisedSections[i];
+    const theirsS = theirsByKey.get(mergedKeyed[i].key);
+    if (!theirsS) continue;
+    for (const anchor of lostAnchors) {
+      if (theirsS.content.includes(anchor) && !merged.content.includes(anchor)) {
+        revisedSections[i] = theirsS;
+        preserved.add(anchor);
+        break;
+      }
+    }
+  }
+
+  // Step 2: restore sections the agent deleted entirely if they held an
+  // anchor. The restoration position is "right after the previous
+  // theirs section that still appears in merged" — that keeps the
+  // restored section anchored to its original neighbourhood.
+  const findRevisedIndexByContent = (content: string): number =>
+    revisedSections.findIndex((s) => s.content === content);
+
+  type Restoration = { afterIdx: number; section: MdSection };
+  const restorations: Restoration[] = [];
+  for (let ti = 0; ti < theirsKeyed.length; ti++) {
+    const { key, section } = theirsKeyed[ti];
+    if (mergedKeySet.has(key)) continue;
+    const anchorHere = lostAnchors.find((a) => section.content.includes(a));
+    if (!anchorHere) continue;
+    let afterIdx = -1;
+    for (let pi = ti - 1; pi >= 0; pi--) {
+      const idx = findRevisedIndexByContent(theirsKeyed[pi].section.content);
+      if (idx >= 0) {
+        afterIdx = idx;
+        break;
+      }
+    }
+    restorations.push({ afterIdx, section });
+    preserved.add(anchorHere);
+  }
+  // Apply in descending order so earlier insertions don't shift later positions.
+  restorations.sort((a, b) => b.afterIdx - a.afterIdx);
+  for (const r of restorations) {
+    revisedSections.splice(r.afterIdx + 1, 0, r.section);
+  }
+
+  if (preserved.size === 0) {
+    return { mergedMarkdown, preservedAnchors: [] };
+  }
+
+  // Match the joining behaviour of mergeDocuments so the round-trip is
+  // textually stable.
+  const newMerged =
+    revisedSections.map((s) => s.content).join('\n\n').replace(/\n{3,}/g, '\n\n').trimEnd() +
+    '\n';
+
+  return { mergedMarkdown: newMerged, preservedAnchors: [...preserved] };
+}
+
+/**
  * Run diff3 merge on a single section's content.
  */
 function diff3MergeSection(
@@ -429,6 +546,10 @@ function diff3MergeSection(
  * @param indexMap - Markdown-to-doc index mapping from docsToMarkdownWithMapping
  * @param agentName - Name of the agent making the edit (for attribution)
  * @param resolveConflicts - Optional callback to resolve conflicts (e.g., send back to agent)
+ * @param options - Extra knobs. `commentAnchors` lists the `quotedText`
+ *   strings of comments anchored to the live doc; sections that would
+ *   lose any of those anchors via this edit are reverted to the current
+ *   doc state (see `preserveCommentAnchors`).
  */
 export async function computeDocDiff(
   base: string,
@@ -438,6 +559,7 @@ export async function computeDocDiff(
   indexMap: IndexMapEntry[],
   agentName: string,
   resolveConflicts?: (conflictText: string) => Promise<string>,
+  options?: { commentAnchors?: string[] },
 ): Promise<DiffResult> {
   let mergeResult = mergeDocuments(base, ours, theirs);
   let conflictsResolved = 0;
@@ -456,6 +578,25 @@ export async function computeDocDiff(
     }
   }
 
+  // Comment-anchor safeguard. Done after conflict resolution because the
+  // agent's resolution itself can re-introduce or drop anchor text;
+  // we only need to police the FINAL merged markdown.
+  let preservedAnchors: string[] = [];
+  if (options?.commentAnchors && options.commentAnchors.length > 0) {
+    const safeguarded = preserveCommentAnchors(
+      mergeResult.mergedMarkdown,
+      theirs,
+      options.commentAnchors,
+    );
+    if (safeguarded.preservedAnchors.length > 0) {
+      mergeResult = {
+        ...mergeResult,
+        mergedMarkdown: safeguarded.mergedMarkdown,
+      };
+      preservedAnchors = safeguarded.preservedAnchors;
+    }
+  }
+
   // Compare merged result with theirs (current doc) to find what changed
   const theirsSections = parseSections(theirs);
   const mergedSections = parseSections(mergeResult.mergedMarkdown);
@@ -466,7 +607,7 @@ export async function computeDocDiff(
   // readers/normalizers strip them, so producing a diff for them just
   // generates an immediately-discarded round-trip edit.
   if (normalizeForNoOpCheck(mergeResult.mergedMarkdown) === normalizeForNoOpCheck(theirs)) {
-    return { hasChanges: false, requests: [], conflictsResolved };
+    return { hasChanges: false, requests: [], conflictsResolved, preservedAnchors };
   }
 
   // AST-level equivalence fallback: markdown variants that parse to the
@@ -476,7 +617,7 @@ export async function computeDocDiff(
   if (
     canonicalizeMarkdown(mergeResult.mergedMarkdown) === canonicalizeMarkdown(theirs)
   ) {
-    return { hasChanges: false, requests: [], conflictsResolved };
+    return { hasChanges: false, requests: [], conflictsResolved, preservedAnchors };
   }
 
   const bodyEndIndex = getBodyEndIndex(document);
@@ -964,7 +1105,7 @@ export async function computeDocDiff(
     }
   }
 
-  return { hasChanges: requests.length > 0, requests, conflictsResolved };
+  return { hasChanges: requests.length > 0, requests, conflictsResolved, preservedAnchors };
 }
 
 /**

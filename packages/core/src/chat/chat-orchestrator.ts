@@ -177,6 +177,16 @@ export class ChatOrchestrator {
         const currentDoc = await this.client.getDocument(documentId);
         const { markdown: theirs, indexMap } = docsToMarkdownWithMapping(currentDoc);
 
+        let commentAnchors: string[] = [];
+        try {
+          const allComments = await this.client.listComments(documentId);
+          commentAnchors = allComments
+            .filter((c) => !c.resolved && c.quotedText)
+            .map((c) => c.quotedText as string);
+        } catch (err: any) {
+          this.debug(`[chat] Could not list comments for anchor preservation: ${err.message ?? err}`);
+        }
+
         const diffResult = await computeDocDiff(
           base,
           editedMarkdown,
@@ -194,6 +204,7 @@ export class ChatOrchestrator {
             if (resolveResult.exitCode !== 0) return conflictText;
             return await readFile(editPath, 'utf-8');
           },
+          { commentAnchors },
         );
 
         if (diffResult.hasChanges) {
