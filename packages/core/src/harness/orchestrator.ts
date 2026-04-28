@@ -19,6 +19,8 @@ import { buildPrompt, buildConflictPrompt } from './prompt.js';
 import { docsToMarkdownWithMapping } from '../converter/docs-to-md.js';
 import { docsToMarkdown } from '../converter/docs-to-md.js';
 import { computeDocDiff } from './diff.js';
+import { executeAnchorSpliceOps } from './anchor-splice-exec.js';
+import type { CommentAnchor } from './anchor-splice.js';
 import {
   getDefaultBranch, createWorktree, removeWorktree, commitAll,
   pushBranch, rebaseOnto,
@@ -807,6 +809,7 @@ export class AgentOrchestrator {
         this.debug(`Design doc changed: ${base.length} → ${editedMarkdown.length} chars`);
         const currentDoc = await this.client.getDocument(documentId);
         const { markdown: theirs, indexMap } = docsToMarkdownWithMapping(currentDoc);
+        const commentAnchors = await this.collectCommentAnchors(documentId);
         const diffResult = await computeDocDiff(
           base, editedMarkdown, theirs, currentDoc, indexMap, agentName,
           async (conflictText) => {
@@ -822,11 +825,30 @@ export class AgentOrchestrator {
             }
             return await readFile(designDocPath, 'utf-8');
           },
+          { commentAnchors },
         );
         if (diffResult.hasChanges) {
-          this.debug(`Applying ${diffResult.requests.length} doc operations (${diffResult.conflictsResolved} conflicts resolved)`);
-          await this.client.batchUpdate(documentId, diffResult.requests);
-          docEditCount = diffResult.requests.length;
+          if (diffResult.requests.length > 0) {
+            this.debug(`Applying ${diffResult.requests.length} doc operations (${diffResult.conflictsResolved} conflicts resolved)`);
+            await this.client.batchUpdate(documentId, diffResult.requests);
+            docEditCount = diffResult.requests.length;
+          }
+          if (diffResult.spliceOps.length > 0) {
+            this.debug(`Executing ${diffResult.spliceOps.length} anchor splice op${diffResult.spliceOps.length === 1 ? '' : 's'}`);
+            const spliceResult = await executeAnchorSpliceOps(
+              this.client, documentId, diffResult.spliceOps,
+              (msg) => this.debug(msg),
+            );
+            this.debug(
+              `[splice] spliced=${spliceResult.spliced.length} restored=${spliceResult.restored.length} skipped=${spliceResult.skipped.length}`,
+            );
+          }
+          if (diffResult.preservedAnchors.length > 0) {
+            const summary = diffResult.preservedAnchors
+              .map((p) => `${p.via}:${truncate(p.quotedText, 40)}`)
+              .join(', ');
+            this.debug(`Preserved ${diffResult.preservedAnchors.length} comment anchor(s): ${summary}`);
+          }
           conflictsResolved = diffResult.conflictsResolved;
           if (this.forkMode) {
             this.sessionStore.upsertSession(agentName, baseKey, result.sessionId);
@@ -980,4 +1002,26 @@ export class AgentOrchestrator {
     this.debug(`[forkToChat] Done — tab ${tabId}, chat ${chatTabId}`);
     return { replyPreview: replyContent, editSummary: `Chat tab created: ${title}` };
   }
+
+  /**
+   * Collect open-comment anchors for the doc so the diff layer can
+   * preserve them across the agent's edit (revert or splice — see
+   * §3.7.1). Best-effort: any failure logs and returns empty so the
+   * doc edit still proceeds.
+   */
+  private async collectCommentAnchors(documentId: string): Promise<CommentAnchor[]> {
+    try {
+      const comments = await this.client.listComments(documentId);
+      return comments
+        .filter((c) => !c.resolved && c.quotedText)
+        .map((c) => ({ commentId: c.id, quotedText: c.quotedText! }));
+    } catch (err: any) {
+      this.debug(`[anchor-preserve] failed to list comments: ${err?.message ?? err}`);
+      return [];
+    }
+  }
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }
