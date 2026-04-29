@@ -260,7 +260,41 @@ async function main(): Promise<number> {
     );
     log(`  → subscription=${subscription.name} (expires ${subscription.expireTime})`);
 
-    // ── 3. Listener ───────────────────────────────────────
+    // ── 3. Pre-check: confirm no other codocs is active on this account ─
+    // A parallel `codocs serve` shares the same Pub/Sub subscription
+    // (`<topic>-sub`) and competes with us for pulled messages — and on
+    // the messages it *does* pull, it auto-replies, polluting our doc's
+    // comment thread and breaking our delivery checks.
+    //
+    // Detect this empirically: post a probe comment on our fresh doc,
+    // wait, and re-read it via the Drive API. If anyone has replied,
+    // someone else is pulling from this account's subscription. Fail
+    // loudly before doing real work.
+    log('\n── Pre-check: scanning for parallel codocs server ──────────');
+    const probeMarker = `probe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    log(`Posting probe comment (marker=${probeMarker})...`);
+    const probeId = await client.addComment(docId, {
+      content: `[e2e-connection probe] ${probeMarker} — please ignore`,
+    });
+    const probeWaitMs = 20_000;
+    log(`Waiting ${probeWaitMs}ms for any auto-replies...`);
+    await sleep(probeWaitMs);
+    const probeAfter = await driveApi.getComment(docId, probeId);
+    const probeReplies = (probeAfter.replies ?? []).filter((r) => !r.action);
+    if (probeReplies.length > 0) {
+      const r = probeReplies[0];
+      const who = r.author?.displayName ?? r.author?.emailAddress ?? '(unknown)';
+      const what = (r.content ?? '').slice(0, 80);
+      throw new Error(
+        `Another codocs server appears to be active on this account: ` +
+        `the probe got ${probeReplies.length} reply(s) ` +
+        `(first from "${who}": "${what}"). ` +
+        `Stop your other \`codocs serve\` process and try again.`,
+      );
+    }
+    log('  ✅ no replies on probe — account is quiet, proceeding');
+
+    // ── 4. Listener ───────────────────────────────────────
     const state: TestState = { delivered: [], reconnects: [], errors: [] };
 
     log(`Starting listener (subscription="${subscriptionName}")...`);
