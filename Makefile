@@ -76,6 +76,10 @@ gcloud-auth:
 infra: gcloud-auth
 	cd terraform && terraform init -upgrade && terraform apply
 
+# `e2e/connection` is excluded from the default `make e2e` because it runs
+# for several minutes (forces real Pub/Sub idle reconnects on a wall clock)
+# and is rarely the failing target during routine work. Run it explicitly
+# when changing the listener.
 e2e: e2e/rendering e2e/roundtrip e2e/agents e2e/comments
 
 e2e/rendering: build
@@ -90,6 +94,14 @@ e2e/agents: build
 
 e2e/comments: build
 	npx tsx scripts/e2e-comments.ts
+
+# Live longevity test for the Pub/Sub comment-listener. Creates a real doc
+# in Drive, ensures a Workspace Events subscription, and forces multiple
+# real reconnect cycles via a short idleReconnectMs. Defaults take ~3 min
+# of wall clock; override with `make e2e/connection CONNECTION_ARGS="--idle-ms=30000 --cycles=1"`
+# for a faster sanity run, or `--debug` for verbose logging.
+e2e/connection: build
+	npx tsx scripts/e2e-connection.ts $(CONNECTION_ARGS)
 
 # Run the end-to-end eval suite. Pass FILTER=<substring> to run a subset,
 # CONCURRENCY=<n> to cap parallel cases (default 2 because each case spawns
@@ -122,6 +134,8 @@ help:
 	@echo "  make e2e             Run all e2e scripts."
 	@echo "                       Or run a single suite: make e2e/rendering,"
 	@echo "                       make e2e/roundtrip, make e2e/agents, make e2e/comments."
+	@echo "  make e2e/connection  Live longevity test for the Pub/Sub listener."
+	@echo "                       Slow (~3 min); excluded from \`make e2e\`."
 	@echo "  make clean           Remove build outputs and the ./codocs launcher."
 	@echo ""
 	@echo "Eval suite (end-to-end agent evals — spawns real Claude agents):"
