@@ -104,8 +104,9 @@ export interface ListenOptions {
    *  Set to 0 to disable. */
   healthCheckIntervalMs?: number;
   /** Force a reconnect if no message has been seen for this long. Defensive
-   *  guard against half-open streams the library doesn't notice. Default
-   *  0 (disabled). */
+   *  guard against half-open streams the library doesn't notice (gRPC stream
+   *  silently dies, isOpen still reports true, no events fire). Default
+   *  30 min. Set to 0 to disable. */
   idleReconnectMs?: number;
   /** Called whenever the listener reconnects to the subscription. Useful for
    *  surfacing reconnect events in UI/status. */
@@ -159,7 +160,7 @@ export function listenForComments(
   const initialDelay = options?.reconnectInitialDelayMs ?? 1000;
   const maxDelay = options?.reconnectMaxDelayMs ?? 60_000;
   const healthInterval = options?.healthCheckIntervalMs ?? 60_000;
-  const idleReconnectMs = options?.idleReconnectMs ?? 0;
+  const idleReconnectMs = options?.idleReconnectMs ?? 30 * 60 * 1000;
 
   let subscription: Subscription = pubsub.subscription(fullSubName);
   let manuallyClosed = false;
@@ -272,6 +273,10 @@ export function listenForComments(
     if (onError) {
       onError(error);
     }
+    // The library surfaces 'error' to the consumer only after its own
+    // retry/backoff has given up — we shouldn't trust the stream past
+    // this point even if 'close' is never emitted and isOpen stays true.
+    scheduleReconnect(`subscription error: ${error.message}`);
   };
 
   function emitFromPayload(
