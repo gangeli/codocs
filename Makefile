@@ -96,10 +96,18 @@ e2e/comments: build
 	npx tsx scripts/e2e-comments.ts
 
 # Live longevity test for the Pub/Sub comment-listener. Creates a real doc
-# in Drive, ensures a Workspace Events subscription, and forces multiple
-# real reconnect cycles via a short idleReconnectMs. Defaults take ~3 min
-# of wall clock; override with `make e2e/connection CONNECTION_ARGS="--idle-ms=30000 --cycles=1"`
-# for a faster sanity run, or `--debug` for verbose logging.
+# in Drive, ensures a Workspace Events subscription, and either:
+#  - (CYCLE mode, default ~3 min) forces multiple reconnects via a short
+#    idleReconnectMs, asserting recovery; or
+#  - (SOAK mode, `--soak-ms=N`) disables the watchdog and holds one
+#    connection open for N ms, asserting a comment still arrives at the
+#    end. Use this to test the *natural* lifetime of a single stream.
+#
+# Examples:
+#   make e2e/connection                                                 # ~3 min cycle test
+#   make e2e/connection CONNECTION_ARGS="--idle-ms=30000 --cycles=1"    # fast sanity
+#   make e2e/connection CONNECTION_ARGS="--soak-ms=7200000"             # 2-hour soak
+#   make e2e/connection CONNECTION_ARGS="--debug"                       # verbose
 e2e/connection: build
 	npx tsx scripts/e2e-connection.ts $(CONNECTION_ARGS)
 
