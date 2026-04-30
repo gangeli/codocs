@@ -1,6 +1,6 @@
 {
   "name": "@codocs/core",
-  "version": "0.0.6",
+  "version": "0.1.0",
   "description": "Core library for Google Docs interaction",
   "type": "module",
   "files": [
@@ -43,7 +43,7 @@
     "unique-names-generator": "^4.7.1"
   },
   "peerDependencies": {
-    "@codocs/db": "^0.0.6"
+    "@codocs/db": "^0.1.0"
   },
   "peerDependenciesMeta": {
     "@codocs/db": {
@@ -51,7 +51,7 @@
     }
   },
   "devDependencies": {
-    "@codocs/db": "^0.0.6",
+    "@codocs/db": "^0.1.0",
     "@types/node": "^22.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
