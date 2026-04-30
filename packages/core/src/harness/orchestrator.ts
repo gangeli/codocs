@@ -957,6 +957,11 @@ export class AgentOrchestrator {
         if (codeTaskId != null && this.codeTaskStore) {
           this.codeTaskStore.markCompleted(codeTaskId);
         }
+        // Clear the thread session: its JSONL lives under the now-gone
+        // worktree's encoded cwd, so a follow-up comment on the same
+        // comment.id would otherwise attempt to resume it, fail, and
+        // pay an extra agent run before falling back to fresh.
+        this.sessionStore.deleteSession(agentName, sessionKey);
       } else if (createdNewWorktree && !codeChangesMade) {
         this.debug('[processComment] Tearing down empty worktree');
         try { await removeWorktree(this.repoRoot, worktreePath); } catch { /* ignore */ }

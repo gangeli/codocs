@@ -64,12 +64,15 @@ export class CodeTaskStore {
     );
   }
 
-  /** Mark a code task as completed (PR merged/closed). */
+  /**
+   * Remove a code task from the store. Called when the underlying work is
+   * resolved (auto-merge cleanup, repair sweep, etc) — at that point the
+   * worktree/branch are gone and the row is meaningless. Keeping a
+   * 'completed' row instead would block follow-up comments on the same
+   * (document_id, comment_id) pair via the UNIQUE constraint.
+   */
   markCompleted(id: number): void {
-    this.db.run(
-      "UPDATE code_tasks SET status = 'completed', updated_at = datetime('now') WHERE id = ?",
-      [id],
-    );
+    this.db.run('DELETE FROM code_tasks WHERE id = ?', [id]);
   }
 
   /** Get all active code tasks for an agent. */

@@ -653,8 +653,16 @@ const TC2: TestCase = {
 };
 
 const TC3: TestCase = {
-  title: 'TC3  code-change comment creates a commit',
+  title: 'TC3  code-change comment auto-merges into main',
   fn: async ({ docsClient, orchestrator, runner, repoRoot, originPath, docId, expect }) => {
+    // After commitAll succeeds the orchestrator auto-squash-merges the
+    // agent branch into base, advances main via fast-forward, and tears
+    // down the worktree + branches. The test asserts the post-merge state
+    // (file on main, no worktree, no codocs branch on origin) rather than
+    // the now-obsolete "branch retained" view from before the auto-merge
+    // feature landed.
+    const initialMainSha = await git(repoRoot, 'rev-parse', 'main');
+
     await orchestrator.handleComment(
       makeCommentEvent(
         docId,
@@ -671,44 +679,39 @@ const TC3: TestCase = {
     // Code-only change: no doc edits should have been applied.
     expect(docsClient.batchUpdateCalls.length === 0, `no doc edits triggered (saw ${docsClient.batchUpdateCalls.length})`);
 
-    // The worktree should still exist because a code change was made.
-    // (For pure doc edits the orchestrator tears down; for code changes
-    // it keeps the worktree so follow-up comments can build on it.)
+    // Auto-merge cleanup: worktree torn down, main advanced, file on main.
     const wts = await listWorktrees(repoRoot);
-    expect(wts.length === 1, `worktree retained after code change (saw ${JSON.stringify(wts)})`);
+    expect(wts.length === 0, `worktree torn down after auto-merge (saw ${JSON.stringify(wts)})`);
 
-    // A commit should exist on the new branch. The assertions below are
-    // unconditional — the retained-worktree check above is the gate, and
-    // a regression there should fail loudly, not silently skip these.
-    const branchName = await git(wtPath, 'rev-parse', '--abbrev-ref', 'HEAD');
-    expect(branchName.startsWith('codocs/'), `branch name is a codocs branch (${branchName})`);
-
-    const log = await git(wtPath, 'log', '--oneline', `main..${branchName}`);
-    expect(log.length > 0, `branch has at least one commit beyond main (log: ${log.slice(0, 60)})`);
-
-    // The expected file should be present in the worktree.
-    const filePath = join(wtPath, 'src', 'hello.ts');
-    expect(existsSync(filePath), `src/hello.ts was created in the worktree (${filePath})`);
-    const content = await readFile(filePath, 'utf-8');
-    expect(/greet/.test(content), 'src/hello.ts defines greet()');
-
-    // Branch was pushed to origin (pushBranch actually fired).
-    const originBranches = await listOriginBranches(originPath);
+    const finalMainSha = await git(repoRoot, 'rev-parse', 'main');
     expect(
-      originBranches.includes(branchName),
-      `origin has branch ${branchName} (origin has: ${JSON.stringify(originBranches)})`,
+      finalMainSha !== initialMainSha,
+      `main advanced past the seed commit (was ${initialMainSha.slice(0, 7)}, now ${finalMainSha.slice(0, 7)})`,
+    );
+
+    let onMain = '';
+    try { onMain = await git(repoRoot, 'show', 'main:src/hello.ts'); } catch { /* surfaced below */ }
+    expect(/greet/.test(onMain), `src/hello.ts is on main with greet() (saw: ${onMain.slice(0, 80)})`);
+
+    // No codocs branches remain on origin after deleteRemoteBranch.
+    const originBranches = await listOriginBranches(originPath);
+    const codocsBranches = originBranches.filter((b) => b.startsWith('codocs/'));
+    expect(
+      codocsBranches.length === 0,
+      `no codocs branches on origin after auto-merge (origin has: ${JSON.stringify(originBranches)})`,
     );
   },
 };
 
 const TC4: TestCase = {
-  title: 'TC4  concurrent comments: isolated worktrees, no cross-contamination',
+  title: 'TC4  concurrent comments serialize via docSerializer; both auto-merge into main',
   fn: async ({ docsClient, orchestrator, runner, repoRoot, originPath, docId, expect }) => {
-    // Two code-change comments fired simultaneously. Both agents should
-    // work in distinct worktrees and produce distinct files without
-    // seeing each other's work. Doc state isn't asserted — the agents
-    // shouldn't touch the doc, and the FIFO design-doc queue would be
-    // racy under concurrency anyway.
+    // Two code-change comments fired simultaneously on the same doc.
+    // The doc-serializer keeps them sequential, so the second worktree is
+    // created from main AFTER the first comment's auto-merge has already
+    // advanced main. Both files therefore land cleanly on main with no
+    // tree-clobbering between merges.
+    const initialMainSha = await git(repoRoot, 'rev-parse', 'main');
     const [aResult, bResult] = await Promise.all([
       orchestrator.handleComment(
         makeCommentEvent(
@@ -731,11 +734,13 @@ const TC4: TestCase = {
     void bResult;
     await orchestrator.waitForIdle();
 
-    // Two distinct worktrees were used.
+    // Two runs in two distinct worktree paths. The paths differ because
+    // the first worktree is torn down (post-auto-merge) before the second
+    // is created, so the random slug suffix is fresh for each.
     const uniqueWorktrees = new Set(runner.workingDirectories);
     expect(
       uniqueWorktrees.size === 2,
-      `exactly two distinct worktrees (saw ${uniqueWorktrees.size}, total runs: ${runner.workingDirectories.length})`,
+      `exactly two distinct worktree paths (saw ${uniqueWorktrees.size}, total runs: ${runner.workingDirectories.length})`,
     );
     expect(
       runner.workingDirectories.length === 2,
@@ -745,74 +750,59 @@ const TC4: TestCase = {
     // Neither comment should have triggered a doc edit.
     expect(docsClient.batchUpdateCalls.length === 0, `no doc edits triggered (saw ${docsClient.batchUpdateCalls.length})`);
 
-    // Both worktrees are retained (each had a code change).
+    // Both auto-merges fired: worktrees gone.
     const wts = await listWorktrees(repoRoot);
-    expect(wts.length === 2, `two worktrees retained (saw ${wts.length}: ${JSON.stringify(wts)})`);
+    expect(wts.length === 0, `both worktrees torn down after auto-merges (saw ${JSON.stringify(wts)})`);
 
-    // Each worktree contains its OWN file WITH the expected marker content
-    // and NOT the other's file. Checking the marker (not just existence)
-    // catches a contamination where both agents create empty files or
-    // swap contents.
-    const worktreePaths = [...uniqueWorktrees];
-    const findings: Array<{
-      path: string; hasAlphaMarker: boolean; hasBetaMarker: boolean;
-      alphaExists: boolean; betaExists: boolean;
-    }> = [];
-    for (const wt of worktreePaths) {
-      const alphaPath = join(wt, 'src', 'alpha.ts');
-      const betaPath = join(wt, 'src', 'beta.ts');
-      const alphaExists = existsSync(alphaPath);
-      const betaExists = existsSync(betaPath);
-      let hasAlphaMarker = false;
-      let hasBetaMarker = false;
-      if (alphaExists) {
-        const c = await readFile(alphaPath, 'utf-8');
-        hasAlphaMarker = c.includes('ALPHA_MARKER') && c.includes('alpha-marker-v1');
-      }
-      if (betaExists) {
-        const c = await readFile(betaPath, 'utf-8');
-        hasBetaMarker = c.includes('BETA_MARKER') && c.includes('beta-marker-v1');
-      }
-      findings.push({ path: wt, hasAlphaMarker, hasBetaMarker, alphaExists, betaExists });
-    }
-    const alphaOnly = findings.filter((f) => f.hasAlphaMarker && !f.betaExists);
-    const betaOnly = findings.filter((f) => f.hasBetaMarker && !f.alphaExists);
-    expect(alphaOnly.length === 1, `exactly one worktree has alpha.ts with ALPHA_MARKER and no beta.ts (saw ${JSON.stringify(findings)})`);
-    expect(betaOnly.length === 1, `exactly one worktree has beta.ts with BETA_MARKER and no alpha.ts (saw ${JSON.stringify(findings)})`);
+    // main advanced past the seed and now contains BOTH files. Tree
+    // safety check: the second auto-merge must take the second worktree's
+    // tree built off the already-advanced main, otherwise alpha.ts would
+    // get clobbered by the beta merge.
+    const finalMainSha = await git(repoRoot, 'rev-parse', 'main');
+    expect(finalMainSha !== initialMainSha, `main advanced past the seed commit`);
 
-    // Each worktree has a commit on its own branch.
-    const branches: string[] = [];
-    for (const wt of worktreePaths) {
-      const branch = await git(wt, 'rev-parse', '--abbrev-ref', 'HEAD');
-      branches.push(branch);
-      const log = await git(wt, 'log', '--oneline', `main..${branch}`);
-      expect(
-        log.trim().length > 0,
-        `worktree ${branch} has at least one commit beyond main`,
-      );
-    }
+    let alphaOnMain = '';
+    let betaOnMain = '';
+    try { alphaOnMain = await git(repoRoot, 'show', 'main:src/alpha.ts'); } catch { /* surfaced below */ }
+    try { betaOnMain = await git(repoRoot, 'show', 'main:src/beta.ts'); } catch { /* surfaced below */ }
+    expect(
+      /ALPHA_MARKER/.test(alphaOnMain) && /alpha-marker-v1/.test(alphaOnMain),
+      `src/alpha.ts on main with ALPHA_MARKER (saw: ${alphaOnMain.slice(0, 80)})`,
+    );
+    expect(
+      /BETA_MARKER/.test(betaOnMain) && /beta-marker-v1/.test(betaOnMain),
+      `src/beta.ts on main with BETA_MARKER (saw: ${betaOnMain.slice(0, 80)})`,
+    );
 
-    // Both branches are distinct.
-    expect(new Set(branches).size === 2, `distinct branches per comment (saw ${JSON.stringify(branches)})`);
+    // main has exactly 3 commits: seed + alpha auto-merge + beta auto-merge.
+    const log = await git(repoRoot, 'log', '--oneline');
+    const lineCount = log.split('\n').filter((l) => l.length > 0).length;
+    expect(
+      lineCount === 3,
+      `main has 3 commits: seed + 2 auto-merges (saw ${lineCount}: ${log.replace(/\n/g, ' | ').slice(0, 200)})`,
+    );
 
-    // Both branches were pushed to origin.
+    // Both codocs branches were deleted from origin after merge.
     const originBranches = await listOriginBranches(originPath);
-    for (const branch of branches) {
-      expect(
-        originBranches.includes(branch),
-        `origin has branch ${branch} (origin has: ${JSON.stringify(originBranches)})`,
-      );
-    }
+    const codocsBranches = originBranches.filter((b) => b.startsWith('codocs/'));
+    expect(
+      codocsBranches.length === 0,
+      `no codocs branches on origin (origin has: ${JSON.stringify(originBranches)})`,
+    );
   },
 };
 
 const TC5: TestCase = {
-  title: 'TC5  mixed code + doc edit in one comment',
+  title: 'TC5  mixed code + doc edit: code auto-merges and doc edit applies',
   fn: async ({ docsClient, orchestrator, runner, repoRoot, originPath, docId, expect }) => {
-    const before = docsClient.markdown;
     // Single comment that requires BOTH a code change and a doc edit.
     // Guards against a regression where the orchestrator runs only one
-    // of its post-hoc detection branches (code commit OR doc diff).
+    // of its post-hoc detection branches. With deferred auto-merge
+    // cleanup, step 3 (doc-diff) runs against the still-alive worktree
+    // before step 5 tears it down — so both branches fire end-to-end.
+    const before = docsClient.markdown;
+    const initialMainSha = await git(repoRoot, 'rev-parse', 'main');
+
     await orchestrator.handleComment(
       makeCommentEvent(
         docId,
@@ -825,38 +815,30 @@ const TC5: TestCase = {
     );
     await orchestrator.waitForIdle();
 
-    // Exactly one agent run (no fallback retry).
     expect(runner.workingDirectories.length === 1, `agent ran exactly once (saw ${runner.workingDirectories.length})`);
-    const wtPath = runner.workingDirectories[0];
 
-    // Code branch fired: worktree retained, file exists with the marker,
-    // branch pushed to origin, commit on the branch beyond main.
+    // Code branch — auto-merged into main.
     const wts = await listWorktrees(repoRoot);
-    expect(wts.length === 1, `worktree retained (saw ${JSON.stringify(wts)})`);
+    expect(wts.length === 0, `worktree torn down after auto-merge (saw ${JSON.stringify(wts)})`);
 
-    const filePath = join(wtPath, 'src', 'mixed.ts');
-    expect(existsSync(filePath), `src/mixed.ts was created (${filePath})`);
-    if (existsSync(filePath)) {
-      const content = await readFile(filePath, 'utf-8');
-      expect(
-        content.includes('MIX_MARKER') && content.includes('mix-marker-v1'),
-        'src/mixed.ts contains MIX_MARKER with expected value',
-      );
-    }
+    const finalMainSha = await git(repoRoot, 'rev-parse', 'main');
+    expect(finalMainSha !== initialMainSha, `main advanced past the seed commit`);
 
-    const branchName = await git(wtPath, 'rev-parse', '--abbrev-ref', 'HEAD');
-    expect(branchName.startsWith('codocs/'), `branch is a codocs branch (${branchName})`);
-    const log = await git(wtPath, 'log', '--oneline', `main..${branchName}`);
-    expect(log.trim().split('\n').length === 1, `exactly one commit beyond main (log: ${log.slice(0, 80)})`);
-
-    const originBranches = await listOriginBranches(originPath);
+    let onMain = '';
+    try { onMain = await git(repoRoot, 'show', 'main:src/mixed.ts'); } catch { /* surfaced below */ }
     expect(
-      originBranches.includes(branchName),
-      `origin has branch ${branchName} (origin has: ${JSON.stringify(originBranches)})`,
+      onMain.includes('MIX_MARKER') && onMain.includes('mix-marker-v1'),
+      `src/mixed.ts is on main with MIX_MARKER (saw: ${onMain.slice(0, 80)})`,
     );
 
-    // Doc branch fired: batchUpdate called exactly once, doc markdown changed
-    // from baseline and contains the new content.
+    const originBranches = await listOriginBranches(originPath);
+    const codocsBranches = originBranches.filter((b) => b.startsWith('codocs/'));
+    expect(
+      codocsBranches.length === 0,
+      `no codocs branches on origin after merge (origin has: ${JSON.stringify(originBranches)})`,
+    );
+
+    // Doc branch fired: batchUpdate called exactly once, markdown changed.
     expect(docsClient.batchUpdateCalls.length === 1, `batchUpdate called exactly once (saw ${docsClient.batchUpdateCalls.length})`);
     expect(docsClient.markdown !== before, 'design doc content changed from the baseline');
     expect(/rate/i.test(docsClient.markdown), 'design doc mentions rate limiting');
@@ -864,11 +846,20 @@ const TC5: TestCase = {
 };
 
 const TC6: TestCase = {
-  title: 'TC6  thread follow-up reuses the same worktree',
+  title: 'TC6  follow-up after auto-merge starts a fresh task on a new branch',
   fn: async ({ orchestrator, runner, repoRoot, originPath, codeTaskStore, docId, expect }) => {
+    // First comment auto-merges its branch into main. The code task is
+    // marked completed, so getByComment (which filters status='active')
+    // returns null. A follow-up comment with the same comment.id therefore
+    // starts a fresh task — new worktree, new branch — which itself
+    // auto-merges. Both files end up on main as separate commits.
+    //
+    // The original "follow-up reuses the same worktree" semantic only
+    // applies when the prior auto-merge bailed (overlap, conflict, mid-
+    // flight base movement); that path is exercised separately by the
+    // squashMergeIntoBase unit tests and not re-asserted here.
     const threadId = 'comment-thread-followup';
 
-    // First comment on the thread — creates worktree and branch.
     await orchestrator.handleComment(
       makeCommentEvent(
         docId,
@@ -880,25 +871,25 @@ const TC6: TestCase = {
 
     expect(runner.workingDirectories.length === 1, `first comment: one run (saw ${runner.workingDirectories.length})`);
     const firstWt = runner.workingDirectories[0];
-    const firstBranch = await git(firstWt, 'rev-parse', '--abbrev-ref', 'HEAD');
-    const firstLog = await git(firstWt, 'log', '--oneline', `main..${firstBranch}`);
-    expect(firstLog.trim().split('\n').length === 1, 'first comment added exactly one commit');
 
-    // The code task was recorded under this comment.id.
-    const task = codeTaskStore.getByComment(docId, threadId);
-    expect(task !== null, 'code task was recorded for the thread');
-    if (task) {
-      expect(task.worktreePath === firstWt, `recorded worktreePath matches (${task.worktreePath} === ${firstWt})`);
-      expect(task.branchName === firstBranch, `recorded branchName matches (${task.branchName} === ${firstBranch})`);
-    }
+    // First auto-merge fired: worktree gone, file on main, no active task.
+    const wtsAfterFirst = await listWorktrees(repoRoot);
+    expect(wtsAfterFirst.length === 0, `worktree torn down after first auto-merge (saw ${JSON.stringify(wtsAfterFirst)})`);
+    let firstOnMain = '';
+    try { firstOnMain = await git(repoRoot, 'show', 'main:src/first.ts'); } catch { /* surfaced below */ }
+    expect(/FIRST_MARKER/.test(firstOnMain), 'src/first.ts on main after first auto-merge');
+    expect(
+      codeTaskStore.getByComment(docId, threadId) === null,
+      'first task no longer "active" after auto-merge marked it completed',
+    );
 
-    // Second comment on the SAME thread (same comment.id) — the
-    // orchestrator should look up the existing task and reuse its
-    // worktree + branch rather than creating a new one.
+    // Follow-up comment with the SAME comment.id. existingTask lookup
+    // returns null (filtered out), so this becomes a fresh task with a
+    // new branch + worktree, NOT a reuse of the gone-and-deleted prior.
     await orchestrator.handleComment(
       makeCommentEvent(
         docId,
-        'Now create a second file in the same branch at src/second.ts whose only contents are: export const SECOND_MARKER = "second-v2";',
+        'Create a new file at src/second.ts whose only contents are: export const SECOND_MARKER = "second-v2";',
         { id: threadId },
       ),
     );
@@ -906,37 +897,32 @@ const TC6: TestCase = {
 
     expect(runner.workingDirectories.length === 2, `total runs after follow-up: 2 (saw ${runner.workingDirectories.length})`);
     const secondWt = runner.workingDirectories[1];
-    expect(secondWt === firstWt, `follow-up reused the same worktree (${secondWt} === ${firstWt})`);
+    expect(secondWt !== firstWt, `follow-up used a fresh worktree (${secondWt} !== ${firstWt})`);
 
-    // Still only one worktree on disk — not two.
-    const wts = await listWorktrees(repoRoot);
-    expect(wts.length === 1, `still exactly one worktree after follow-up (saw ${JSON.stringify(wts)})`);
+    // Both auto-merges complete: no worktrees, both files on main.
+    const wtsAfterSecond = await listWorktrees(repoRoot);
+    expect(wtsAfterSecond.length === 0, `worktree torn down after second auto-merge (saw ${JSON.stringify(wtsAfterSecond)})`);
+    let firstStill = '';
+    let secondOnMain = '';
+    try { firstStill = await git(repoRoot, 'show', 'main:src/first.ts'); } catch { /* surfaced below */ }
+    try { secondOnMain = await git(repoRoot, 'show', 'main:src/second.ts'); } catch { /* surfaced below */ }
+    expect(/FIRST_MARKER/.test(firstStill), 'src/first.ts still on main after second auto-merge');
+    expect(/SECOND_MARKER/.test(secondOnMain), 'src/second.ts on main after second auto-merge');
 
-    // Same branch name, and it now has two commits beyond main.
-    const secondBranch = await git(firstWt, 'rev-parse', '--abbrev-ref', 'HEAD');
-    expect(secondBranch === firstBranch, `branch name unchanged (${secondBranch} === ${firstBranch})`);
-    const secondLog = await git(firstWt, 'log', '--oneline', `main..${secondBranch}`);
+    // main has 3 commits: seed + two auto-merged squashes.
+    const log = await git(repoRoot, 'log', '--oneline');
+    const lineCount = log.split('\n').filter((l) => l.length > 0).length;
     expect(
-      secondLog.trim().split('\n').length === 2,
-      `branch now has two commits beyond main (log: ${secondLog.replace(/\n/g, ' | ').slice(0, 120)})`,
+      lineCount === 3,
+      `main has 3 commits (saw ${lineCount}: ${log.replace(/\n/g, ' | ').slice(0, 200)})`,
     );
 
-    // Both files should exist in the worktree; only one branch on origin.
-    expect(existsSync(join(firstWt, 'src', 'first.ts')), 'src/first.ts still present');
-    expect(existsSync(join(firstWt, 'src', 'second.ts')), 'src/second.ts was added');
-
+    // No codocs branches on origin (deleteRemoteBranch fired on each merge).
     const originBranches = await listOriginBranches(originPath);
     const codocsBranches = originBranches.filter((b) => b.startsWith('codocs/'));
-    expect(codocsBranches.length === 1, `exactly one codocs branch on origin (saw ${JSON.stringify(codocsBranches)})`);
-    expect(codocsBranches[0] === firstBranch, `origin branch is the same one (${codocsBranches[0]} === ${firstBranch})`);
-
-    // Origin's copy of the branch has both commits too (push happened twice).
-    const originLog = await git(
-      firstWt, 'log', '--oneline', `main..origin/${firstBranch}`,
-    );
     expect(
-      originLog.trim().split('\n').length === 2,
-      `origin branch has both commits (log: ${originLog.replace(/\n/g, ' | ').slice(0, 120)})`,
+      codocsBranches.length === 0,
+      `no codocs branches on origin (origin has: ${JSON.stringify(originBranches)})`,
     );
   },
 };
