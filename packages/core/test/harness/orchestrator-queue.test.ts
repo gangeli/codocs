@@ -268,14 +268,16 @@ describe('AgentOrchestrator queue integration', () => {
     calls[1].resolve(makeResult());
   });
 
-  it('runs unattributed comments in parallel via per-comment fallback names', async () => {
+  it('serializes two comments on the same doc even when they map to different agents', async () => {
     const { runner, calls } = createControllableRunner();
     const client = createMockClient();
 
     // Fresh doc: no attributions on any comment
     client.getAttributions.mockResolvedValue([]);
 
-    // Function fallback: each comment.id gets its own agent name
+    // Function fallback: each comment.id gets its own agent name. Without
+    // doc-level serialization these would run concurrently (per-agent
+    // queues, distinct agents); with it, the second waits for the first.
     const orchestrator = createOrchestrator({
       client: client as any,
       sessionStore,
@@ -287,10 +289,18 @@ describe('AgentOrchestrator queue integration', () => {
     orchestrator.handleComment(makeEvent({ comment: { id: 'c1', content: 'First', mentions: [] } }));
     orchestrator.handleComment(makeEvent({ comment: { id: 'c2', content: 'Second', mentions: [] } }));
 
-    // Both should be running concurrently — no queue serialization
-    await waitFor(() => expect(calls).toHaveLength(2));
+    // First runs; second waits on the doc serializer.
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].prompt).toContain('First');
+
+    // Give the second a chance to start if it were going to — it shouldn't.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(calls).toHaveLength(1);
 
     calls[0].resolve(makeResult());
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].prompt).toContain('Second');
     calls[1].resolve(makeResult());
   });
 

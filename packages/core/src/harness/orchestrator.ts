@@ -29,6 +29,7 @@ import { getRepoInfo, createDraftPR, addPRComment, buildPRBody, closePR } from '
 import { routeComment } from '../chat/chat-router.js';
 import { ChatTabManager } from '../chat/chat-tab-manager.js';
 import { ChatOrchestrator } from '../chat/chat-orchestrator.js';
+import { DocSerializer } from './doc-serializer.js';
 import type { ReplyTracker } from '../events/reply-tracker.js';
 import type { ChatTabStore } from '@codocs/db';
 
@@ -159,13 +160,12 @@ export class AgentOrchestrator {
    */
   private activePromises = new Map<string, Set<Promise<void>>>();
   /**
-   * Per-document serialization tail for fork mode. Each entry is the
-   * promise of the most recently scheduled processComment for that doc;
-   * the next fork chains onto it so two forks never edit the same doc
-   * concurrently. Entries are removed once the chain settles. Different
-   * docs remain fully parallel.
+   * Per-document serializer. Every code path that edits a Google Doc —
+   * fork-mode comments, the legacy per-agent drain queue, and chat-tab
+   * messages — runs through this so two agents in the same process can
+   * never overlap on the same document. Different docs remain parallel.
    */
-  private docLocks = new Map<string, Promise<unknown>>();
+  private docSerializer = new DocSerializer();
   /** Thinking-reply IDs posted at enqueue time, keyed by queue item id. */
   private pendingThinkingReplies = new Map<number, string>();
   /** Whether onIdle has already fired since the last busy state. */
@@ -300,7 +300,12 @@ export class AgentOrchestrator {
       const route = await routeComment(event, this.chatTabStore, this.client);
       if (route.type === 'chat') {
         this.debug(`Routing to chat tab: ${route.chatTab.title}`);
-        const result = await this.chatOrchestrator.handleChatMessage(route.chatTab, event);
+        // Serialize against the main edit loop on the same doc — chat-tab
+        // edits can touch the main tab, and we don't want them racing a
+        // fork-mode or legacy-mode merge.
+        const result = await this.docSerializer.run(documentId, () =>
+          this.chatOrchestrator!.handleChatMessage(route.chatTab, event),
+        );
         const agentName = route.chatTab.agentName;
         this.onCommentProcessed({ agentName, ...result });
         return { agentName, ...result };
@@ -405,17 +410,10 @@ export class AgentOrchestrator {
         this.onCommentFailed(agentName, err.message ?? String(err));
       }
     };
-    // Chain on the doc's tail so two forks for the same doc never run
-    // concurrently. Both branches of `.then` run `run`, so a rejected tail
-    // (shouldn't happen — `run` catches its own errors) can't wedge the doc.
-    const prevDocTail = this.docLocks.get(documentId) ?? Promise.resolve();
-    const docTail = prevDocTail.then(run, run);
-    this.docLocks.set(documentId, docTail);
-    docTail.finally(() => {
-      if (this.docLocks.get(documentId) === docTail) {
-        this.docLocks.delete(documentId);
-      }
-    });
+    // Chain on the doc's serializer so two tasks for the same doc never run
+    // concurrently. Different docs proceed in parallel. `run` catches its
+    // own errors, so the chain can't wedge.
+    const docTail = this.docSerializer.run(documentId, run);
 
     const promise: Promise<void> = docTail
       .finally(() => {
@@ -500,11 +498,13 @@ export class AgentOrchestrator {
         const thinkingReplyId = this.pendingThinkingReplies.get(item.id) ?? null;
         this.pendingThinkingReplies.delete(item.id);
 
+        const event = item.commentEvent as CommentEvent;
         try {
-          const result = await this.processComment(
-            item.commentEvent as CommentEvent,
-            agentName,
-            thinkingReplyId,
+          // Serialize against other agents on the same doc — the legacy
+          // queue is per-agent, so without this two different agents could
+          // both merge into the same doc concurrently.
+          const result = await this.docSerializer.run(event.documentId, () =>
+            this.processComment(event, agentName, thinkingReplyId),
           );
           this.queueStore.markCompleted(item.id);
           this.onCommentProcessed({ agentName, ...result });
