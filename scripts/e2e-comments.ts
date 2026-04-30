@@ -65,10 +65,10 @@ import {
 } from '../packages/core/src/index.js';
 import { openDatabase, QueueStore, CodeTaskStore } from '../packages/db/src/index.js';
 
-import { mkdtemp, rm, writeFile, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, readdir, stat, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { docs_v1 } from 'googleapis';
@@ -283,6 +283,46 @@ class RecordingRunner implements AgentRunner {
   }
 }
 
+/**
+ * Stub AgentRunner that just writes a single file inside the working
+ * directory and returns a canned stdout. Lets tests exercise the full
+ * orchestrator + git pipeline without spinning up the real Claude CLI,
+ * which is essential for tests that target flow-control bugs (e.g.
+ * post-auto-merge cleanup) rather than agent intelligence.
+ */
+class StubFileCreatingRunner implements AgentRunner {
+  readonly name = 'stub-file';
+  constructor(
+    private readonly filePath: string,
+    private readonly fileContent: string,
+    private readonly stdout: string = 'Done.',
+  ) {}
+  async run(_prompt: string, sessionId: string | null, opts?: AgentRunOptions): Promise<AgentRunResult> {
+    if (opts?.workingDirectory) {
+      const target = join(opts.workingDirectory, this.filePath);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, this.fileContent, 'utf-8');
+    }
+    return {
+      sessionId: sessionId ?? 'stub-session',
+      exitCode: 0,
+      stdout: this.stdout,
+      stderr: '',
+    };
+  }
+  getActiveProcesses(): ActiveAgent[] { return []; }
+  killAll(): string[] { return []; }
+  getCapabilities(): RunnerCapabilities {
+    return {
+      supportsSessionResume: false,
+      supportsSessionFork: false,
+      models: [],
+      harnessSettings: [],
+      supportsPermissionMode: false,
+    };
+  }
+}
+
 // ── In-memory session store ──────────────────────────────────
 
 function createMemorySessionStore(): SessionStore {
@@ -375,6 +415,12 @@ function makeCommentEvent(
 interface TestCase {
   title: string;
   fn: (ctx: TestContext) => Promise<void>;
+  /**
+   * Optional override of the agent runner. Defaults to a real ClaudeRunner;
+   * tests that don't depend on agent intelligence can supply a fast stub
+   * (e.g. StubFileCreatingRunner) so they run in <1s and stay deterministic.
+   */
+  innerRunnerFactory?: () => AgentRunner;
 }
 
 interface TestContext {
@@ -412,7 +458,7 @@ async function runCase(tc: TestCase, debugFlag: boolean): Promise<boolean> {
   const codeTaskStore = new CodeTaskStore(db);
   const debug: string[] = [];
 
-  const innerRunner = new ClaudeRunner();
+  const innerRunner = tc.innerRunnerFactory ? tc.innerRunnerFactory() : new ClaudeRunner();
   const runner = new RecordingRunner(innerRunner);
   docsClient.attachRunner(runner);
 
@@ -956,6 +1002,89 @@ const TC7: TestCase = {
   },
 };
 
+const TC8: TestCase = {
+  title: 'TC8  code-only auto-merge does not throw on missing design-doc snapshot',
+  // Stub runner: the bug is in orchestrator flow control after the agent
+  // commits, so a minimal "create one file" stub is sufficient to drive
+  // the auto-squash-merge path. Keeping this off the real Claude CLI makes
+  // the test fast (<1s) and immune to model variance.
+  innerRunnerFactory: () => new StubFileCreatingRunner(
+    'src/merged.ts',
+    'export const MERGED_MARKER = "merged-v1";\n',
+  ),
+  fn: async ({ docsClient, orchestrator, runner, repoRoot, originPath, docId, debug, expect }) => {
+    // After the agent commits, the orchestrator runs squashMergeIntoBase.
+    // On success it advances `main` (ff), tears down the worktree, and
+    // deletes the branch. The known bug: the doc-diff detection step
+    // (orchestrator.ts step 3) then tries to read the design-doc snapshot
+    // from the just-removed worktree, throws ENOENT, and the queue item is
+    // marked failed even though every code-side action succeeded.
+    const initialMainSha = await git(repoRoot, 'rev-parse', 'main');
+
+    const commentId = 'comment-merge';
+    await orchestrator.handleComment(
+      makeCommentEvent(
+        docId,
+        'Add src/merged.ts.',
+        { id: commentId },
+      ),
+    );
+    await orchestrator.waitForIdle();
+
+    expect(runner.workingDirectories.length === 1, `agent ran exactly once (saw ${runner.workingDirectories.length})`);
+
+    // Auto-merge fired: main advanced past the seed commit and now contains
+    // the new file via the merged tree.
+    const finalMainSha = await git(repoRoot, 'rev-parse', 'main');
+    expect(
+      finalMainSha !== initialMainSha,
+      `main advanced past the seed commit (was ${initialMainSha.slice(0, 7)}, now ${finalMainSha.slice(0, 7)})`,
+    );
+    let onMain = '';
+    try { onMain = await git(repoRoot, 'show', 'main:src/merged.ts'); } catch { /* surfaced via expect below */ }
+    expect(/MERGED_MARKER/.test(onMain), `src/merged.ts is on main with MERGED_MARKER (saw: ${onMain.slice(0, 80)})`);
+
+    // Worktree was torn down by the auto-merge cleanup.
+    const wts = await listWorktrees(repoRoot);
+    expect(wts.length === 0, `worktree torn down after auto-merge (saw ${JSON.stringify(wts)})`);
+
+    // The agent branch was removed locally and from origin.
+    const localBranches = (await git(repoRoot, 'branch', '--list', 'codocs/*')).split('\n').filter((b) => b.trim().length > 0);
+    expect(localBranches.length === 0, `no codocs branches locally (saw ${JSON.stringify(localBranches)})`);
+    const originBranches = await listOriginBranches(originPath);
+    const codocsBranches = originBranches.filter((b) => b.startsWith('codocs/'));
+    expect(codocsBranches.length === 0, `no codocs branches on origin (saw ${JSON.stringify(codocsBranches)})`);
+
+    // No doc edits triggered (this is a code-only comment).
+    expect(docsClient.batchUpdateCalls.length === 0, `no doc edits triggered (saw ${docsClient.batchUpdateCalls.length})`);
+
+    // ── Bug check ──
+    // processComment must NOT throw after the worktree teardown. If it
+    // did, drainQueue logs "Failed to process queue item ..." and the
+    // queue row is marked failed. Both signals are independent and
+    // both are checked so a regression can't sneak past either alarm.
+    const queueErrors = debug.filter((d) => /Failed to process queue item/i.test(d));
+    expect(queueErrors.length === 0, `no queue-failure log lines (saw: ${JSON.stringify(queueErrors)})`);
+    const procErrors = debug.filter((d) => /Error during processing/i.test(d));
+    expect(procErrors.length === 0, `no "Error during processing" log lines (saw: ${JSON.stringify(procErrors)})`);
+    const enoentLines = debug.filter((d) => /ENOENT/i.test(d) && /design-doc/i.test(d));
+    expect(enoentLines.length === 0, `no ENOENT against design-doc.md (saw: ${JSON.stringify(enoentLines)})`);
+
+    // The user-visible reply should be the agent's stdout, not an error
+    // string. There must be exactly one final content reply (beyond the
+    // thinking emoji) and it must not mention the bug's signature.
+    const contentReplies = docsClient.replies.filter((r) => r.content !== '\u{1F916} is \u{1F914}');
+    expect(contentReplies.length === 1, `exactly one content reply (saw ${contentReplies.length})`);
+    if (contentReplies.length === 1) {
+      const reply = contentReplies[0].content;
+      expect(
+        !/ENOENT|design-doc\.md/i.test(reply),
+        `reply does not mention the ENOENT/design-doc bug (saw: ${reply.slice(0, 120)})`,
+      );
+    }
+  },
+};
+
 // ── Main ─────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -980,7 +1109,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const all: TestCase[] = [TC1, TC2, TC3, TC4, TC5, TC6, TC7];
+  const all: TestCase[] = [TC1, TC2, TC3, TC4, TC5, TC6, TC7, TC8];
   const selected = filters.length
     ? all.filter((t) => filters.some((f) => t.title.toLowerCase().includes(f)))
     : all;

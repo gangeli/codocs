@@ -750,6 +750,8 @@ export class AgentOrchestrator {
       //    edits don't trigger a commit.
       let codeChangesMade = false;
       let autoMergedSha: string | null = null;
+      // Hoisted so step 5's deferred auto-merge cleanup can see it.
+      let codeTaskId: number | null = null;
       if (codeMode === 'pr') {
         const commitMessage = commentText.slice(0, 72) || 'codocs change';
         const sha = await commitAll(worktreePath, commitMessage);
@@ -794,7 +796,6 @@ export class AgentOrchestrator {
           }
 
           // Record/update the code task so future follow-ups reuse this worktree.
-          let codeTaskId: number | null = null;
           if (this.codeTaskStore && comment.id) {
             if (!existingTask) {
               codeTaskId = this.codeTaskStore.create({
@@ -820,6 +821,10 @@ export class AgentOrchestrator {
           // it advances `main` without disturbing the main checkout's WIP;
           // bails cleanly on overlap, conflict, or mid-flight base movement,
           // leaving the branch + draft PR for manual review.
+          //
+          // Cleanup (removeWorktree, branch deletion, PR close, markCompleted)
+          // is intentionally deferred to step 5 so step 3's design-doc reads
+          // (designDocPath, baseDocPath) still resolve from the worktree.
           const mergeMessage = buildSquashMergeMessage({
             commentText, agentName, branchName, documentId,
           });
@@ -829,34 +834,8 @@ export class AgentOrchestrator {
           if (mergeResult.success) {
             autoMergedSha = mergeResult.mergedSha;
             this.debug(
-              `[processComment] Auto-merged ${branchName} into ${baseBranch} as ${autoMergedSha}`,
+              `[processComment] Auto-merged ${branchName} into ${baseBranch} as ${autoMergedSha} (cleanup deferred)`,
             );
-            try { await removeWorktree(this.repoRoot, worktreePath); } catch { /* ignore */ }
-            await deleteLocalBranch(this.repoRoot, branchName);
-            await deleteRemoteBranch(this.repoRoot, branchName);
-            const ghToken = this.getGithubToken();
-            if (ghToken && prNumber != null) {
-              try {
-                const repoInfo = await getRepoInfo(this.repoRoot);
-                await addPRComment({
-                  token: ghToken, owner: repoInfo.owner, repo: repoInfo.repo,
-                  prNumber,
-                  body: `Auto-merged into \`${baseBranch}\` as ${autoMergedSha} by codocs.`,
-                });
-                await closePR({
-                  token: ghToken, owner: repoInfo.owner, repo: repoInfo.repo, prNumber,
-                });
-              } catch (prErr: any) {
-                this.debug(`[processComment] PR close failed: ${prErr.message ?? prErr}`);
-              }
-            }
-            if (codeTaskId != null && this.codeTaskStore) {
-              this.codeTaskStore.markCompleted(codeTaskId);
-            }
-            // The worktree is gone; suppress the empty-worktree teardown
-            // below (it would race with us) and stop reporting the PR url.
-            createdNewWorktree = false;
-            prUrl = null;
           } else {
             this.debug(
               `[processComment] Auto-merge skipped (${mergeResult.reason}) — leaving ${branchName} for manual review`,
@@ -953,8 +932,32 @@ export class AgentOrchestrator {
       }
       editSummary = summaryParts.length ? summaryParts.join(', ') : 'No changes';
 
-      // 5. If we spun up a fresh worktree that produced nothing, tear it down.
-      if (createdNewWorktree && !codeChangesMade) {
+      // 5. Worktree + branch cleanup. Auto-merge cleanup is deferred to here
+      //    so step 3's design-doc reads still resolved from the worktree.
+      if (autoMergedSha != null) {
+        try { await removeWorktree(this.repoRoot, worktreePath); } catch { /* ignore */ }
+        await deleteLocalBranch(this.repoRoot, branchName);
+        await deleteRemoteBranch(this.repoRoot, branchName);
+        const ghToken = this.getGithubToken();
+        if (ghToken && prNumber != null) {
+          try {
+            const repoInfo = await getRepoInfo(this.repoRoot);
+            await addPRComment({
+              token: ghToken, owner: repoInfo.owner, repo: repoInfo.repo,
+              prNumber,
+              body: `Auto-merged into \`${baseBranch}\` as ${autoMergedSha} by codocs.`,
+            });
+            await closePR({
+              token: ghToken, owner: repoInfo.owner, repo: repoInfo.repo, prNumber,
+            });
+          } catch (prErr: any) {
+            this.debug(`[processComment] PR close failed: ${prErr.message ?? prErr}`);
+          }
+        }
+        if (codeTaskId != null && this.codeTaskStore) {
+          this.codeTaskStore.markCompleted(codeTaskId);
+        }
+      } else if (createdNewWorktree && !codeChangesMade) {
         this.debug('[processComment] Tearing down empty worktree');
         try { await removeWorktree(this.repoRoot, worktreePath); } catch { /* ignore */ }
       }
