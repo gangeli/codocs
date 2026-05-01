@@ -25,6 +25,7 @@ import {
 import { openDatabase, saveDatabase, SessionStore, AgentNameStore, QueueStore, SettingsStore, CodeTaskStore, CodocsSessionStore, type CodocsSession } from '@codocs/db';
 import { makeFallbackAgentResolver } from '../agent/fallback-resolver.js';
 import { readConfig, readTokens, readGitHubTokens } from '../auth/token-store.js';
+import { createLogger, type Logger } from '../logger.js';
 import { withErrorHandler } from '../util.js';
 import { renderExit } from '../exit.js';
 import { buildRepairContext, runStartupChecks, runRepairUi } from '../repair/index.js';
@@ -192,7 +193,7 @@ export function formatCommentEvent(event: CommentEvent): string {
 /**
  * Unified event emitter that works in both TUI and plain-text mode.
  */
-function createEventEmitter(tuiRef: TuiStateRef | null) {
+function createEventEmitter(tuiRef: TuiStateRef | null, logger: Logger | null) {
   return (event: Omit<ActivityEvent, 'id'> & { id?: string }) => {
     const fullEvent = {
       ...event,
@@ -211,6 +212,19 @@ function createEventEmitter(tuiRef: TuiStateRef | null) {
       } else {
         console.error(`[${time}] ${event.content}`);
       }
+    }
+
+    if (logger) {
+      const data: Record<string, unknown> = { type: event.type };
+      if (event.author) data.author = event.author;
+      if (event.agent) data.agent = event.agent;
+      if (event.quotedText) data.quotedText = event.quotedText;
+      if (event.durationMs !== undefined) data.durationMs = event.durationMs;
+      if (event.cost !== undefined) data.cost = event.cost;
+      if (event.editSummary) data.editSummary = event.editSummary;
+      if (event.replyPreview) data.replyPreview = event.replyPreview;
+      const level = event.type === 'error' ? 'error' : event.type === 'debug' ? 'debug' : 'info';
+      logger[level](event.content, data);
     }
   };
 }
@@ -531,6 +545,8 @@ export function registerServeCommand(program: Command) {
     .description('Start the codocs server to listen for comment events')
     .argument('[docIds...]', 'Google Doc IDs or URLs to watch')
     .option('--debug', 'Enable verbose debug logging')
+    .option('--log-file <path>', 'Append structured JSON log lines here (default: ~/.local/share/codocs/serve.log)')
+    .option('--no-log-file', 'Disable file logging entirely')
     .option('--no-tui', 'Disable the terminal UI (plain text output)')
     .option('--agent-type <type>', 'Agent runner type (e.g., claude)', 'claude')
     .option('--db-path <path>', 'SQLite database path')
@@ -543,6 +559,7 @@ export function registerServeCommand(program: Command) {
     .action(
       withErrorHandler(async (docIds: string[], opts: {
         debug?: boolean;
+        logFile?: string | false;
         tui?: boolean;
         agentType?: string;
         dbPath?: string;
@@ -682,6 +699,29 @@ export function registerServeCommand(program: Command) {
         const normalizedDocIds = docIds.map(extractDocId);
         const primaryDocId = normalizedDocIds[0];
 
+        // ── File logger ──────────────────────────────────────────
+        // Persists every event (and, when --debug is on, every debug
+        // line) to disk. Without this, intermittent multi-hour
+        // failures are effectively undebuggable because the TUI
+        // ring-buffer dies with the process. Created before the
+        // shutdown closure so shutdown can flush on exit.
+        const logger: Logger | null = opts.logFile === false
+          ? null
+          : createLogger({
+              filePath: typeof opts.logFile === 'string'
+                ? opts.logFile
+                : join(homedir(), '.local', 'share', 'codocs', 'serve.log'),
+              level: debugMode ? 'debug' : 'info',
+            });
+        if (logger) {
+          logger.info('codocs serve starting', {
+            pid: process.pid,
+            host: hostname(),
+            cwd: process.cwd(),
+            docIds: normalizedDocIds,
+          });
+        }
+
         // ── Server lock (prevent duplicate servers per doc) ──────
         const lockClient = new CodocsClient({
           oauth2: { clientId: config.client_id, clientSecret: config.client_secret, refreshToken: tokens.refresh_token },
@@ -803,6 +843,7 @@ export function registerServeCommand(program: Command) {
             }
             if (listener) await listener.close();
             db.close();
+            try { await logger?.flush(); } catch { /* best-effort */ }
           } catch { /* best-effort cleanup */ }
           if (!useTui) {
             renderExit({
@@ -856,10 +897,17 @@ export function registerServeCommand(program: Command) {
           await new Promise((r) => setTimeout(r, 50));
         }
 
-        const emit = createEventEmitter(tui.ref);
+        // One-line note in the user's terminal so they know where to
+        // look. (Logger itself was created earlier so shutdown can
+        // flush it.)
+        if (logger && !useTui) console.error(`[log] writing structured logs to ${logger.filePath}`);
+
+        const emit = createEventEmitter(tui.ref, logger);
 
         // Debug always emits — the TUI filters based on debugMode setting.
-        // In --no-tui mode, only print if --debug was passed.
+        // In --no-tui mode, only print if --debug was passed. The file
+        // logger captures debug lines whenever --debug was set
+        // (createLogger's level is 'debug' iff debugMode).
         const debug = (msg: string) => {
           if (useTui && tui.ref) {
             tui.ref.addEvent({
@@ -871,6 +919,7 @@ export function registerServeCommand(program: Command) {
           } else if (debugMode) {
             console.error(`[debug] ${msg}`);
           }
+          logger?.debug(msg);
         };
 
         debug(githubConnected
