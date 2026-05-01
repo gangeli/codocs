@@ -9,6 +9,7 @@
 import type { Check, Fix, FixResult, Issue, RepairContext } from './types.js';
 import {
   authTokensPresent,
+  authTokenWorks,
   configHasGcp,
   targetDocIdWellformed,
   targetDocIdAccessible,
@@ -20,8 +21,12 @@ import {
   expiredSubscriptions,
 } from './checks.js';
 
+// Order matters: authTokenWorks runs before targetDocIdAccessible so a
+// dead refresh token surfaces as a clear "re-login" prompt instead of
+// being lumped in with generic doc-unreachable errors.
 export const ALL_CHECKS: Check[] = [
   authTokensPresent,
+  authTokenWorks,
   configHasGcp,
   targetDocIdWellformed,
   targetDocIdAccessible,

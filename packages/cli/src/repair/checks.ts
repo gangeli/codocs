@@ -45,6 +45,64 @@ export const authTokensPresent: Check = {
   },
 };
 
+/**
+ * Detect whether the OAuth refresh token is dead — revoked, expired,
+ * or otherwise unable to mint a new access token. This is hypothesis
+ * H1 from the listener-stuck investigation: tokens for unverified
+ * OAuth clients can expire/get rotated, after which every Pub/Sub
+ * stream attempt fails silently without any clear surface in the UI.
+ *
+ * We probe with a single Drive `about.get` call, the cheapest auth-
+ * required Drive endpoint. If the token is dead, the library raises
+ * an error containing "invalid_grant" or a 401 status. Anything else
+ * (network, 5xx) we ignore here — `targetDocIdAccessible` is a more
+ * thorough surface for those.
+ */
+export const authTokenWorks: Check = {
+  id: 'auth-token-works',
+  description: 'OAuth refresh token can mint a new access token',
+  scope: 'startup',
+  async run(ctx): Promise<Issue[]> {
+    if (!ctx.auth) return [];
+    try {
+      const { google } = await import('googleapis');
+      const drive = google.drive({ version: 'v3', auth: ctx.auth as any });
+      await drive.about.get({ fields: 'user' });
+      return [];
+    } catch (err: any) {
+      const msg = err?.message ?? String(err);
+      const dataErr = err?.response?.data?.error ?? err?.response?.data?.error_description;
+      const status = err?.response?.status ?? err?.code;
+      // Patterns: googleapis surfaces invalid_grant in err.response.data.error
+      // or in err.message; gRPC clients map UNAUTHENTICATED to code 16 / 401.
+      const isAuthFailure =
+        /invalid[_ -]grant|token.*expired|token.*revoked|token has been expired/i.test(msg) ||
+        /invalid_grant/i.test(typeof dataErr === 'string' ? dataErr : '') ||
+        status === 401 ||
+        status === 16;
+      if (!isAuthFailure) {
+        // Could be a transient network blip — don't fail startup over
+        // it. The targetDocIdAccessible check will surface real
+        // outages with better doc-specific messaging.
+        ctx.debug(`auth-token-works probe non-auth error (ignored): ${msg}`);
+        return [];
+      }
+      return [{
+        code: 'auth-token-dead',
+        severity: 'error',
+        title: 'Google auth has expired or been revoked',
+        detail: [
+          'Codocs tried to refresh its OAuth access token and Google rejected the request.',
+          'This usually means the refresh token has been revoked, expired, or rotated — for unverified OAuth client apps refresh tokens can expire after about a week.',
+          'Codocs would otherwise start up and silently fail to receive any comment events. Re-authenticate to refresh the token.',
+        ].join(' '),
+        context: { underlying: msg, status: status ?? null },
+        fixes: [relaunchAuthLoginFix],
+      }];
+    }
+  },
+};
+
 export const configHasGcp: Check = {
   id: 'config-has-gcp',
   description: 'Config has gcp_project_id and pubsub_topic',

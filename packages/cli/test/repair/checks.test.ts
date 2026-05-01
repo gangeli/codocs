@@ -9,6 +9,7 @@ import {
 } from '@codocs/db';
 import {
   authTokensPresent,
+  authTokenWorks,
   configHasGcp,
   targetDocIdWellformed,
   targetDocIdAccessible,
@@ -28,6 +29,13 @@ vi.mock('@codocs/core', async (importOriginal) => {
     listSubscriptions: vi.fn(),
   };
 });
+
+const aboutGetMock = vi.fn();
+vi.mock('googleapis', () => ({
+  google: {
+    drive: () => ({ about: { get: aboutGetMock } }),
+  },
+}));
 
 import { listSubscriptions } from '@codocs/core';
 
@@ -75,6 +83,67 @@ describe('repair/checks', () => {
       expect(issues).toHaveLength(1);
       expect(issues[0].severity).toBe('error');
       expect(issues[0].code).toBe('auth-tokens-missing');
+    });
+  });
+
+  describe('authTokenWorks', () => {
+    beforeEach(() => {
+      aboutGetMock.mockReset();
+    });
+
+    it('returns nothing when ctx.auth is null (caller has no tokens)', async () => {
+      const ctx = makeCtx(db, { auth: null });
+      expect(await authTokenWorks.run(ctx)).toEqual([]);
+      expect(aboutGetMock).not.toHaveBeenCalled();
+    });
+
+    it('returns nothing when the probe call succeeds', async () => {
+      aboutGetMock.mockResolvedValue({ data: { user: { displayName: 'x' } } });
+      const ctx = makeCtx(db, { auth: {} as any });
+      expect(await authTokenWorks.run(ctx)).toEqual([]);
+      expect(aboutGetMock).toHaveBeenCalledOnce();
+    });
+
+    it('flags invalid_grant from response.data.error', async () => {
+      aboutGetMock.mockRejectedValue({
+        message: 'Token has been expired or revoked.',
+        response: { status: 400, data: { error: 'invalid_grant' } },
+      });
+      const ctx = makeCtx(db, { auth: {} as any });
+      const issues = await authTokenWorks.run(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('auth-token-dead');
+      expect(issues[0].severity).toBe('error');
+    });
+
+    it('flags 401 status as a dead token', async () => {
+      aboutGetMock.mockRejectedValue({
+        message: 'Request failed',
+        response: { status: 401, data: {} },
+      });
+      const ctx = makeCtx(db, { auth: {} as any });
+      const issues = await authTokenWorks.run(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('auth-token-dead');
+    });
+
+    it('flags message containing "invalid_grant" without a response object', async () => {
+      aboutGetMock.mockRejectedValue(new Error('invalid_grant: Bad Request'));
+      const ctx = makeCtx(db, { auth: {} as any });
+      const issues = await authTokenWorks.run(ctx);
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('auth-token-dead');
+    });
+
+    it('ignores non-auth errors (network etc)', async () => {
+      aboutGetMock.mockRejectedValue(new Error('ETIMEDOUT'));
+      const debug = vi.fn();
+      const ctx = makeCtx(db, { auth: {} as any, debug });
+      expect(await authTokenWorks.run(ctx)).toEqual([]);
+      // Debug log should mention the swallowed error so a reader of
+      // the file logger can still see what happened.
+      expect(debug).toHaveBeenCalled();
+      expect(debug.mock.calls[0][0]).toMatch(/ETIMEDOUT/);
     });
   });
 
