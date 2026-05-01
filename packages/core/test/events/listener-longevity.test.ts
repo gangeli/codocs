@@ -40,6 +40,10 @@ class FakeSubscription extends EventEmitter {
   subName: string;
   closed = false;
   isOpen = true;
+  /** When true, close() returns a promise that never resolves — used
+   *  to simulate the H3 "wedged close" failure. */
+  hangClose = false;
+  closeStarted = false;
   constructor(name: string) {
     super();
     this.subName = name;
@@ -47,6 +51,12 @@ class FakeSubscription extends EventEmitter {
     allSubscriptions.push(this);
   }
   async close() {
+    this.closeStarted = true;
+    if (this.hangClose) {
+      // Never resolves. The reconnect path is supposed to time-bound
+      // this and proceed to create a fresh subscription anyway.
+      return new Promise<void>(() => {});
+    }
     this.closed = true;
     this.isOpen = false;
   }
@@ -328,6 +338,108 @@ describe('listener longevity', () => {
     await flushAsync();
 
     expect(events.map((e) => e.comment.id)).toEqual(['c-1', 'c-2']);
+    await handle.close();
+  });
+
+  // ─── L6 — H3: hanging close() must not block recovery ─────────
+  // Without the closeTimeoutMs guard, await old.close() can never
+  // resolve on a degenerate gRPC stream — leaving the listener stuck
+  // in reconnect() forever with the old (handler-detached) subscription
+  // still assigned and no new one wired up.
+  it('L6: a wedged close() does not block the reconnect from completing', async () => {
+    const events: CommentEvent[] = [];
+    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const handle = listenForComments(
+      'proj-1', 'sub-1', auth,
+      (e) => events.push(e),
+      undefined,
+      {
+        reconnectInitialDelayMs: 0,
+        reconnectMaxDelayMs: 0,
+        healthCheckIntervalMs: 0,
+        closeTimeoutMs: 500,
+        onReconnect: (info) => reconnects.push(info),
+      },
+    );
+
+    const first = currentSubscription!;
+    // Make the next close hang — the subscription's own close will
+    // never resolve. The reconnect's closeWithTimeout must abandon it.
+    first.hangClose = true;
+
+    // Trigger reconnect via the loud-close path.
+    first.emit('close');
+
+    // Advance past the closeTimeoutMs (500ms).
+    await vi.advanceTimersByTimeAsync(600);
+    await flushAsync();
+
+    // A new subscription should now be attached, even though the old
+    // one's close() never resolved.
+    expect(first.closeStarted).toBe(true);
+    expect(first.closed).toBe(false); // never resolved → still "open"
+    expect(currentSubscription).not.toBe(first);
+    expect(reconnects.length).toBeGreaterThanOrEqual(1);
+
+    // And the new stream delivers messages normally.
+    currentSubscription!.emit('message', makePubsubMessage('c-after'));
+    await flushAsync();
+    expect(events.map((e) => e.comment.id)).toEqual(['c-after']);
+
+    await handle.close();
+  });
+
+  // ─── L7 — H3: in-flight reconnect blocks re-entrant attempts ───
+  it('L7: watchdog ticks during a hanging close do not stack up extra reconnects', async () => {
+    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const handle = listenForComments(
+      'proj-1', 'sub-1', auth,
+      () => {},
+      undefined,
+      {
+        reconnectInitialDelayMs: 0,
+        reconnectMaxDelayMs: 0,
+        // Frequent health checks so we stress the in-flight guard.
+        healthCheckIntervalMs: 50,
+        // Long enough not to re-fire after the (slow) initial reconnect
+        // completes, so we're cleanly testing only the during-hang
+        // behaviour.
+        idleReconnectMs: 60_000,
+        closeTimeoutMs: 500,
+        onReconnect: (info) => reconnects.push(info),
+      },
+    );
+
+    const first = currentSubscription!;
+    first.hangClose = true;
+
+    // Trigger the first reconnect via the loud-close path.
+    first.emit('close');
+    await vi.advanceTimersByTimeAsync(10);
+    await flushAsync();
+    expect(first.closeStarted).toBe(true);
+
+    // Now repeatedly poke the watchdog into wanting another reconnect:
+    // flip isOpen=false (which the watchdog reads on every tick) and
+    // fire stray errorHandler-equivalent signals. With the in-flight
+    // guard, all of them must be suppressed.
+    first.isOpen = false;
+    await vi.advanceTimersByTimeAsync(50);
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(50);
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(50);
+    await flushAsync();
+
+    // Drain past closeTimeoutMs so the in-flight reconnect resolves.
+    await vi.advanceTimersByTimeAsync(600);
+    await flushAsync();
+
+    // Exactly one reconnect — not one per watchdog tick.
+    expect(reconnects.length).toBe(1);
+    expect(currentSubscription).not.toBe(first);
+    expect(allSubscriptions.length).toBe(2);
+
     await handle.close();
   });
 });

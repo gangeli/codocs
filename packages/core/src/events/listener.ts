@@ -108,6 +108,12 @@ export interface ListenOptions {
    *  silently dies, isOpen still reports true, no events fire). Default
    *  30 min. Set to 0 to disable. */
   idleReconnectMs?: number;
+  /** Maximum time to wait for the old subscription to close during a
+   *  reconnect before abandoning it and creating a fresh one anyway.
+   *  The old subscription has already had its handlers detached at this
+   *  point, so leaking it is preferable to blocking recovery forever.
+   *  Default 10_000 ms. */
+  closeTimeoutMs?: number;
   /** Called whenever the listener reconnects to the subscription. Useful for
    *  surfacing reconnect events in UI/status. */
   onReconnect?: (info: { attempt: number; reason: string }) => void;
@@ -161,6 +167,7 @@ export function listenForComments(
   const maxDelay = options?.reconnectMaxDelayMs ?? 60_000;
   const healthInterval = options?.healthCheckIntervalMs ?? 60_000;
   const idleReconnectMs = options?.idleReconnectMs ?? 30 * 60 * 1000;
+  const closeTimeoutMs = options?.closeTimeoutMs ?? 10_000;
 
   let subscription: Subscription = pubsub.subscription(fullSubName);
   let manuallyClosed = false;
@@ -168,6 +175,9 @@ export function listenForComments(
   let reconnectTimer: NodeJS.Timeout | null = null;
   let healthTimer: NodeJS.Timeout | null = null;
   let lastActivityAt = Date.now();
+  /** Set while reconnect() is running. Prevents a second reconnect from
+   *  re-entering while the first is blocked on a hanging old.close(). */
+  let reconnectInFlight = false;
 
   debug('Subscription object created, waiting for messages...');
 
@@ -317,7 +327,12 @@ export function listenForComments(
   }
 
   function scheduleReconnect(reason: string) {
-    if (manuallyClosed || reconnectTimer) return;
+    // The reconnectInFlight guard catches the case where reconnect() is
+    // currently blocked (e.g. on a hanging old.close()): without it, a
+    // watchdog tick or a fresh error event could re-enter reconnect()
+    // and we'd end up with concurrent close attempts on the same dead
+    // subscription, then leaked handlers on the orphan when both finish.
+    if (manuallyClosed || reconnectTimer || reconnectInFlight) return;
     const delay = Math.min(maxDelay, initialDelay * 2 ** reconnectAttempt);
     reconnectAttempt += 1;
     debug(`Scheduling reconnect (attempt ${reconnectAttempt}) in ${delay}ms — ${reason}`);
@@ -331,21 +346,61 @@ export function listenForComments(
     if (typeof reconnectTimer.unref === 'function') reconnectTimer.unref();
   }
 
+  /**
+   * Run `close()` but never wait longer than closeTimeoutMs. Returns the
+   * outcome so the caller can log it. The old subscription's handlers
+   * have already been detached at this point — leaking it (the gRPC
+   * stream gets garbage-collected eventually) is strictly better than
+   * blocking recovery forever on a wedged close.
+   */
+  async function closeWithTimeout(sub: Subscription): Promise<'closed' | 'timeout' | 'errored'> {
+    if (closeTimeoutMs <= 0) {
+      try { await sub.close(); return 'closed'; }
+      catch { return 'errored'; }
+    }
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), closeTimeoutMs);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+    });
+    const closePromise = sub.close().then(
+      () => 'closed' as const,
+      () => 'errored' as const,
+    );
+    const result = await Promise.race([closePromise, timeoutPromise]);
+    if (timer) clearTimeout(timer);
+    return result;
+  }
+
   async function reconnect(reason: string) {
     if (manuallyClosed) return;
-    const old = subscription;
-    detachHandlers(old);
-    try {
-      await old.close();
-    } catch (err) {
-      debug(`Old subscription close errored (ignored): ${(err as Error).message}`);
+    if (reconnectInFlight) {
+      debug('reconnect() re-entered while a previous attempt was still in flight — skipping');
+      return;
     }
-    if (manuallyClosed) return;
-    subscription = pubsub.subscription(fullSubName);
-    attachHandlers(subscription);
-    lastActivityAt = Date.now();
-    debug(`Reconnected to ${fullSubName} (attempt ${reconnectAttempt}, reason: ${reason})`);
-    options?.onReconnect?.({ attempt: reconnectAttempt, reason });
+    reconnectInFlight = true;
+    const startedAt = Date.now();
+    try {
+      const old = subscription;
+      detachHandlers(old);
+      const closeOutcome = await closeWithTimeout(old);
+      const closeDurationMs = Date.now() - startedAt;
+      if (closeOutcome === 'timeout') {
+        debug(`Old subscription close timed out after ${closeDurationMs}ms — abandoning the orphan and reconnecting anyway`);
+      } else if (closeOutcome === 'errored') {
+        debug(`Old subscription close errored (ignored, ${closeDurationMs}ms)`);
+      } else {
+        debug(`Old subscription closed cleanly in ${closeDurationMs}ms`);
+      }
+      if (manuallyClosed) return;
+      subscription = pubsub.subscription(fullSubName);
+      attachHandlers(subscription);
+      lastActivityAt = Date.now();
+      debug(`Reconnected to ${fullSubName} (attempt ${reconnectAttempt}, reason: ${reason})`);
+      options?.onReconnect?.({ attempt: reconnectAttempt, reason });
+    } finally {
+      reconnectInFlight = false;
+    }
   }
 
   attachHandlers(subscription);
