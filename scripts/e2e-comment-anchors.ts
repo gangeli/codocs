@@ -184,7 +184,7 @@ interface AnchorTestCase {
 //     replace ambiguous and is sanity-checked at runtime).
 const FIXTURE = `# Comment Anchor E2E Tests
 
-This doc walks you through 21 anchor cases. For each section below, follow the action instruction (in the blockquote) and add a comment on the indicated body text using the Docs UI. Once all comments are anchored, return to your terminal and press ENTER to run the tests.
+This doc walks you through 24 anchor cases. For each section below, follow the action instruction (in the blockquote) and add a comment on the indicated body text using the Docs UI. Once all comments are anchored, return to your terminal and press ENTER to run the tests.
 
 # CA1 — replace a word inside the anchored span
 
@@ -334,6 +334,24 @@ In the test, the cat sat on the mat for hours.
 
 The line below ends with wave hello 🦊
 
+# CA22 — anchor on italic inline text
+
+> **Action [italic]:** highlight just the italicised word inside the sentence below.
+
+The plan calls for a _careful_ rollout next quarter.
+
+# CA23 — anchor on a snake_case identifier (no emphasis intended)
+
+> **Action [snake]:** highlight the snake-case variable name in the sentence below (the word with two underscores).
+
+The variable my_user_name holds the value.
+
+# CA24 — anchor on a link whose display text is bold
+
+> **Action [boldlink]:** highlight the bold link's display text in the sentence below.
+
+Read the [**critical-section briefing**](https://example.com/) before proceeding.
+
 # Trailing content
 
 Closing paragraph rounds it off.
@@ -459,6 +477,21 @@ const ANCHORS: AnchorSpec[] = [
     key: 'tail-emoji',
     span: 'wave hello 🦊',
     hint: 'highlight the trailing fox-emoji phrase — see CA21 in the doc',
+  },
+  {
+    key: 'italic',
+    span: 'careful',
+    hint: 'highlight just the italicised word — see CA22 in the doc (Drive may extend the selection to the whole sentence — that\'s expected)',
+  },
+  {
+    key: 'snake',
+    span: 'my_user_name',
+    hint: 'highlight the snake_case identifier — see CA23 in the doc',
+  },
+  {
+    key: 'boldlink',
+    span: 'critical-section briefing',
+    hint: 'highlight the bold link\'s display text — see CA24 in the doc (Drive may extend the selection — that\'s expected)',
   },
 ];
 
@@ -806,6 +839,49 @@ const tests: AnchorTestCase[] = [
     outcome: 'splice',
     expectedSpliceNewText: 'shout hi 🦊',
     expectedAnchorTextAfter: 'shout hi 🦊',
+  },
+
+  // CA22 — Anchor on italicised inline text (`_careful_`). Same
+  // marker-stripping path as CA15 but a different syntax. The
+  // splice rewrites the whole sentence as plain text (Drive's
+  // selection-extension behaviour for styled runs) — the italics
+  // are lost, the comment survives.
+  {
+    title: 'CA22: anchor on italic inline text',
+    anchorKey: 'italic',
+    edits: [{ from: 'a _careful_ rollout', to: 'a measured rollout' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'The plan calls for a measured rollout next quarter.',
+    expectedAnchorTextAfter: 'a measured rollout',
+  },
+
+  // CA23 — Anchor on a snake_case identifier. The `_` chars are
+  // mid-word and remark does NOT parse them as emphasis (they
+  // remain in the text node). Literal theirs.indexOf finds the
+  // anchor; no stripped fallback needed. Verifies the parser
+  // doesn't over-strip — a regex-only stripper would have removed
+  // the underscores and broken the match.
+  {
+    title: 'CA23: anchor on a snake_case identifier (no over-stripping)',
+    anchorKey: 'snake',
+    edits: [{ from: 'my_user_name', to: 'our_user_name' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'our_user_name',
+    expectedAnchorTextAfter: 'our_user_name',
+  },
+
+  // CA24 — Anchor on a link whose display text is BOLD
+  // (`[**text**](url)` — nested inline markers). Exercises the
+  // recursion in `collectInlineMarkerRanges`: the link's
+  // `[`/`](url)` and the strong's `**`/`**` markers all need to
+  // be stripped, leaving just "the bold link" as plain text.
+  {
+    title: 'CA24: anchor on a bold link\'s display text (nested markers)',
+    anchorKey: 'boldlink',
+    edits: [{ from: '**critical-section briefing**', to: '**critical-section overview**' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'Read the critical-section overview before proceeding.',
+    expectedAnchorTextAfter: 'critical-section overview',
   },
 ];
 

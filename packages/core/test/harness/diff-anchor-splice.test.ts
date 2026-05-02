@@ -275,6 +275,164 @@ describe('tryBuildSpliceOp — op construction', () => {
     expect(out.newText).toBe('Click the new link text for info.');
   });
 
+  // Below: exhaustive coverage of the AST-based marker stripper.
+  // Each case is a plain-text anchor whose visible content matches
+  // a styled span in the markdown form. The stripper must locate
+  // the anchor (via stripped-markdown fallback) and findReplacement
+  // must compute the corresponding plain-text newText.
+
+  it('handles `__bold__` (alternative bold syntax)', () => {
+    const t = 'Sentence with an __important__ word in it.\n';
+    const m = 'Sentence with an __critical__ word in it.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'an important word' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('an critical word');
+  });
+
+  it('handles `*italic*` markers', () => {
+    const t = 'Sentence with an *italic* word in it.\n';
+    const m = 'Sentence with an *bolder* word in it.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'an italic word' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('an bolder word');
+  });
+
+  it('handles `_italic_` markers', () => {
+    const t = 'Sentence with an _italic_ word in it.\n';
+    const m = 'Sentence with an _bolder_ word in it.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'an italic word' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('an bolder word');
+  });
+
+  it('handles inline `code` markers', () => {
+    const t = 'Call the `compute()` function later.\n';
+    const m = 'Call the `evaluate()` function later.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'the compute() function' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('the evaluate() function');
+  });
+
+  it('handles multi-backtick inline code (` ``code`` `)', () => {
+    const t = 'Look at ``code with ` inside`` here.\n';
+    const m = 'Look at ``code with backticks`` here.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'at code with ` inside here' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('at code with backticks here');
+  });
+
+  it('handles a link nested inside bold (`[**text**](url)`)', () => {
+    const t = 'Read [**the bold link**](https://example.com/) here.\n';
+    const m = 'Read [**the bolder link**](https://example.com/) here.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'Read the bold link here.' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('Read the bolder link here.');
+  });
+
+  it('handles bold containing italic (`**bold *italic-in-bold***`)', () => {
+    const t = 'Has **bold *with italic* inside** it.\n';
+    const m = 'Has **bold *plus italic* inside** it.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'Has bold with italic inside it.' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('Has bold plus italic inside it.');
+  });
+
+  it('handles a sentence with multiple disjoint markers', () => {
+    const t = 'The **bold** word and *italic* word and `code()` token end.\n';
+    const m = 'The **bolder** word and *softer* word and `evaluate()` token end.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'The bold word and italic word and code() token end.' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('The bolder word and softer word and evaluate() token end.');
+  });
+
+  it('does NOT strip mid-word `_` (snake_case identifiers)', () => {
+    // No emphasis intended — `_` mid-word is part of an identifier.
+    // Anchor matches literally; no stripped fallback needed.
+    const t = 'The variable my_user_name holds the value.\n';
+    const m = 'The variable our_user_name holds the value.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'my_user_name' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('our_user_name');
+  });
+
+  it('does NOT strip a single leading `*` that\'s a list-bullet marker', () => {
+    // The body line starts with `* item` — a bullet marker, NOT
+    // emphasis. remark parses it as a list. Anchor on the bullet's
+    // text content matches literally (bullet marker is structural,
+    // not inline).
+    const t = '# H\n\nIntro paragraph.\n\n* alpha bullet here\n* beta bullet stays\n';
+    const m = '# H\n\nIntro paragraph.\n\n* first bullet here\n* beta bullet stays\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'alpha bullet here' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('first bullet here');
+  });
+
+  it('preserves escaped marker chars (`\\*not bold\\*`)', () => {
+    // Backslash-escaped `*` is text, not emphasis. remark parses
+    // them as literal `*` in a text node. The stripper leaves
+    // them alone, so anchor matching works literally.
+    const t = 'Escaped \\*not bold\\* phrase here.\n';
+    const m = 'Escaped \\*not bold\\* rephrased here.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'phrase here' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('rephrased here');
+  });
+
+  it('returns ineligible when an anchor truly does not appear (even after stripping)', () => {
+    const t = 'Sentence with **bold** content.\n';
+    const m = 'Sentence with **bolder** content.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'completely unrelated phrase' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    expect('ineligible' in out && out.ineligible).toBe('anchor-not-in-current-doc');
+  });
+
   it('finds replacements when a section has two anchored sibling paragraphs', () => {
     // Mirror the e2e CA8 fixture: each anchored body sentence is
     // preceded by a same-shaped instruction blockquote, so the

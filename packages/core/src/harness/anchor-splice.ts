@@ -23,6 +23,10 @@
  */
 
 import type { docs_v1 } from 'googleapis';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
+import type { Root, RootContent } from 'mdast';
 import { interpolateDocIndex } from './diff.js';
 import type { IndexMapEntry } from '../converter/element-parser.js';
 import { parseSections, type MdSection } from './diff.js';
@@ -659,85 +663,61 @@ function crossesStructuralBoundary(
 }
 
 /**
- * Walk a markdown string and produce a "plain" form with a known
- * subset of inline markers stripped, plus an offset map from each
- * plain-form character to the original markdown offset of that
- * source character. Markers covered:
+ * Walk a markdown string and produce a "plain" form with inline
+ * markup stripped, plus an offset map from each plain-form char to
+ * the original markdown offset of that char. Inline node types
+ * collapsed to their visible text:
  *
- *   - `**bold**`, `__bold__`         → bold
- *   - `` `code` ``                    → inline code
- *   - `[text](url)`                  → link (text kept, url + brackets dropped)
+ *   - `strong`     (`**bold**`, `__bold__`)
+ *   - `emphasis`   (`*italic*`, `_italic_`)
+ *   - `inlineCode` (`` `code` ``, `` ``code with ` inside`` ``)
+ *   - `link`       (`[text](url)` — keeps `text`, drops `[`, `](url)`)
  *
- * Italic (`*…*` / `_…_`) is intentionally NOT stripped: a standalone
- * `*` is also a list bullet marker, and `_` appears mid-word in many
- * real strings (snake_case identifiers) — disambiguating them
- * correctly needs a real markdown parser. The whitelist is enough
- * for the cases this is currently expected to cover; the splice
- * planner gracefully falls through to revert when the stripper
- * can't locate the anchor.
+ * Implementation: parses with `unified + remark-parse + remark-gfm`
+ * (matching `md-to-docs.ts`'s parser), collects the markdown source
+ * ranges that correspond to opening/closing markers, then walks the
+ * source character-by-character emitting non-marker chars to plain
+ * with a 1:1 offset map. Block structure (headings, paragraph
+ * breaks, list bullets, code fences) is preserved verbatim so
+ * downstream paragraph-aware code in findReplacement still sees
+ * the same section/paragraph layout.
  *
- * Code-fence boundaries (` ``` ``` `) and HTML are NOT stripped — a
- * fenced block's interior should match literally if the anchor
- * lives inside it.
+ * Why parse instead of regex: a regex stripper has to choose
+ * between (a) overstrip (treats snake_case `_` as italic, list
+ * bullets `*` as emphasis) and (b) understrip (misses nested
+ * markers). The parser handles all of those correctly because
+ * remark already disambiguates them.
  */
 function stripInlineMarkdownMarkers(s: string): {
   plain: string;
   /** plainOffsetToMd[i] is the original mdOffset of plain[i]. */
   plainOffsetToMd: number[];
 } {
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(s) as Root;
+  const skipRanges: Array<[number, number]> = [];
+  collectInlineMarkerRanges(tree, s, skipRanges);
+  // Sort ascending by start; merge overlaps just in case (nested
+  // emphasis can produce overlapping marker spans in pathological
+  // cases — defensive).
+  skipRanges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: Array<[number, number]> = [];
+  for (const [a, b] of skipRanges) {
+    if (merged.length > 0 && a <= merged[merged.length - 1][1]) {
+      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], b);
+    } else {
+      merged.push([a, b]);
+    }
+  }
+
   const plain: string[] = [];
   const plainOffsetToMd: number[] = [];
-  let i = 0;
-  const len = s.length;
-  while (i < len) {
-    // **bold** — only treat as a marker pair when both ends look
-    // intentional (preceded by ** that's not preceded by another *,
-    // and followed by a closing ** within the same line).
-    if (s.startsWith('**', i)) {
-      const close = findMarkerClose(s, i + 2, '**');
-      if (close >= 0) {
-        i += 2;
-        while (i < close) { plain.push(s[i]); plainOffsetToMd.push(i); i++; }
-        i = close + 2;
-        continue;
-      }
+  let rangeIdx = 0;
+  for (let i = 0; i < s.length; ) {
+    while (rangeIdx < merged.length && merged[rangeIdx][1] <= i) rangeIdx++;
+    if (rangeIdx < merged.length && i >= merged[rangeIdx][0] && i < merged[rangeIdx][1]) {
+      i = merged[rangeIdx][1];
+      continue;
     }
-    // __bold__
-    if (s.startsWith('__', i)) {
-      const close = findMarkerClose(s, i + 2, '__');
-      if (close >= 0) {
-        i += 2;
-        while (i < close) { plain.push(s[i]); plainOffsetToMd.push(i); i++; }
-        i = close + 2;
-        continue;
-      }
-    }
-    // `code` — inline code (single backtick form).
-    if (s[i] === '`') {
-      const close = findMarkerClose(s, i + 1, '`');
-      if (close >= 0) {
-        i += 1;
-        while (i < close) { plain.push(s[i]); plainOffsetToMd.push(i); i++; }
-        i = close + 1;
-        continue;
-      }
-    }
-    // [text](url) — keep `text`, drop the bracket-paren scaffolding.
-    if (s[i] === '[') {
-      const closeBracket = s.indexOf(']', i + 1);
-      if (closeBracket > 0 && s[closeBracket + 1] === '(') {
-        const closeParen = s.indexOf(')', closeBracket + 2);
-        if (closeParen > 0) {
-          // Skip [
-          i += 1;
-          while (i < closeBracket) { plain.push(s[i]); plainOffsetToMd.push(i); i++; }
-          // Skip ](url)
-          i = closeParen + 1;
-          continue;
-        }
-      }
-    }
-    // Default: copy as-is.
     plain.push(s[i]);
     plainOffsetToMd.push(i);
     i++;
@@ -746,17 +726,82 @@ function stripInlineMarkdownMarkers(s: string): {
 }
 
 /**
- * Find the index of `marker` in `s` starting at `from`, but only if
- * the closing marker appears on the SAME line. Returns -1 when
- * there's a newline first (preserves paragraph boundaries) or no
- * close at all.
+ * Walk the mdast tree and append `[start, end)` source ranges that
+ * cover ONLY the marker chars (opening + closing) for inline
+ * markup nodes. The visible-text children's ranges are NOT skipped
+ * — the stripper's outer loop will emit them.
+ *
+ * For each node type:
+ *   - strong / emphasis: 2 / 1 chars at each end of `node.position`.
+ *   - inlineCode: a run of backticks at each end. The run length is
+ *     derived from the source slice (mdast doesn't expose it
+ *     directly). Always at least 1.
+ *   - link: opening `[` at the start, then everything from the
+ *     last child's end through the node's end (`](url)` or the
+ *     reference form `][label]`).
  */
-function findMarkerClose(s: string, from: number, marker: string): number {
-  for (let i = from; i + marker.length <= s.length; i++) {
-    if (s[i] === '\n') return -1;
-    if (s.startsWith(marker, i)) return i;
+function collectInlineMarkerRanges(
+  node: Root | RootContent,
+  source: string,
+  out: Array<[number, number]>,
+): void {
+  const pos = (node as { position?: { start?: { offset?: number }; end?: { offset?: number } } }).position;
+  const start = pos?.start?.offset;
+  const end = pos?.end?.offset;
+  switch (node.type) {
+    case 'strong':
+      if (start != null && end != null) {
+        out.push([start, start + 2]);
+        out.push([end - 2, end]);
+      }
+      break;
+    case 'emphasis':
+      if (start != null && end != null) {
+        out.push([start, start + 1]);
+        out.push([end - 1, end]);
+      }
+      break;
+    case 'inlineCode': {
+      if (start != null && end != null) {
+        const slice = source.slice(start, end);
+        // Leading run of backticks.
+        let leading = 0;
+        while (leading < slice.length && slice[leading] === '`') leading++;
+        // Trailing run.
+        let trailing = 0;
+        while (trailing < slice.length - leading && slice[slice.length - 1 - trailing] === '`') trailing++;
+        if (leading > 0) out.push([start, start + leading]);
+        if (trailing > 0) out.push([end - trailing, end]);
+      }
+      break;
+    }
+    case 'link': {
+      if (start != null && end != null) {
+        out.push([start, start + 1]); // opening `[`
+        const children = (node as { children?: RootContent[] }).children ?? [];
+        const last = children[children.length - 1];
+        const lastEnd = (last as { position?: { end?: { offset?: number } } } | undefined)
+          ?.position?.end?.offset;
+        if (lastEnd != null) {
+          out.push([lastEnd, end]);
+        }
+      }
+      break;
+    }
+    // Code blocks (fenced) — keep verbatim. The fence chars are
+    // structural, but anchors inside code blocks should match the
+    // body text 1:1, so we don't strip the fences here.
+    case 'code':
+    case 'html':
+      break;
+    default:
+      break;
   }
-  return -1;
+  // Recurse into children for any container node.
+  const kids = (node as { children?: RootContent[] }).children;
+  if (Array.isArray(kids)) {
+    for (const c of kids) collectInlineMarkerRanges(c, source, out);
+  }
 }
 
 /**
