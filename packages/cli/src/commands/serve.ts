@@ -135,8 +135,19 @@ async function generateDocName(
   return fallbackDocName();
 }
 
-/** How often to renew subscriptions (6 days, well before 7-day expiry). */
-const RENEWAL_INTERVAL_MS = 6 * 24 * 60 * 60 * 1000;
+/**
+ * How often to renew subscriptions.
+ *
+ * Workspace Events caps the TTL at **4 hours** when a subscription has
+ * `payloadOptions.includeResource: true` (which we need so the parser
+ * can recover the comment ID from the payload). Without DWD or
+ * `includeResource: false`, the 7-day TTL the API advertises in passing
+ * does not apply — see
+ * https://developers.google.com/workspace/events/guides under
+ * "Subscription expiration." Renewing every 3 hours leaves a comfortable
+ * window before the cap, even if a single renewal blips.
+ */
+const RENEWAL_INTERVAL_MS = 3 * 60 * 60 * 1000;
 
 function printServerAlreadyRunning(docId: string): void {
   const dim = '\x1b[2m';
@@ -936,7 +947,13 @@ export function registerServeCommand(program: Command) {
         };
 
         setStatus('Setting up subscriptions...');
-        const subscriptions: SubscriptionInfo[] = [];
+        // Keyed by docId so the auto-recreate path can update the entry
+        // for a single doc without disturbing the others.
+        const subscriptionsByDoc = new Map<string, SubscriptionInfo>();
+        // Per-doc guard: prevents concurrent recreate attempts when several
+        // idle reconnects fire close together while the recreate is in
+        // flight.
+        const recreatingDocs = new Set<string>();
 
         for (const docId of normalizedDocIds) {
           setStatus(`Setting up subscription for ${docId.slice(0, 12)}...`);
@@ -945,7 +962,7 @@ export function registerServeCommand(program: Command) {
             // them if they're missing event types (e.g., reply support), and
             // creates new ones if needed.
             const sub = await ensureSubscription(auth, docId, fullTopic, debug);
-            subscriptions.push(sub);
+            subscriptionsByDoc.set(docId, sub);
             emit({
               time: new Date(),
               type: 'system',
@@ -957,6 +974,33 @@ export function registerServeCommand(program: Command) {
             process.exit(1);
           }
         }
+
+        const recreateUpstreamSubscription = async (docId: string) => {
+          if (recreatingDocs.has(docId)) return;
+          recreatingDocs.add(docId);
+          try {
+            emit({
+              time: new Date(),
+              type: 'system',
+              content: `Recreating upstream subscription for doc=${docId.slice(0, 12)}...`,
+            });
+            const sub = await ensureSubscription(auth, docId, fullTopic, debug);
+            subscriptionsByDoc.set(docId, sub);
+            emit({
+              time: new Date(),
+              type: 'system',
+              content: `Upstream subscription recreated: doc=${docId.slice(0, 12)} name=${sub.name} expires=${sub.expireTime || '(unknown)'}`,
+            });
+          } catch (err: any) {
+            emit({
+              time: new Date(),
+              type: 'error',
+              content: `Upstream subscription recreate failed for doc=${docId.slice(0, 12)}: ${err.message}`,
+            });
+          } finally {
+            recreatingDocs.delete(docId);
+          }
+        };
 
         // ── Agent orchestrator ────────────────────────────────────
         debug(`Agent runner: ${agentRunner.name}`);
@@ -1194,8 +1238,14 @@ export function registerServeCommand(program: Command) {
                       emit({
                         time: new Date(),
                         type: 'error',
-                        content: `Upstream subscription missing for doc=${docId.slice(0, 12)} — Drive will not publish events. Restart codocs serve to recreate.`,
+                        content: `Upstream subscription missing for doc=${docId.slice(0, 12)} — Drive will not publish events. Auto-recreating.`,
                       });
+                      // Fire and forget — the guard inside dedupes
+                      // overlapping calls. The local Pub/Sub listener
+                      // stays connected to the same topic, so once the
+                      // upstream sub is back, events flow without
+                      // restart.
+                      void recreateUpstreamSubscription(docId);
                       return;
                     }
                     for (const s of subs) {
@@ -1223,9 +1273,12 @@ export function registerServeCommand(program: Command) {
 
         // ── Subscription renewal ──────────────────────────────────
         renewalTimer = setInterval(async () => {
-          for (const sub of subscriptions) {
+          for (const [docId, sub] of subscriptionsByDoc) {
             try {
               const renewed = await renewSubscription(auth, sub.name);
+              // Refresh the cached entry so subsequent renewals target
+              // the up-to-date expiry; recreate paths also update it.
+              subscriptionsByDoc.set(docId, { ...sub, expireTime: renewed.expireTime || sub.expireTime });
               emit({
                 time: new Date(),
                 type: 'system',
