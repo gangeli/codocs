@@ -2366,7 +2366,13 @@ New line.
     }
   });
 
-  it('restores a section the agent deleted entirely when it held an anchor', async () => {
+  it('lets the agent delete a whole section that held an anchor (comment orphans)', async () => {
+    // Whole-section delete is an explicit structural intent. The
+    // splice/revert machinery is scoped to in-place edits; it does
+    // NOT silently re-insert the section to keep the anchor alive.
+    // The natural editor outcome is: the section is gone and the
+    // comment becomes orphaned ("Original content deleted" in Drive
+    // UI). Subsequent edits flow through unaffected.
     const base = `# A
 
 A-body.
@@ -2379,7 +2385,6 @@ Critical anchor in B.
 
 C-body.
 `;
-    // Agent removed the entire B section.
     const ours = `# A
 
 A-body.
@@ -2405,13 +2410,16 @@ C-body.
       { commentAnchors: [{ commentId: 'c1', quotedText: 'Critical anchor in B.' }] },
     );
 
-    expect(result.preservedAnchors.map((p) => p.quotedText)).toEqual(['Critical anchor in B.']);
-    // Either no changes are emitted (B is restored to identical), or
-    // the requests don't actually delete the anchor's text. Verify the
-    // latter by simulating the request stream.
+    // The diff still records the anchor in preservedAnchors (the
+    // planner's classification is purely descriptive — there's no
+    // splice op available, and the section-revert path can't pair
+    // with a deleted section), but the requests apply the deletion.
     const initialBody = docBodyText(doc);
     const finalBody = applyRequests(initialBody, result.requests);
-    expect(finalBody).toContain('Critical anchor in B.');
+    expect(finalBody).not.toContain('Critical anchor in B.');
+    expect(finalBody).not.toContain('# B');
+    expect(finalBody).toContain('A-body.');
+    expect(finalBody).toContain('C-body.');
   });
 
   it('proceeds normally when no anchors would be lost', async () => {
@@ -2597,6 +2605,53 @@ C-body.
     // anchor alive, silently dropping B's edit. After this fix the
     // revert should be paragraph-scoped: only A is restored, so B's
     // edit reaches the main batch.
+    // Reproduces e2e CA8: when ONE section contains TWO splice
+    // anchors and BOTH paragraphs are edited,
+    // revertSectionsHoldingAnchors used to only revert one of them
+    // (because of an early `break` after the first match). The
+    // second paragraph slipped through to the main batch, which
+    // deleted+inserted the whole line, and Drive orphaned that
+    // anchor. Fix: iterate all matching anchors and revert each.
+    it('paragraph-reverts BOTH anchored paragraphs when a section has two splice anchors', async () => {
+      const base = `# Section\n\nFirst pair sentence here.\n\nSecond pair sentence here.\n`;
+      const ours = base
+        .replace('First pair sentence here.', 'First pair sentence rewritten.')
+        .replace('Second pair sentence here.', 'Second pair sentence rewritten.');
+      const theirs = base;
+
+      const { doc, indexMap } = buildDocAndMap(base, [
+        { text: 'Section', mdOffset: 0 },
+        { text: 'First pair sentence here.', mdOffset: base.indexOf('First pair sentence here.') },
+        { text: 'Second pair sentence here.', mdOffset: base.indexOf('Second pair sentence here.') },
+      ]);
+
+      const result = await computeDocDiff(
+        base, ours, theirs, doc, indexMap, 'test-agent',
+        undefined,
+        {
+          commentAnchors: [
+            { commentId: 'a', quotedText: 'First pair sentence here.' },
+            { commentId: 'b', quotedText: 'Second pair sentence here.' },
+          ],
+        },
+      );
+
+      // Both anchors should produce splice ops.
+      expect(result.spliceOps.length).toBe(2);
+
+      // Crucially, applying the main-batch requests alone must
+      // leave BOTH original sentences intact — splice ops handle
+      // the rewrites later. If one paragraph slips through the
+      // main batch its anchor is doomed even though a splice op
+      // was queued.
+      const initialBody = docBodyText(doc);
+      const afterMainBatch = applyRequests(initialBody, result.requests);
+      expect(afterMainBatch).toContain('First pair sentence here.');
+      expect(afterMainBatch).toContain('Second pair sentence here.');
+      expect(afterMainBatch).not.toContain('First pair sentence rewritten.');
+      expect(afterMainBatch).not.toContain('Second pair sentence rewritten.');
+    });
+
     it('keeps companion-paragraph edits when only one paragraph in the section is anchored', async () => {
       const base = `# Section\n\nAnchored sentence.\n\nCompanion sentence in same section.\n\n# Other\n\nUntouched.\n`;
       const ours = base

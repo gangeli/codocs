@@ -554,56 +554,50 @@ function revertSectionsHoldingAnchors(
   const mergedKeyed = sectionKeysRelativeTo(mergedSections, theirsKeyed);
   const theirsByKey = new Map<string, MdSection>();
   for (const e of theirsKeyed) theirsByKey.set(e.key, e.section);
-  const mergedKeySet = new Set(mergedKeyed.map((e) => e.key));
 
   const revisedSections: MdSection[] = mergedSections.slice();
   for (let i = 0; i < revisedSections.length; i++) {
-    const merged = revisedSections[i];
     const theirsS = theirsByKey.get(mergedKeyed[i].key);
     if (!theirsS) continue;
+    // Apply EVERY matching anchor's paragraph-scoped revert in
+    // sequence. A single section can hold multiple anchors (CA8:
+    // two anchors in one section); breaking after the first match
+    // would leave the others' paragraphs in the main batch, which
+    // would then delete their content and orphan those anchors.
+    let needsWholeSectionRevert = false;
     for (const anchor of stillLost) {
-      if (!theirsS.content.includes(anchor) || merged.content.includes(anchor)) continue;
-      // Try a paragraph-scoped revert first: replace ONLY the
-      // paragraph that holds the anchor in the merged section,
-      // leaving any other paragraphs (and their independent edits)
-      // alone. Falls back to whole-section revert when the
-      // paragraph counts diverge or the anchor's paragraph can't
-      // be located.
+      const current = revisedSections[i];
+      if (!theirsS.content.includes(anchor) || current.content.includes(anchor)) continue;
       const paraReverted = revertParagraphHoldingAnchor(
-        merged.content,
+        current.content,
         theirsS.content,
         anchor,
       );
       if (paraReverted !== null) {
-        revisedSections[i] = { ...merged, content: paraReverted };
+        revisedSections[i] = { ...current, content: paraReverted };
       } else {
-        revisedSections[i] = theirsS;
+        // Paragraph-pairing failed (counts diverged or anchor not
+        // locatable). Fall back to whole-section revert. Once we
+        // do that there's no point continuing per-anchor — the
+        // whole section is now theirs.
+        needsWholeSectionRevert = true;
+        break;
       }
-      break;
+    }
+    if (needsWholeSectionRevert) {
+      revisedSections[i] = theirsS;
     }
   }
 
-  // Restore deleted sections that held an anchor.
-  const findRevisedIdxByContent = (content: string): number =>
-    revisedSections.findIndex((s) => s.content === content);
-  type Restoration = { afterIdx: number; section: MdSection };
-  const restorations: Restoration[] = [];
-  for (let ti = 0; ti < theirsKeyed.length; ti++) {
-    const { key, section } = theirsKeyed[ti];
-    if (mergedKeySet.has(key)) continue;
-    const carries = stillLost.some((a) => section.content.includes(a));
-    if (!carries) continue;
-    let afterIdx = -1;
-    for (let pi = ti - 1; pi >= 0; pi--) {
-      const idx = findRevisedIdxByContent(theirsKeyed[pi].section.content);
-      if (idx >= 0) { afterIdx = idx; break; }
-    }
-    restorations.push({ afterIdx, section });
-  }
-  restorations.sort((a, b) => b.afterIdx - a.afterIdx);
-  for (const r of restorations) {
-    revisedSections.splice(r.afterIdx + 1, 0, r.section);
-  }
+  // Note: deliberately NOT restoring sections the agent fully
+  // deleted, even when they held an anchor. A whole-section delete
+  // is an explicit structural intent — silently re-inserting the
+  // section to keep an anchor alive overrides the agent's edit and
+  // is more surprising than letting the comment orphan (matches
+  // normal editor behaviour: delete a paragraph in Docs, its
+  // comment shows "Original content deleted"). The splice/revert
+  // machinery is for in-place edits; section structure changes
+  // flow through the main batch unmodified.
 
   return (
     revisedSections.map((s) => s.content).join('\n\n').replace(/\n{3,}/g, '\n\n').trimEnd() +

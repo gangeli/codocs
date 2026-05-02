@@ -473,14 +473,18 @@ const tests: AnchorTestCase[] = [
     ],
   },
 
-  // CA9 — Agent deletes the whole section that holds the anchor. The
-  // splice planner can't operate (no merged counterpart for
-  // findReplacement) so falls back to revert. The "restore deleted
-  // sections" branch in revertSectionsHoldingAnchors should re-insert
-  // the section at its prior neighbour, keeping the anchor alive and
-  // the body unchanged from the user's perspective.
+  // CA9 — Agent deletes the whole section that holds the anchor.
+  // Whole-section delete is an explicit structural intent: the
+  // splice/revert pipeline is scoped to in-place edits and does NOT
+  // re-insert the section to protect the anchor. The agent's delete
+  // wins, the section is gone from the body, and the doomed comment
+  // becomes orphaned in the Docs UI ("Original content deleted") —
+  // matches normal editor behaviour when a paragraph holding a
+  // comment is removed. The planner still labels the anchor as
+  // 'revert' descriptively because there's no splice available;
+  // that label doesn't imply any actual restore action.
   {
-    title: 'CA9: agent deletes the section holding the anchor',
+    title: 'CA9: agent deletes the section holding the anchor (comment orphans)',
     anchorKey: 'doomed',
     apply: (b) => {
       // Delete from "# CA9" through end of section (next "# " heading
@@ -492,8 +496,13 @@ const tests: AnchorTestCase[] = [
       return b.slice(0, start) + b.slice(end);
     },
     outcome: 'revert',
-    expectedAnchorTextAfter: 'This whole section gets removed.',
-    bodyProgression: 'unchanged',
+    // The section is gone — the doomed anchor text doesn't appear
+    // anywhere in the final body. Use a token from the SURROUNDING
+    // structure (the section that follows CA9 in the fixture) so
+    // the test's substring sanity check still has something concrete
+    // to verify against.
+    expectedAnchorTextAfter: '# CA10',
+    bodyProgression: 'apply-edits',
   },
 
   // CA10 — Anchor on a heading. The agent renames the heading. The
@@ -1086,6 +1095,24 @@ async function runCase(
       client, docId, diff.spliceOps,
       (msg) => spliceExecLog.push(msg),
     );
+    // Every queued splice op MUST actually land. A 'skipped' or
+    // 'restored' result means Drive rejected the splice (bad index,
+    // grapheme boundary, anchor text disappeared), and the comment
+    // is now orphaned even if the diff planner thought it had
+    // covered the case. This catches things like the CA8 multi-
+    // anchor regression where the second op's anchor text had
+    // already been deleted by the main batch.
+    for (const op of diff.spliceOps) {
+      if (!spliceExecResult.spliced.includes(op.commentId)) {
+        const where = spliceExecResult.skipped.includes(op.commentId) ? 'skipped'
+          : spliceExecResult.restored.includes(op.commentId) ? 'restored'
+            : 'missing';
+        reasons.push(
+          `splice op for [${op.commentId}] (oldText=${JSON.stringify(op.oldText.slice(0, 50))}) ` +
+          `did not land (${where}); see spliceExecLog in the artifact for the Drive error.`,
+        );
+      }
+    }
   }
 
   // ── Body assertion ──
