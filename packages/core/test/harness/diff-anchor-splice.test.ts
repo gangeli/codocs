@@ -233,19 +233,15 @@ describe('tryBuildSpliceOp — op construction', () => {
     }
   });
 
-  // KNOWN LIMITATION (e2e CA15): an anchor whose plain text spans
-  // inline markdown markers (bold/italic/code/link) doesn't match
-  // `theirs` because indexOf is literal. Drive returns the comment's
-  // `quotedFileContent` as plain text without markers, but `theirs`
-  // (markdown) has the markers. The planner classifies as
-  // 'anchor-not-in-current-doc' → revert; meanwhile the main batch
-  // line-diffs the bold-styled paragraph and rewrites it via
-  // delete+insert, which orphans the comment on Drive. Proper fix
-  // is non-trivial: anchor matching needs to either (a) work
-  // against the doc body (no markers) instead of markdown, or
-  // (b) use a position-mapped strip that preserves bold-run
-  // boundaries through the splice. Deferred.
-  it('returns ineligible when the anchor spans inline markdown markers (current limitation)', () => {
+  // Reproduces e2e CA15: anchor on plain text that crosses inline
+  // markdown markers in `theirs`. Drive returns the comment's
+  // quotedFileContent without markers but the markdown form has
+  // them; literal indexOf misses. Fix: stripped-markdown fallback
+  // that maps hits back to original mdOffsets. Returns plain
+  // newText (markers stripped from merged side too) — splice's
+  // insertText is plain anyway, so the rewritten span loses bold
+  // styling but the comment survives.
+  it('locates an anchor whose plain text spans inline markdown markers in theirs', () => {
     const t = 'Sentence with an **important** word in it.\n';
     const m = 'Sentence with an **critical** word in it.\n';
     const fd = flatDoc(t);
@@ -256,7 +252,27 @@ describe('tryBuildSpliceOp — op construction', () => {
       indexMap: fd.indexMap,
       bodyEndIndex: fd.bodyEndIndex,
     });
-    expect('ineligible' in out && out.ineligible).toBe('anchor-not-in-current-doc');
+    if ('ineligible' in out) {
+      throw new Error(`expected splice, got ineligible: ${out.ineligible}`);
+    }
+    expect(out.newText).toBe('an critical word');
+  });
+
+  it('handles `[text](url)` link markers in the anchor span', () => {
+    const t = 'Click [the link text here](https://example.com/) for info.\n';
+    const m = 'Click [the new link text](https://example.com/) for info.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'Click the link text here for info.' },
+      theirs: t,
+      mergedMarkdown: m,
+      indexMap: fd.indexMap,
+      bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) {
+      throw new Error(`expected splice, got ineligible: ${out.ineligible}`);
+    }
+    expect(out.newText).toBe('Click the new link text for info.');
   });
 
   it('finds replacements when a section has two anchored sibling paragraphs', () => {

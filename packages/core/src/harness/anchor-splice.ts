@@ -22,9 +22,11 @@
  * pure.
  */
 
+import type { docs_v1 } from 'googleapis';
 import { interpolateDocIndex } from './diff.js';
 import type { IndexMapEntry } from '../converter/element-parser.js';
 import { parseSections, type MdSection } from './diff.js';
+import { locateOldTextRange } from './anchor-splice-exec.js';
 
 /**
  * Minimum anchor length (in markdown chars) eligible for splice. With
@@ -103,34 +105,80 @@ export function tryBuildSpliceOp(args: {
   indexMap: IndexMapEntry[];
   /** End-of-body fallback for index interpolation. */
   bodyEndIndex: number;
+  /**
+   * Optional doc state used for precise body-index lookups when the
+   * anchor's plain text spans inline markdown markers (bold/italic/
+   * code/link). Without it we fall back to interpolating from the
+   * markdown form via `indexMap`, which is approximate when markers
+   * are present.
+   */
+  document?: docs_v1.Schema$Document;
 }): AnchorSpliceOp | { ineligible: SpliceIneligibilityReason } {
-  const { anchor, theirs, mergedMarkdown, indexMap, bodyEndIndex } = args;
+  const { anchor, theirs, mergedMarkdown, indexMap, bodyEndIndex, document } = args;
   const quoted = anchor.quotedText;
 
   if (!quoted || quoted.length === 0) return { ineligible: 'anchor-empty' };
   if (quoted.length < MIN_SPLICE_LEN) return { ineligible: 'anchor-too-short' };
 
-  const firstHit = theirs.indexOf(quoted);
-  if (firstHit < 0) return { ineligible: 'anchor-not-in-current-doc' };
-  const secondHit = theirs.indexOf(quoted, firstHit + 1);
+  // Anchor location in markdown. Pass 1: literal substring match.
+  // When that fails the anchor's plain text may span an inline
+  // markdown marker (e.g. `**bold**`, `[link](url)`) that the
+  // user's quotedFileContent doesn't include. Pass 2 strips known
+  // marker pairs from a copy of theirs, finds the anchor in the
+  // stripped form, and maps the hit back to the original markdown
+  // offset. The original-form span (`mdSpanLen`) covers the markers
+  // — used downstream for findReplacement and the optional indexMap
+  // interpolation.
+  let firstHit = theirs.indexOf(quoted);
+  let secondHit = firstHit < 0 ? -1 : theirs.indexOf(quoted, firstHit + 1);
+  let mdSpanLen = quoted.length;
+  let usedStrippedMatch = false;
+  if (firstHit < 0) {
+    const located = locateAnchorInStripped(theirs, quoted);
+    if (!located) return { ineligible: 'anchor-not-in-current-doc' };
+    firstHit = located.firstHit;
+    secondHit = located.secondHit;
+    mdSpanLen = located.spanLen;
+    usedStrippedMatch = true;
+  }
   if (secondHit >= 0) return { ineligible: 'multiple-anchor-occurrences' };
 
   // Structural-boundary check happens before content matching: a
   // heading-crossing anchor is structurally ineligible regardless of
   // whether the merged side has a clean replacement.
-  if (crossesStructuralBoundary(theirs, firstHit, firstHit + quoted.length)) {
+  if (crossesStructuralBoundary(theirs, firstHit, firstHit + mdSpanLen)) {
     return { ineligible: 'structural-boundary-cross' };
   }
 
-  const newText = findReplacement(theirs, mergedMarkdown, firstHit, quoted);
+  const newText = usedStrippedMatch
+    ? findReplacementStripped(theirs, mergedMarkdown, firstHit, quoted)
+    : findReplacement(theirs, mergedMarkdown, firstHit, quoted);
   if (newText == null) return { ineligible: 'multi-edit-section' };
   if (newText.length === 0) return { ineligible: 'replacement-empty' };
   // Same text on both sides — no edit, no need to splice.
   if (newText === quoted) return { ineligible: 'replacement-empty' };
 
-  // Map markdown offsets → doc body indices.
-  const startIndex = interpolateDocIndex(firstHit, indexMap, bodyEndIndex);
-  const endIndex = interpolateDocIndex(firstHit + quoted.length, indexMap, bodyEndIndex);
+  // Map markdown offsets → doc body indices. When `document` is
+  // available AND the anchor was found via stripped match, the
+  // indexMap interpolation is unreliable (markers introduce md/body
+  // length divergence that the sparse indexMap doesn't capture).
+  // Use the doc body's flat scan to get precise indices.
+  let startIndex: number;
+  let endIndex: number;
+  if (usedStrippedMatch && document) {
+    const docHit = locateOldTextRange(document, quoted);
+    if (!docHit) {
+      // Anchor matched in the stripped markdown but not in the live
+      // doc body — shouldn't happen for clean cases. Bail rather
+      // than build a splice op with bogus indices.
+      return { ineligible: 'anchor-not-in-current-doc' };
+    }
+    startIndex = docHit.startIndex;
+    endIndex = docHit.endIndex;
+  } else {
+    startIndex = interpolateDocIndex(firstHit, indexMap, bodyEndIndex);
+    endIndex = interpolateDocIndex(firstHit + mdSpanLen, indexMap, bodyEndIndex);
+  }
 
   if (endIndex - startIndex < MIN_SPLICE_LEN) {
     // Index map collapsed the anchor (e.g. mostly markdown punctuation
@@ -199,8 +247,10 @@ export function planAnchorOutcomes(args: {
   mergedMarkdown: string;
   indexMap: IndexMapEntry[];
   bodyEndIndex: number;
+  /** Optional doc state — see `tryBuildSpliceOp` for details. */
+  document?: docs_v1.Schema$Document;
 }): AnchorOutcome[] {
-  const { anchors, theirs, mergedMarkdown, indexMap, bodyEndIndex } = args;
+  const { anchors, theirs, mergedMarkdown, indexMap, bodyEndIndex, document } = args;
   const outcomes: AnchorOutcome[] = [];
 
   // First pass: for each anchor decide splice / revert / noop independently.
@@ -226,7 +276,7 @@ export function planAnchorOutcomes(args: {
       continue;
     }
     const tried = tryBuildSpliceOp({
-      anchor: a, theirs, mergedMarkdown, indexMap, bodyEndIndex,
+      anchor: a, theirs, mergedMarkdown, indexMap, bodyEndIndex, document,
     });
     if ('ineligible' in tried) {
       outcomes.push({ kind: 'revert', quotedText: a.quotedText, reason: tried.ineligible });
@@ -606,4 +656,164 @@ function crossesStructuralBoundary(
   const slice = text.slice(start, end);
   // A heading line inside the anchor → structural cross.
   return /(^|\n)#{1,6}\s/.test(slice);
+}
+
+/**
+ * Walk a markdown string and produce a "plain" form with a known
+ * subset of inline markers stripped, plus an offset map from each
+ * plain-form character to the original markdown offset of that
+ * source character. Markers covered:
+ *
+ *   - `**bold**`, `__bold__`         → bold
+ *   - `` `code` ``                    → inline code
+ *   - `[text](url)`                  → link (text kept, url + brackets dropped)
+ *
+ * Italic (`*…*` / `_…_`) is intentionally NOT stripped: a standalone
+ * `*` is also a list bullet marker, and `_` appears mid-word in many
+ * real strings (snake_case identifiers) — disambiguating them
+ * correctly needs a real markdown parser. The whitelist is enough
+ * for the cases this is currently expected to cover; the splice
+ * planner gracefully falls through to revert when the stripper
+ * can't locate the anchor.
+ *
+ * Code-fence boundaries (` ``` ``` `) and HTML are NOT stripped — a
+ * fenced block's interior should match literally if the anchor
+ * lives inside it.
+ */
+function stripInlineMarkdownMarkers(s: string): {
+  plain: string;
+  /** plainOffsetToMd[i] is the original mdOffset of plain[i]. */
+  plainOffsetToMd: number[];
+} {
+  const plain: string[] = [];
+  const plainOffsetToMd: number[] = [];
+  let i = 0;
+  const len = s.length;
+  while (i < len) {
+    // **bold** — only treat as a marker pair when both ends look
+    // intentional (preceded by ** that's not preceded by another *,
+    // and followed by a closing ** within the same line).
+    if (s.startsWith('**', i)) {
+      const close = findMarkerClose(s, i + 2, '**');
+      if (close >= 0) {
+        i += 2;
+        while (i < close) { plain.push(s[i]); plainOffsetToMd.push(i); i++; }
+        i = close + 2;
+        continue;
+      }
+    }
+    // __bold__
+    if (s.startsWith('__', i)) {
+      const close = findMarkerClose(s, i + 2, '__');
+      if (close >= 0) {
+        i += 2;
+        while (i < close) { plain.push(s[i]); plainOffsetToMd.push(i); i++; }
+        i = close + 2;
+        continue;
+      }
+    }
+    // `code` — inline code (single backtick form).
+    if (s[i] === '`') {
+      const close = findMarkerClose(s, i + 1, '`');
+      if (close >= 0) {
+        i += 1;
+        while (i < close) { plain.push(s[i]); plainOffsetToMd.push(i); i++; }
+        i = close + 1;
+        continue;
+      }
+    }
+    // [text](url) — keep `text`, drop the bracket-paren scaffolding.
+    if (s[i] === '[') {
+      const closeBracket = s.indexOf(']', i + 1);
+      if (closeBracket > 0 && s[closeBracket + 1] === '(') {
+        const closeParen = s.indexOf(')', closeBracket + 2);
+        if (closeParen > 0) {
+          // Skip [
+          i += 1;
+          while (i < closeBracket) { plain.push(s[i]); plainOffsetToMd.push(i); i++; }
+          // Skip ](url)
+          i = closeParen + 1;
+          continue;
+        }
+      }
+    }
+    // Default: copy as-is.
+    plain.push(s[i]);
+    plainOffsetToMd.push(i);
+    i++;
+  }
+  return { plain: plain.join(''), plainOffsetToMd };
+}
+
+/**
+ * Find the index of `marker` in `s` starting at `from`, but only if
+ * the closing marker appears on the SAME line. Returns -1 when
+ * there's a newline first (preserves paragraph boundaries) or no
+ * close at all.
+ */
+function findMarkerClose(s: string, from: number, marker: string): number {
+  for (let i = from; i + marker.length <= s.length; i++) {
+    if (s[i] === '\n') return -1;
+    if (s.startsWith(marker, i)) return i;
+  }
+  return -1;
+}
+
+/**
+ * Locate `quoted` in `theirs` as if inline markers (bold, code,
+ * links) didn't exist. Returns the FIRST and SECOND hit positions
+ * mapped back to original markdown offsets, plus the span length
+ * the match occupies in the original markdown (which includes any
+ * stripped marker chars within the match).
+ */
+function locateAnchorInStripped(
+  theirs: string,
+  quoted: string,
+): { firstHit: number; secondHit: number; spanLen: number } | null {
+  const { plain, plainOffsetToMd } = stripInlineMarkdownMarkers(theirs);
+  const strippedFirst = plain.indexOf(quoted);
+  if (strippedFirst < 0) return null;
+  const strippedSecond = plain.indexOf(quoted, strippedFirst + 1);
+  const firstHit = plainOffsetToMd[strippedFirst];
+  const secondHit = strippedSecond < 0 ? -1 : plainOffsetToMd[strippedSecond];
+  // Span in the ORIGINAL markdown includes any markers that fall
+  // inside the match's plain-text span.
+  const lastPlainIdx = strippedFirst + quoted.length - 1;
+  const lastMdIdx = plainOffsetToMd[lastPlainIdx];
+  const spanLen = lastMdIdx + 1 - firstHit;
+  return { firstHit, secondHit, spanLen };
+}
+
+/**
+ * `findReplacement` variant for anchors that were located via
+ * stripped-markdown match. Operates entirely in the stripped space:
+ * strips both `theirs` and `mergedMarkdown`, runs the existing
+ * paragraph-aware alignment on the stripped versions, and returns
+ * the corresponding stripped-merged span as `newText` — which is
+ * therefore PLAIN text (no markers).
+ *
+ * Trade-off: bold/italic/code/link styling on the rewritten span
+ * is dropped because the splice's `insertText` is plain. The
+ * comment survives, which is the load-bearing goal; we accept the
+ * styling loss.
+ */
+function findReplacementStripped(
+  theirs: string,
+  mergedMarkdown: string,
+  anchorOffsetInTheirs: number,
+  anchorText: string,
+): string | null {
+  const theirsStripped = stripInlineMarkdownMarkers(theirs);
+  const mergedStripped = stripInlineMarkdownMarkers(mergedMarkdown);
+  // Map original mdOffset → stripped offset. plainOffsetToMd is
+  // sorted ascending, so a binary search would suffice; linear scan
+  // is fine for our string sizes.
+  const strippedAnchorOffset = theirsStripped.plainOffsetToMd.indexOf(anchorOffsetInTheirs);
+  if (strippedAnchorOffset < 0) return null;
+  return findReplacement(
+    theirsStripped.plain,
+    mergedStripped.plain,
+    strippedAnchorOffset,
+    anchorText,
+  );
 }

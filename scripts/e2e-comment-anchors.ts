@@ -322,15 +322,15 @@ CA18 trailing paragraph that simulates a later addition by someone else.
 
 # CA20 — overlapping anchors (wider + narrower on same line)
 
-> **Action [outer]:** highlight the long phrase "the cat sat on the mat" in the sentence below.
+> **Action [outer]:** highlight the entire feline phrase below — six words ending with "mat".
 
-> **Action [inner]:** highlight just the words "cat sat" inside the same sentence.
+> **Action [inner]:** highlight just the verb-clause inside that same span (7 chars, the subject + verb).
 
 In the test, the cat sat on the mat for hours.
 
 # CA21 — anchor ending with a surrogate-pair emoji
 
-> **Action [tail-emoji]:** highlight the trailing phrase "wave hello 🦊" (the last three tokens of the line below, including the fox emoji).
+> **Action [tail-emoji]:** highlight the trailing emoji-tail phrase below (the last three tokens of the line, ending with the fox emoji).
 
 The line below ends with wave hello 🦊
 
@@ -416,9 +416,14 @@ const ANCHORS: AnchorSpec[] = [
     hint: 'highlight the long combined run-on sentence — see CA14 in the doc',
   },
   {
+    // Drive tends to expand a selection within a styled run to the
+    // surrounding paragraph for the comment's quotedFileContent, so
+    // we match permissively: ask the user to highlight the bold
+    // word, but resolveAnchors will still pair the comment via
+    // substring containment when Drive returns the whole sentence.
     key: 'bold',
     span: 'important',
-    hint: 'highlight just the bold word inside the CA15 sentence',
+    hint: 'highlight just the bold word inside the CA15 sentence (Drive may extend the selection to the whole sentence — that\'s expected)',
   },
   {
     key: 'bullet',
@@ -686,22 +691,32 @@ const tests: AnchorTestCase[] = [
     expectedAnchorTextAfter: 'The agent will split the long combined run-on into two paragraphs in this section.',
   },
 
-  // CA15 — Anchor on bold inline text. KNOWN LIMITATION: the
-  // anchor's plain text spans `**important**` markers in the
-  // markdown form of `theirs`, so a literal indexOf misses and
-  // the planner classifies as 'anchor-not-in-current-doc' →
-  // revert. The main batch then line-diffs the bold paragraph
-  // and rewrites it via delete+insert, which orphans the comment.
-  // Skipped until anchor matching learns to ignore inline markers
-  // (or runs against doc body text instead of markdown).
+  // CA15 — Anchor on bold inline text. Drive's quotedFileContent
+  // for a comment placed inside a styled run typically expands to
+  // the surrounding paragraph (observed empirically — anchoring on
+  // just "important" returns the whole sentence). The anchor's
+  // plain text doesn't match the markdown form of theirs (which
+  // has `**` markers), so the planner falls through to a stripped-
+  // markdown match. findReplacementStripped strips inline markers
+  // from BOTH theirs and merged and runs the paragraph-aware
+  // alignment in stripped space, returning PLAIN newText. The
+  // splice's insertText is plain anyway, so the rewritten span
+  // loses its bold styling — accepted trade-off; comment survives.
+  // Doc body indices come from the live document (passed through
+  // to tryBuildSpliceOp) so the splice math is precise even though
+  // the markdown indexMap is approximate around markers.
+  //
+  // The edit drops the bold markers in `to` to match the body
+  // change the splice will land. expectedSpliceNewText is the
+  // whole sentence in plain form because Drive returns the whole
+  // sentence as quotedText.
   {
-    title: 'CA15: anchor on bold inline text (styling preserved?)',
+    title: 'CA15: anchor on bold inline text (styling lost, comment survives)',
     anchorKey: 'bold',
-    edits: [{ from: '**important**', to: '**critical**' }],
+    edits: [{ from: 'has an **important** word', to: 'has an critical word' }],
     outcome: 'splice',
-    expectedSpliceNewText: 'critical',
-    expectedAnchorTextAfter: '**critical**',
-    skip: 'anchor matching across inline markdown markers — see anchor-splice.test.ts CA15 comment',
+    expectedSpliceNewText: 'This sentence has an critical word in the middle.',
+    expectedAnchorTextAfter: 'has an critical word',
   },
 
   // CA16 — Anchor on a list-item's text. The leading "- " is a

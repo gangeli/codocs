@@ -475,6 +475,7 @@ export function preserveCommentAnchors(
   anchors: CommentAnchor[],
   indexMap: IndexMapEntry[],
   bodyEndIndex: number,
+  document?: docs_v1.Schema$Document,
 ): {
   mergedMarkdown: string;
   preservedAnchors: PreservedAnchor[];
@@ -491,6 +492,7 @@ export function preserveCommentAnchors(
     mergedMarkdown,
     indexMap,
     bodyEndIndex,
+    document,
   });
 
   const preservedAnchors: PreservedAnchor[] = [];
@@ -732,6 +734,7 @@ export async function computeDocDiff(
       options.commentAnchors,
       indexMap,
       bodyEndIndex,
+      document,
     );
     mergeResult = { ...mergeResult, mergedMarkdown: safeguarded.mergedMarkdown };
     preservedAnchors = safeguarded.preservedAnchors;
