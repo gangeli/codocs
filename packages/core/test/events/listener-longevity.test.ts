@@ -140,7 +140,7 @@ describe('listener longevity', () => {
   // ─── L1 — Loud close ──────────────────────────────────────────
   it('L1: recovers from a loud close and delivers a follow-up message', async () => {
     const events: CommentEvent[] = [];
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1', 'sub-1', auth,
       (e) => events.push(e),
@@ -174,7 +174,7 @@ describe('listener longevity', () => {
   // ─── L2 — Loud half-open (watchdog catches it) ────────────────
   it('L2: recovers from a half-open stream where isOpen flipped false', async () => {
     const events: CommentEvent[] = [];
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1', 'sub-1', auth,
       (e) => events.push(e),
@@ -218,7 +218,7 @@ describe('listener longevity', () => {
   it('L3: recovers after a stream error that is not followed by close', async () => {
     const events: CommentEvent[] = [];
     const errs: Error[] = [];
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1', 'sub-1', auth,
       (e) => events.push(e),
@@ -267,7 +267,7 @@ describe('listener longevity', () => {
   // default, or because the listener does so internally.
   it('L4: with production-equivalent options, recovers from a long silent half-open stretch', async () => {
     const events: CommentEvent[] = [];
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1', 'sub-1', auth,
       (e) => events.push(e),
@@ -308,7 +308,7 @@ describe('listener longevity', () => {
   // ─── L5 — The fix: enable idleReconnectMs ─────────────────────
   it('L5: with idleReconnectMs configured, the listener recycles a silent half-open stream', async () => {
     const events: CommentEvent[] = [];
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1', 'sub-1', auth,
       (e) => events.push(e),
@@ -348,7 +348,7 @@ describe('listener longevity', () => {
   // still assigned and no new one wired up.
   it('L6: a wedged close() does not block the reconnect from completing', async () => {
     const events: CommentEvent[] = [];
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1', 'sub-1', auth,
       (e) => events.push(e),
@@ -391,7 +391,7 @@ describe('listener longevity', () => {
 
   // ─── L7 — H3: in-flight reconnect blocks re-entrant attempts ───
   it('L7: watchdog ticks during a hanging close do not stack up extra reconnects', async () => {
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1', 'sub-1', auth,
       () => {},

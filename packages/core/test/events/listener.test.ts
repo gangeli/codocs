@@ -459,7 +459,7 @@ describe('listenForComments', () => {
   });
 
   it("reconnects when the subscription emits 'close' (non-manual)", async () => {
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1',
       'sub-1',
@@ -484,9 +484,10 @@ describe('listenForComments', () => {
     expect(currentSubscription).not.toBe(firstSub);
     expect(currentSubscription!.subName).toBe('projects/proj-1/subscriptions/sub-1');
     expect(currentSubscription!.listenerCount('message')).toBe(1);
-    expect(reconnects).toEqual([
-      { attempt: 1, reason: 'subscription emitted close' },
-    ]);
+    expect(reconnects).toHaveLength(1);
+    expect(reconnects[0]).toMatchObject({ attempt: 1, reason: 'subscription emitted close' });
+    expect(typeof reconnects[0].lastActivityAgoMs).toBe('number');
+    expect(typeof reconnects[0].wasOpen).toBe('boolean');
     expect(firstSub.closed).toBe(true);
     await handle.close();
   });
@@ -494,7 +495,7 @@ describe('listenForComments', () => {
   it("recycles via the watchdog when subscription.isOpen becomes false", async () => {
     vi.useFakeTimers();
     try {
-      const reconnects: Array<{ attempt: number; reason: string }> = [];
+      const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
       const handle = listenForComments(
         'proj-1',
         'sub-1',
@@ -524,7 +525,7 @@ describe('listenForComments', () => {
   });
 
   it('manual close cancels any pending reconnect', async () => {
-    const reconnects: Array<{ attempt: number; reason: string }> = [];
+    const reconnects: Array<{ attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }> = [];
     const handle = listenForComments(
       'proj-1',
       'sub-1',

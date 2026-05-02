@@ -7,6 +7,7 @@ import {
   createAuth,
   ensureSubscription,
   renewSubscription,
+  listSubscriptions,
   listenForComments,
   ReplyTracker,
   AgentOrchestrator,
@@ -945,6 +946,11 @@ export function registerServeCommand(program: Command) {
             // creates new ones if needed.
             const sub = await ensureSubscription(auth, docId, fullTopic, debug);
             subscriptions.push(sub);
+            emit({
+              time: new Date(),
+              type: 'system',
+              content: `Subscription ready: doc=${docId.slice(0, 12)} name=${sub.name} expires=${sub.expireTime || '(unknown)'}`,
+            });
             setStatus('Subscription ready');
           } catch (err: any) {
             emit({ time: new Date(), type: 'error', content: `Subscription failed: ${err.message}` });
@@ -1167,14 +1173,50 @@ export function registerServeCommand(program: Command) {
           },
           {
             debug,
+            info: (msg: string) => emit({ time: new Date(), type: 'system', content: msg }),
             botEmails: botEmail ? [botEmail] : [],
             replyTracker,
-            onReconnect: ({ attempt, reason }: { attempt: number; reason: string }) => {
+            onReconnect: ({ attempt, reason, lastActivityAgoMs, wasOpen }) => {
+              const idleMin = (lastActivityAgoMs / 60_000).toFixed(1);
               emit({
                 time: new Date(),
                 type: 'system',
-                content: `Pub/Sub reconnected (attempt ${attempt}, ${reason})`,
+                content: `Pub/Sub reconnected (attempt ${attempt}, ${reason}, idle=${idleMin}min, wasOpen=${wasOpen})`,
               });
+              // After 3+ consecutive idle reconnects with no message,
+              // the local stream looks healthy but Drive isn't publishing.
+              // Verify the upstream Workspace Events subscription is still
+              // alive — that's the most likely explanation.
+              if (reason.startsWith('health check: idle') && attempt >= 3) {
+                for (const docId of normalizedDocIds) {
+                  listSubscriptions(auth, docId).then((subs) => {
+                    if (subs.length === 0) {
+                      emit({
+                        time: new Date(),
+                        type: 'error',
+                        content: `Upstream subscription missing for doc=${docId.slice(0, 12)} — Drive will not publish events. Restart codocs serve to recreate.`,
+                      });
+                      return;
+                    }
+                    for (const s of subs) {
+                      const expiry = s.expireTime ? new Date(s.expireTime) : null;
+                      const ageMs = expiry ? expiry.getTime() - Date.now() : NaN;
+                      const expiredOrSoon = expiry && ageMs < 60 * 60 * 1000;
+                      emit({
+                        time: new Date(),
+                        type: expiredOrSoon ? 'error' : 'system',
+                        content: `Upstream subscription health: doc=${docId.slice(0, 12)} name=${s.name} expires=${s.expireTime || '(unknown)'} (${expiry ? `${(ageMs / 3600_000).toFixed(1)}h remaining` : 'no expiry'})`,
+                      });
+                    }
+                  }).catch((err: Error) => {
+                    emit({
+                      time: new Date(),
+                      type: 'error',
+                      content: `Failed to fetch upstream subscription state for doc=${docId.slice(0, 12)}: ${err.message}`,
+                    });
+                  });
+                }
+              }
             },
           },
         );
@@ -1183,10 +1225,15 @@ export function registerServeCommand(program: Command) {
         renewalTimer = setInterval(async () => {
           for (const sub of subscriptions) {
             try {
-              await renewSubscription(auth, sub.name);
+              const renewed = await renewSubscription(auth, sub.name);
+              emit({
+                time: new Date(),
+                type: 'system',
+                content: `Subscription renewed: name=${sub.name} expires=${renewed.expireTime || '(unknown)'}`,
+              });
               setStatus('Subscription renewed');
             } catch (err: any) {
-              emit({ time: new Date(), type: 'error', content: `Renewal failed: ${err.message}` });
+              emit({ time: new Date(), type: 'error', content: `Renewal failed for ${sub.name}: ${err.message}` });
             }
           }
         }, RENEWAL_INTERVAL_MS);

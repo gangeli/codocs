@@ -89,6 +89,11 @@ export interface PubSubAuth {
 export interface ListenOptions {
   /** Log debug messages. Defaults to no-op. */
   debug?: (msg: string) => void;
+  /** Log info-level messages that should always hit disk: every Pub/Sub
+   *  message arrival, skip reasons, subscription health. Without this,
+   *  silent filtering (bot self-reply, missing IDs) is indistinguishable
+   *  from upstream silence. Defaults to no-op. */
+  info?: (msg: string) => void;
   /** Email addresses of known bot identities. Used to skip events
    *  triggered by the bot's own replies (e.g., the 🤔 thinking emoji). */
   botEmails?: string[];
@@ -115,8 +120,11 @@ export interface ListenOptions {
    *  Default 10_000 ms. */
   closeTimeoutMs?: number;
   /** Called whenever the listener reconnects to the subscription. Useful for
-   *  surfacing reconnect events in UI/status. */
-  onReconnect?: (info: { attempt: number; reason: string }) => void;
+   *  surfacing reconnect events in UI/status. `lastActivityAgoMs` is the
+   *  silence gap that triggered the reconnect (captured before the reset),
+   *  and `wasOpen` reports whether the old subscription still claimed
+   *  `isOpen` — distinguishing a half-dead stream from a clean drop. */
+  onReconnect?: (info: { attempt: number; reason: string; lastActivityAgoMs: number; wasOpen: boolean }) => void;
 }
 
 /**
@@ -134,6 +142,7 @@ export function listenForComments(
   options?: ListenOptions,
 ): CommentListenerHandle {
   const debug = options?.debug ?? (() => {});
+  const info = options?.info ?? (() => {});
 
   const fullSubName = subscriptionName.includes('/')
     ? subscriptionName
@@ -184,6 +193,8 @@ export function listenForComments(
   const messageHandler = async (message: Message) => {
     lastActivityAt = Date.now();
     reconnectAttempt = 0;
+    const eventTypeAttr = message.attributes?.['ce-type'] ?? message.attributes?.eventType ?? 'unknown';
+    info(`pubsub message received: id=${message.id} type=${eventTypeAttr}`);
     debug(`--- Raw Pub/Sub message received ---`);
     debug(`  Message ID: ${message.id}`);
     debug(`  Publish time: ${message.publishTime?.toISOString()}`);
@@ -199,6 +210,7 @@ export function listenForComments(
 
     const stub = parseEventStub(message);
     if (!stub) {
+      info(`pubsub message skipped: not a comment event or missing IDs (id=${message.id} type=${eventTypeAttr})`);
       debug(`  → Not a comment event or missing IDs (skipped)`);
       message.ack();
       return;
@@ -240,6 +252,7 @@ export function listenForComments(
           ownReplyIds: options?.replyTracker,
         });
         if (origin.type === 'bot') {
+          info(`pubsub message skipped: last message is from codocs (id=${message.id} author=${origin.author})`);
           debug(`  → Skipping: last message is from codocs (${origin.author})`);
           message.ack();
           return;
@@ -380,8 +393,10 @@ export function listenForComments(
     }
     reconnectInFlight = true;
     const startedAt = Date.now();
+    const lastActivityAgoMs = startedAt - lastActivityAt;
     try {
       const old = subscription;
+      const wasOpen = old.isOpen;
       detachHandlers(old);
       const closeOutcome = await closeWithTimeout(old);
       const closeDurationMs = Date.now() - startedAt;
@@ -397,7 +412,7 @@ export function listenForComments(
       attachHandlers(subscription);
       lastActivityAt = Date.now();
       debug(`Reconnected to ${fullSubName} (attempt ${reconnectAttempt}, reason: ${reason})`);
-      options?.onReconnect?.({ attempt: reconnectAttempt, reason });
+      options?.onReconnect?.({ attempt: reconnectAttempt, reason, lastActivityAgoMs, wasOpen });
     } finally {
       reconnectInFlight = false;
     }
