@@ -422,6 +422,41 @@ describe('tryBuildSpliceOp — op construction', () => {
     expect(out.newText).toBe('rephrased here');
   });
 
+  // CA15 reproduction: anchor's plain text (e.g. just `important`)
+  // appears LITERALLY inside `**important**` in theirs — so the
+  // literal indexOf path matches and `usedStrippedMatch` stays
+  // false. But that match position is sandwiched between `**`
+  // markers; merged drops the markers (the agent's edit removes
+  // the bold styling along with the word change), so the literal
+  // findReplacement's before/after context (`...has an **` /
+  // `** word...`) doesn't appear in merged. Without a stripped
+  // fallback the planner returns ineligible and the splice is
+  // lost (anchor reverts, agent's edit is undone). Production
+  // must fall through to the stripped path in this case.
+  it('handles a single-word anchor inside `**...**` markers (CA15 repro)', () => {
+    const t = 'This sentence has an **important** word in the middle.\n';
+    const m = 'This sentence has an critical word in the middle.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'important' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('critical');
+  });
+
+  it('handles a single-word anchor inside `*...*` italic markers', () => {
+    const t = 'The plan calls for a *careful* rollout next quarter.\n';
+    const m = 'The plan calls for a measured rollout next quarter.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'careful' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('measured');
+  });
+
   it('returns ineligible when an anchor truly does not appear (even after stripping)', () => {
     const t = 'Sentence with **bold** content.\n';
     const m = 'Sentence with **bolder** content.\n';

@@ -154,9 +154,25 @@ export function tryBuildSpliceOp(args: {
     return { ineligible: 'structural-boundary-cross' };
   }
 
-  const newText = usedStrippedMatch
+  let newText = usedStrippedMatch
     ? findReplacementStripped(theirs, mergedMarkdown, firstHit, quoted)
     : findReplacement(theirs, mergedMarkdown, firstHit, quoted);
+  // Stripped-fallback for a literal hit: when the anchor's plain
+  // text appears literally INSIDE marker chars (e.g. quoted text
+  // is `important` and theirs has `**important**`), `firstHit`
+  // lands between the `**`s and the literal context windows
+  // include marker chars that don't appear in merged (where the
+  // agent's edit dropped them). Retry in stripped space so the
+  // alignment can succeed without seeing the markers.
+  if (newText == null && !usedStrippedMatch) {
+    const located = locateAnchorInStripped(theirs, quoted);
+    if (located && located.secondHit < 0) {
+      firstHit = located.firstHit;
+      mdSpanLen = located.spanLen;
+      usedStrippedMatch = true;
+      newText = findReplacementStripped(theirs, mergedMarkdown, firstHit, quoted);
+    }
+  }
   if (newText == null) return { ineligible: 'multi-edit-section' };
   if (newText.length === 0) return { ineligible: 'replacement-empty' };
   // Same text on both sides — no edit, no need to splice.

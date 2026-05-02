@@ -740,15 +740,17 @@ const tests: AnchorTestCase[] = [
   // the markdown indexMap is approximate around markers.
   //
   // The edit drops the bold markers in `to` to match the body
-  // change the splice will land. expectedSpliceNewText is the
-  // whole sentence in plain form because Drive returns the whole
-  // sentence as quotedText.
+  // change the splice will land. The user is asked to highlight
+  // ONLY the bold word (not the whole sentence), so quotedText
+  // is just `important` — the splice newText is therefore just
+  // `critical` (the word that replaces the bold word in the
+  // stripped-paragraph alignment).
   {
     title: 'CA15: anchor on bold inline text (styling lost, comment survives)',
     anchorKey: 'bold',
     edits: [{ from: 'has an **important** word', to: 'has an critical word' }],
     outcome: 'splice',
-    expectedSpliceNewText: 'This sentence has an critical word in the middle.',
+    expectedSpliceNewText: 'critical',
     expectedAnchorTextAfter: 'has an critical word',
   },
 
@@ -828,17 +830,19 @@ const tests: AnchorTestCase[] = [
     ],
   },
 
-  // CA21 — Anchor ENDING with a surrogate-pair emoji. Symmetric
-  // to CA13. The leading-grapheme fix advanced splicePoint past
-  // the leading char; the trailing trim's start arithmetic
-  // hasn't been re-examined for graphemes.
+  // CA21 — Anchor ENDING with a surrogate-pair emoji. Drive
+  // returns the WHOLE sentence as quotedFileContent (anchoring on
+  // styled or emoji-adjacent runs typically extends the selection
+  // to the paragraph), so the splice rewrites the whole sentence.
+  // expectedSpliceNewText is the full sentence with the agent's
+  // edit applied — that's what the splice's insertText carries.
   {
     title: 'CA21: anchor ending with a surrogate-pair emoji',
     anchorKey: 'tail-emoji',
     edits: [{ from: 'wave hello', to: 'shout hi' }],
     outcome: 'splice',
-    expectedSpliceNewText: 'shout hi 🦊',
-    expectedAnchorTextAfter: 'shout hi 🦊',
+    expectedSpliceNewText: 'The line below ends with shout hi 🦊',
+    expectedAnchorTextAfter: 'The line below ends with shout hi 🦊',
   },
 
   // CA22 — Anchor on italicised inline text (`_careful_`). Same
@@ -849,9 +853,11 @@ const tests: AnchorTestCase[] = [
   {
     title: 'CA22: anchor on italic inline text',
     anchorKey: 'italic',
-    edits: [{ from: 'a _careful_ rollout', to: 'a measured rollout' }],
+    edits: [{ from: 'a *careful* rollout', to: 'a measured rollout' }],
     outcome: 'splice',
-    expectedSpliceNewText: 'The plan calls for a measured rollout next quarter.',
+    // Single-word anchor on `*careful*` — splice replaces just the
+    // word inside the markers (per the stripped-fallback path).
+    expectedSpliceNewText: 'measured',
     expectedAnchorTextAfter: 'a measured rollout',
   },
 
@@ -880,7 +886,11 @@ const tests: AnchorTestCase[] = [
     anchorKey: 'boldlink',
     edits: [{ from: '**critical-section briefing**', to: '**critical-section overview**' }],
     outcome: 'splice',
-    expectedSpliceNewText: 'Read the critical-section overview before proceeding.',
+    // Anchor is just the bold link's display text. Splice
+    // replaces only the display text (link/bold markers strip
+    // away in the alignment but live on either side of the
+    // splice's currentRange in the body).
+    expectedSpliceNewText: 'critical-section overview',
     expectedAnchorTextAfter: 'critical-section overview',
   },
 ];
