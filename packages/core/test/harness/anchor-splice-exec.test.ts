@@ -154,6 +154,169 @@ describe('locateOldTextRange', () => {
     const doc = new FakeDoc('hello world\n');
     expect(locateOldTextRange(doc.asDoc(), 'banana')).toBeNull();
   });
+
+  // Reproduces an e2e failure: a splice op whose anchor span begins
+  // with a multi-code-unit emoji (UTF-16 surrogate pair) is reported
+  // as 'skipped' because locateOldTextRange returns null even though
+  // the oldText is visibly in the doc body.
+  it('finds an emoji-prefixed text span (single textRun)', () => {
+    const doc = new FakeDoc('🤖 happy bot says hello.\n');
+    const r = locateOldTextRange(doc.asDoc(), '🤖 happy bot says hello.');
+    expect(r).not.toBeNull();
+    // The full anchor is 24 UTF-16 code units; first surrogate sits
+    // at body index 1, last char (".") at body index 24, so endIndex
+    // must be 25 (one past the last char).
+    expect(r).toEqual({ startIndex: 1, endIndex: 25 });
+  });
+
+  it('finds an emoji-prefixed text span when Drive appended a VS-16 selector to the emoji', () => {
+    // Hypothesis for an observed e2e CA13 failure: Drive appears to
+    // normalize emoji presentation by appending U+FE0F (variation
+    // selector-16) to the body's textRun content even though the
+    // user-typed source did not include it. The splice op's
+    // `oldText` came from `quotedFileContent.value`, which the
+    // (separate) Drive comment API returned WITHOUT the selector.
+    // locateOldTextRange's plain `joined.indexOf(oldText)` then
+    // misses the match: "🤖️ happy" has no "🤖 happy" substring.
+    const docResource: docs_v1.Schema$Document = {
+      body: {
+        content: [
+          { startIndex: 0, endIndex: 1, sectionBreak: {} },
+          {
+            startIndex: 1,
+            endIndex: 27,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 1,
+                  endIndex: 27,
+                  // 🤖 + VS-16 + " happy bot says hello.\n" — 26 code units
+                  textRun: { content: '🤖️ happy bot says hello.\n' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const r = locateOldTextRange(docResource, '🤖 happy bot says hello.');
+    // Currently returns null; the desired behaviour is to find the
+    // VS-16-augmented occurrence so splice can proceed. Expressed
+    // here as a `not.toBeNull()` so the test is a clear pass/fail
+    // signal once a fix lands.
+    expect(r).not.toBeNull();
+  });
+
+  // Reproduces an e2e CA11 failure: an anchor on text inside a table
+  // cell. Drive structures tables as `el.table.tableRows[].tableCells[].content[]`
+  // where each cell's content is a list of paragraph elements nested
+  // INSIDE the table — not at the top level of `body.content`.
+  // locateOldTextRange's old loop only iterated top-level
+  // `el.paragraph` and silently skipped table cells, returning null
+  // for any anchor whose text only lives inside a table.
+  it('finds anchor text that lives inside a table cell', () => {
+    const docResource: docs_v1.Schema$Document = {
+      body: {
+        content: [
+          { startIndex: 0, endIndex: 1, sectionBreak: {} },
+          // Plain paragraph (some preamble before the table).
+          {
+            startIndex: 1,
+            endIndex: 9,
+            paragraph: {
+              elements: [{ startIndex: 1, endIndex: 9, textRun: { content: 'Pre.\n' } }],
+            },
+          },
+          // Table with one row of two cells.
+          {
+            startIndex: 9,
+            endIndex: 30,
+            table: {
+              tableRows: [
+                {
+                  startIndex: 9,
+                  endIndex: 30,
+                  tableCells: [
+                    {
+                      startIndex: 11,
+                      endIndex: 21,
+                      content: [
+                        {
+                          startIndex: 11,
+                          endIndex: 21,
+                          paragraph: {
+                            elements: [
+                              {
+                                startIndex: 11,
+                                endIndex: 21,
+                                textRun: { content: 'TARGETED\n' },
+                              },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                    {
+                      startIndex: 21,
+                      endIndex: 30,
+                      content: [
+                        {
+                          startIndex: 21,
+                          endIndex: 30,
+                          paragraph: {
+                            elements: [
+                              { startIndex: 21, endIndex: 30, textRun: { content: 'other\n' } },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const r = locateOldTextRange(docResource, 'TARGETED');
+    expect(r).not.toBeNull();
+    expect(r).toEqual({ startIndex: 11, endIndex: 19 });
+  });
+
+  it('finds an emoji-prefixed text span when the leading emoji is in its own textRun', () => {
+    // Drive often emits adjacent text runs when the body has style
+    // boundaries (emoji vs ASCII font fallback). Locate must concat
+    // them transparently.
+    const docResource: docs_v1.Schema$Document = {
+      body: {
+        content: [
+          { startIndex: 0, endIndex: 1, sectionBreak: {} },
+          {
+            startIndex: 1,
+            endIndex: 26,
+            paragraph: {
+              elements: [
+                {
+                  startIndex: 1,
+                  endIndex: 3,
+                  textRun: { content: '🤖' }, // 2 UTF-16 code units
+                },
+                {
+                  startIndex: 3,
+                  endIndex: 26,
+                  textRun: { content: ' happy bot says hello.\n' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const r = locateOldTextRange(docResource, '🤖 happy bot says hello.');
+    expect(r).not.toBeNull();
+    expect(r).toEqual({ startIndex: 1, endIndex: 25 });
+  });
 });
 
 describe('executeAnchorSpliceOps', () => {

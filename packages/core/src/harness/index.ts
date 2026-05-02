@@ -22,6 +22,9 @@ export {
 export type { PRInfo, RepoInfo } from './pr.js';
 export { parseSections, mergeDocuments, computeDocDiff } from './diff.js';
 export type { MdSection, MergeResult, DiffResult } from './diff.js';
+export { executeAnchorSpliceOps } from './anchor-splice-exec.js';
+export type { SpliceDocsClient, SpliceExecResult } from './anchor-splice-exec.js';
+export type { AnchorSpliceOp, CommentAnchor } from './anchor-splice.js';
 export { AgentOrchestrator } from './orchestrator.js';
 export type { OrchestratorConfig } from './orchestrator.js';
 export { generateAgentName } from './name-generator.js';

@@ -139,19 +139,34 @@ export function tryBuildSpliceOp(args: {
     return { ineligible: 'anchor-too-short' };
   }
 
-  // Default splice point: just after the first character of the anchor.
-  // This leaves >= 1 char on each side so the anchor cannot collapse to
-  // a single edge point.
-  const splicePoint = startIndex + 1;
+  // Default splice point: just after the first GRAPHEME of the
+  // anchor. Going just one code unit in is unsafe when the anchor
+  // begins with a multi-code-unit grapheme (most commonly a UTF-16
+  // surrogate-pair emoji like 🤖, but also variation selectors and
+  // ZWJ-glued sequences). Drive's batchUpdate rejects insertText
+  // whose location lands inside a grapheme cluster — observed as
+  // "Invalid requests[0].insertText: The insertion index cannot be
+  // within a grapheme cluster." — so the splice exec would skip
+  // and the comment would orphan.
+  const leadingGraphemeLen = leadingGraphemeCodeUnitLength(quoted);
+  const splicePoint = startIndex + leadingGraphemeLen;
+  // After advancing past the leading grapheme, ensure there's still
+  // at least one code unit of suffix to keep the anchor inside the
+  // remaining old text. Anchors that consist of a SINGLE grapheme
+  // (e.g. just "🤖") can't be spliced safely — caller falls back to
+  // revert.
+  if (splicePoint >= endIndex) {
+    return { ineligible: 'anchor-too-short' };
+  }
 
   // Step 2 indices live in post-step-1 space.
   // After inserting `newText` at splicePoint:
-  //   leading prefix: [startIndex, startIndex + 1]   (1 char of oldText)
-  //   newText:        [startIndex + 1, startIndex + 1 + newText.length]
-  //   trailing:       [startIndex + 1 + newText.length, endIndex + newText.length]
+  //   leading prefix: [startIndex, splicePoint)             (the leading grapheme)
+  //   newText:        [splicePoint, splicePoint + newText.length)
+  //   trailing:       [splicePoint + newText.length, endIndex + newText.length)
   const newLen = newText.length;
-  const leadingTrim = { startIndex, endIndex: startIndex + 1 };
-  const trailingStart = startIndex + 1 + newLen;
+  const leadingTrim = { startIndex, endIndex: splicePoint };
+  const trailingStart = splicePoint + newLen;
   const trailingEnd = endIndex + newLen;
   const trailingTrim = trailingStart < trailingEnd
     ? { startIndex: trailingStart, endIndex: trailingEnd }
@@ -194,9 +209,19 @@ export function planAnchorOutcomes(args: {
       outcomes.push({ kind: 'noop', quotedText: a.quotedText ?? '' });
       continue;
     }
-    // No-op: anchor text appears unchanged in the merged result, no
-    // edit overlaps it. Don't splice, don't revert, don't log.
-    if (theirs.includes(a.quotedText) && mergedMarkdown.includes(a.quotedText)) {
+    // No-op: anchor text appears UNIQUELY unchanged in both sides.
+    // The single-occurrence requirement is critical — when the
+    // anchor text appears more than once in `theirs` (e.g. one copy
+    // in an instructional preface and another in the actual body
+    // line that holds the comment), the agent may have edited the
+    // body occurrence while leaving the preface alone. A naïve
+    // "both sides contain it" check would then incorrectly call
+    // this a noop and silently drop the splice/revert that should
+    // have fired. tryBuildSpliceOp's ambiguity detection handles
+    // the multi-occurrence case via 'multiple-anchor-occurrences'.
+    const inTheirs = countOccurrences(theirs, a.quotedText);
+    const inMerged = countOccurrences(mergedMarkdown, a.quotedText);
+    if (inTheirs === 1 && inMerged === 1) {
       outcomes.push({ kind: 'noop', quotedText: a.quotedText });
       continue;
     }
@@ -262,13 +287,69 @@ function findReplacement(
   const counterpart = matchMergedCounterpart(theirsSections, mergedSections, sec);
   if (!counterpart) return null; // Section was deleted — revert handles this.
 
-  // Within the section, find anchor by offset and look up an
-  // alignment context on each side. Try progressively shorter
-  // contexts: a long context is more selective but more likely to
-  // contain unrelated edits and miss; a short context risks ambiguity.
-  // We accept the first size where both sides match uniquely.
+  // Find the anchor's paragraph within the section. parseSections
+  // returns one MdSection per heading; within a section the body is
+  // typically multiple `\n\n`-separated paragraphs (an instruction
+  // blockquote, a list, the actual sentence the anchor sits on). We
+  // narrow the context-match to JUST the anchor's paragraph rather
+  // than the whole section — section-level windows like
+  // "instruction.\n\n" repeat across sibling paragraphs and the
+  // top-level extractBetween then can't disambiguate which copy
+  // bounds the anchor.
   const sectionStart = sec.startOffset;
   const anchorStartInSection = anchorOffsetInTheirs - sectionStart;
+  const theirsParas = splitParagraphsWithOffsets(sec.content);
+  const mergedParas = splitParagraphsWithOffsets(counterpart.content);
+  const theirsParaIdx = theirsParas.findIndex(
+    (p) => anchorStartInSection >= p.start && anchorStartInSection < p.start + p.text.length,
+  );
+  if (theirsParaIdx >= 0 && theirsParas.length === mergedParas.length) {
+    // Trim trailing whitespace from the matched paragraphs — the
+    // last paragraph in a section often carries a single trailing
+    // \n that's NOT a paragraph separator (`\n\n+`) but isn't part
+    // of the body text the anchor covers. Without trimming, the
+    // whole-paragraph match below misses on the very last
+    // paragraph of a section.
+    const theirsParaText = theirsParas[theirsParaIdx].text.replace(/\s+$/, '');
+    const mergedParaText = mergedParas[theirsParaIdx].text.replace(/\s+$/, '');
+    const anchorOffsetInPara = anchorStartInSection - theirsParas[theirsParaIdx].start;
+    // Whole-paragraph anchor: the merged paragraph IS the
+    // replacement, no context-search needed. Common case for
+    // sentence-level anchors.
+    if (anchorOffsetInPara === 0 && anchorText === theirsParaText) {
+      return mergedParaText;
+    }
+    // Sub-paragraph anchor: align by context within just this
+    // paragraph (much smaller search space than the whole section).
+    // Each side that's empty (anchor at the very start or very end
+    // of the paragraph) anchors against the paragraph boundary
+    // instead of needing a context window — that's what the
+    // edge-aware extractBetween branches handle.
+    const before = theirsParaText.slice(0, anchorOffsetInPara);
+    const after = theirsParaText.slice(anchorOffsetInPara + anchorText.length);
+    for (const ctxLen of [16, 8, 4, 2, 1]) {
+      const ctxBefore = before.slice(Math.max(0, before.length - ctxLen));
+      const ctxAfter = after.slice(0, ctxLen);
+      // If both sides happen to have no context, that's the
+      // whole-paragraph case already handled above; skip.
+      if (ctxBefore.length === 0 && ctxAfter.length === 0) continue;
+      const replacement = extractBetweenInParagraph(
+        mergedParaText, ctxBefore, ctxAfter,
+        before.length === 0,
+        after.length === 0,
+      );
+      if (replacement !== null) return replacement;
+    }
+    // No paragraph-level match. Fall through to the section-level
+    // strategy below — the paragraph counts could be the same by
+    // coincidence rather than because of a clean rewrite.
+  }
+
+  // Section-level fallback (legacy strategy). Used when the
+  // paragraph counts diverge or paragraph-level alignment didn't
+  // succeed. Try progressively shorter contexts; long contexts are
+  // selective but easily contain unrelated edits, short ones risk
+  // ambiguity. Accept the first size where both sides match uniquely.
   const sectionContent = sec.content;
   const before = sectionContent.slice(0, anchorStartInSection);
   const after = sectionContent.slice(anchorStartInSection + anchorText.length);
@@ -281,6 +362,73 @@ function findReplacement(
     if (replacement !== null) return replacement;
   }
   return null;
+}
+
+/**
+ * Split a markdown chunk into paragraphs by blank-line separators
+ * (`\n\n` or longer runs of newlines). Returns each paragraph's
+ * offset within the chunk so callers can map a char offset back to
+ * a paragraph index without re-walking. The offset is the start of
+ * the paragraph's body text — separator runs are NOT included in
+ * any paragraph's offset/text. Trailing/leading empty paragraphs
+ * are skipped.
+ */
+function splitParagraphsWithOffsets(
+  content: string,
+): Array<{ start: number; text: string }> {
+  const out: Array<{ start: number; text: string }> = [];
+  const sepRe = /\n\n+/g;
+  let cursor = 0;
+  for (let m = sepRe.exec(content); m; m = sepRe.exec(content)) {
+    const text = content.slice(cursor, m.index);
+    if (text.length > 0) out.push({ start: cursor, text });
+    cursor = m.index + m[0].length;
+  }
+  const tail = content.slice(cursor);
+  if (tail.length > 0) out.push({ start: cursor, text: tail });
+  return out;
+}
+
+/**
+ * Paragraph-aware extractBetween. Identical to the section-level
+ * version when both `before` and `after` are non-empty, but with
+ * extra branches for the edge cases:
+ *
+ *   - Anchor sits at the START of its paragraph (`anchorAtStart`):
+ *     `before` is empty and we can't match it. The replacement is
+ *     everything in `text` UP TO the unique occurrence of `after`.
+ *   - Anchor sits at the END of its paragraph (`anchorAtEnd`):
+ *     `after` is empty. Replacement runs from the end of the unique
+ *     `before` occurrence to the end of `text`.
+ *
+ * When neither edge applies the function delegates to `extractBetween`.
+ */
+function extractBetweenInParagraph(
+  text: string,
+  before: string,
+  after: string,
+  anchorAtStart: boolean,
+  anchorAtEnd: boolean,
+): string | null {
+  if (anchorAtStart && anchorAtEnd) {
+    // Whole-paragraph anchor — caller handles this case directly.
+    return text;
+  }
+  if (anchorAtStart) {
+    if (after.length === 0) return null;
+    const afterIdx = text.indexOf(after);
+    if (afterIdx < 0) return null;
+    if (text.indexOf(after, afterIdx + 1) >= 0) return null;
+    return text.slice(0, afterIdx);
+  }
+  if (anchorAtEnd) {
+    if (before.length === 0) return null;
+    const firstBefore = text.indexOf(before);
+    if (firstBefore < 0) return null;
+    if (text.indexOf(before, firstBefore + 1) >= 0) return null;
+    return text.slice(firstBefore + before.length);
+  }
+  return extractBetween(text, before, after);
 }
 
 /**
@@ -329,7 +477,22 @@ function locateSection(
   return null;
 }
 
-/** Match a `theirs` section to its counterpart in the merged output. */
+/** Match a `theirs` section to its counterpart in the merged output.
+ *
+ * Pairing strategy, in order of preference:
+ *   1. Same heading text at the same positional index.
+ *   2. First section in merged with the same heading text.
+ *   3. Positional fallback: same index, regardless of heading text.
+ *      Needed when the agent's edit RENAMES the heading itself —
+ *      heading-text equality fails but the section is still the
+ *      same one positionally, and `findReplacement` can recover the
+ *      new heading text from the surrounding context.
+ *   4. If both sides have exactly one same-length section list, the
+ *      positional index is unambiguous and (3) is reliable. If the
+ *      lengths differ, fall through to null — the structural
+ *      change (insert/delete of a section) is too ambiguous for a
+ *      surgical splice.
+ */
 function matchMergedCounterpart(
   theirsSections: MdSection[],
   mergedSections: MdSection[],
@@ -337,15 +500,81 @@ function matchMergedCounterpart(
 ): MdSection | null {
   const target = theirsSections[sec.index];
   if (!target) return null;
-  // Prefer same-heading match at the same positional index. Fall back
-  // to first same-heading match.
   if (
     mergedSections[sec.index] &&
     mergedSections[sec.index].heading === target.heading
   ) {
     return mergedSections[sec.index];
   }
-  return mergedSections.find((s) => s.heading === target.heading) ?? null;
+  const sameHeading = mergedSections.find((s) => s.heading === target.heading);
+  if (sameHeading) return sameHeading;
+  // Positional fallback for the heading-rename case. Only safe when
+  // the section count is the same on both sides — different counts
+  // imply a section was inserted or deleted, and positional index
+  // alone can't disambiguate which counterpart is "the same one".
+  if (
+    mergedSections.length === theirsSections.length &&
+    mergedSections[sec.index]
+  ) {
+    return mergedSections[sec.index];
+  }
+  return null;
+}
+
+/**
+ * Length, in UTF-16 code units, of the first grapheme cluster of
+ * `s`. Drive's batchUpdate `insertText` rejects locations that fall
+ * inside a grapheme cluster — surrogate pair, base + variation
+ * selector, base + combining marks, ZWJ-glued emoji sequence — so
+ * the splice point has to advance past the entire leading grapheme
+ * before inserting `newText`.
+ *
+ * Uses `Intl.Segmenter` when available (Node 16+, all modern
+ * browsers); falls back to detecting just UTF-16 surrogate pairs,
+ * which covers the most common case (single-codepoint emoji) but
+ * misses combining marks and ZWJ sequences. The fallback exists
+ * defensively — every supported runtime ships Intl.Segmenter.
+ */
+function leadingGraphemeCodeUnitLength(s: string): number {
+  if (s.length === 0) return 0;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Seg = (Intl as any).Segmenter;
+    if (typeof Seg === 'function') {
+      const seg = new Seg(undefined, { granularity: 'grapheme' });
+      const it = seg.segment(s)[Symbol.iterator]();
+      const first = it.next();
+      if (!first.done && first.value && typeof first.value.segment === 'string') {
+        return first.value.segment.length;
+      }
+    }
+  } catch {
+    // Fall through to surrogate-pair fallback.
+  }
+  const c = s.charCodeAt(0);
+  if (c >= 0xD800 && c <= 0xDBFF && s.length >= 2) {
+    const c2 = s.charCodeAt(1);
+    if (c2 >= 0xDC00 && c2 <= 0xDFFF) return 2;
+  }
+  return 1;
+}
+
+/**
+ * Count non-overlapping occurrences of `needle` in `haystack`.
+ * Returns 0 for an empty needle (defensive — the noop check would
+ * otherwise loop forever and the caller already filters empty
+ * anchors upstream).
+ */
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  while (true) {
+    const hit = haystack.indexOf(needle, from);
+    if (hit < 0) return count;
+    count += 1;
+    from = hit + needle.length;
+  }
 }
 
 /**

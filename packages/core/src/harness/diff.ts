@@ -167,6 +167,26 @@ function sectionKeysRelativeTo(
       }
     }
 
+    // Pass 3: positional fallback for renamed-heading sections.
+    // When the agent renames a heading itself, the merged side has
+    // a heading (and key) that doesn't appear in `reference`. Pass 1
+    // and 2 both fail, and falling through to a "fresh" key would
+    // make the merged section look NEW and the reference's original
+    // look DELETED — section diff then duplicates the section. If
+    // the section counts match AND the reference slot at the same
+    // positional index hasn't been claimed yet, treat THIS section
+    // as the counterpart of `reference[i]`. Mirrors the positional
+    // fallback in `matchMergedCounterpart`.
+    if (
+      matchedIdx < 0 &&
+      sections.length === reference.length
+    ) {
+      const positional = result.length; // index of the section being processed
+      if (positional < reference.length && !refUsed[positional]) {
+        matchedIdx = positional;
+      }
+    }
+
     if (matchedIdx >= 0) {
       refUsed[matchedIdx] = true;
       refCursor = matchedIdx + 1;
@@ -475,21 +495,38 @@ export function preserveCommentAnchors(
 
   const preservedAnchors: PreservedAnchor[] = [];
   const spliceOps: AnchorSpliceOp[] = [];
-  const revertAnchors: string[] = [];
+  // Sections to revert in `mergedMarkdown` so the section-diff produces
+  // no main-batch requests for them. Both `revert` AND `splice` anchors
+  // need this — see comment below.
+  const sectionRevertAnchors: string[] = [];
 
   for (const o of outcomes) {
     if (o.kind === 'splice') {
       spliceOps.push(o.op);
       preservedAnchors.push({ quotedText: o.quotedText, via: 'splice' });
+      // Drive orphans a comment when its anchored span is fully
+      // deleted in a single batchUpdate. The main batch's line-diff
+      // emits a delete-whole-line + insert-whole-line pair when ANY
+      // part of an anchored line changes — that single batch
+      // obliterates the anchor. The splice op (which runs after the
+      // main batch) uses a two-step insert+trim that NEVER deletes
+      // the whole anchor in one call, so it preserves the comment —
+      // but only if the main batch leaves the anchored span intact.
+      //
+      // Solution: revert the merged section back to theirs content
+      // for splice anchors too. The section-diff then sees no change
+      // for that section and produces no requests; the splice op
+      // alone carries the rewrite.
+      sectionRevertAnchors.push(o.quotedText);
     } else if (o.kind === 'revert') {
-      revertAnchors.push(o.quotedText);
+      sectionRevertAnchors.push(o.quotedText);
       preservedAnchors.push({ quotedText: o.quotedText, via: 'revert' });
     }
   }
 
   let revisedMerged = mergedMarkdown;
-  if (revertAnchors.length > 0) {
-    revisedMerged = revertSectionsHoldingAnchors(mergedMarkdown, theirs, revertAnchors);
+  if (sectionRevertAnchors.length > 0) {
+    revisedMerged = revertSectionsHoldingAnchors(mergedMarkdown, theirs, sectionRevertAnchors);
   }
 
   return { mergedMarkdown: revisedMerged, preservedAnchors, spliceOps };
@@ -525,10 +562,24 @@ function revertSectionsHoldingAnchors(
     const theirsS = theirsByKey.get(mergedKeyed[i].key);
     if (!theirsS) continue;
     for (const anchor of stillLost) {
-      if (theirsS.content.includes(anchor) && !merged.content.includes(anchor)) {
+      if (!theirsS.content.includes(anchor) || merged.content.includes(anchor)) continue;
+      // Try a paragraph-scoped revert first: replace ONLY the
+      // paragraph that holds the anchor in the merged section,
+      // leaving any other paragraphs (and their independent edits)
+      // alone. Falls back to whole-section revert when the
+      // paragraph counts diverge or the anchor's paragraph can't
+      // be located.
+      const paraReverted = revertParagraphHoldingAnchor(
+        merged.content,
+        theirsS.content,
+        anchor,
+      );
+      if (paraReverted !== null) {
+        revisedSections[i] = { ...merged, content: paraReverted };
+      } else {
         revisedSections[i] = theirsS;
-        break;
       }
+      break;
     }
   }
 
@@ -557,6 +608,54 @@ function revertSectionsHoldingAnchors(
   return (
     revisedSections.map((s) => s.content).join('\n\n').replace(/\n{3,}/g, '\n\n').trimEnd() +
     '\n'
+  );
+}
+
+/**
+ * Try a surgical paragraph-level revert: find the paragraph
+ * containing `anchor` in `theirsContent`, find the
+ * positionally-corresponding paragraph in `mergedContent`, and
+ * replace ONLY that paragraph in the merged side. Returns the
+ * revised merged content on success, or null when the
+ * paragraph-pairing isn't safe (counts diverge, anchor not
+ * locatable). Whole-section revert is the fallback the caller
+ * should use when null is returned.
+ *
+ * Why narrow to a paragraph: when an anchor's section ALSO has
+ * unrelated paragraphs the agent edited, a whole-section revert
+ * silently drops those unrelated edits. Paragraph-scoped revert
+ * keeps them.
+ */
+function revertParagraphHoldingAnchor(
+  mergedContent: string,
+  theirsContent: string,
+  anchor: string,
+): string | null {
+  const sepRe = /\n\n+/g;
+  const splitWithOffsets = (s: string): Array<{ start: number; text: string }> => {
+    const out: Array<{ start: number; text: string }> = [];
+    sepRe.lastIndex = 0;
+    let cursor = 0;
+    for (let m = sepRe.exec(s); m; m = sepRe.exec(s)) {
+      const text = s.slice(cursor, m.index);
+      if (text.length > 0) out.push({ start: cursor, text });
+      cursor = m.index + m[0].length;
+    }
+    const tail = s.slice(cursor);
+    if (tail.length > 0) out.push({ start: cursor, text: tail });
+    return out;
+  };
+  const theirsParas = splitWithOffsets(theirsContent);
+  const mergedParas = splitWithOffsets(mergedContent);
+  if (theirsParas.length !== mergedParas.length) return null;
+  const idx = theirsParas.findIndex((p) => p.text.includes(anchor));
+  if (idx < 0) return null;
+  // Splice the merged paragraph at `idx` with the theirs paragraph.
+  const target = mergedParas[idx];
+  return (
+    mergedContent.slice(0, target.start) +
+    theirsParas[idx].text +
+    mergedContent.slice(target.start + target.text.length)
   );
 }
 

@@ -8,7 +8,7 @@ export PATH := $(HOME)/.bun/bin:$(PATH)
 # exports, comments, the works.
 LOAD_ENV := set -a; [ -f .env ] && . ./.env; set +a;
 
-.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/rendering e2e/roundtrip e2e/agents e2e/comments eval eval/judge deps help
+.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/rendering e2e/roundtrip e2e/agents e2e/comments e2e/comment-anchors eval eval/judge deps help
 
 all: codocs
 
@@ -80,6 +80,11 @@ infra: gcloud-auth
 # for several minutes (forces real Pub/Sub idle reconnects on a wall clock)
 # and is rarely the failing target during routine work. Run it explicitly
 # when changing the listener.
+# `e2e/comment-anchors` is excluded from the default `make e2e` because it
+# is INTERACTIVE — Drive's API can't create UI-anchored comments on Google
+# Docs (Workspace explicitly ignores API anchors), so each case prompts the
+# user to anchor a comment via the Docs UI before continuing. Run it
+# explicitly when working on the splice/revert path.
 e2e: e2e/rendering e2e/roundtrip e2e/agents e2e/comments
 
 e2e/rendering: build
@@ -94,6 +99,14 @@ e2e/agents: build
 
 e2e/comments: build
 	npx tsx scripts/e2e-comments.ts
+
+# Interactive: prompts the user to anchor a comment via the Docs UI per
+# case, then runs the production diff+splice pipeline against it. Not
+# automatable because the Drive API can't create UI-anchored comments
+# on Google Docs (anchors are accepted by the API but ignored by the
+# Workspace editor — comments render as "Original content deleted").
+e2e/comment-anchors: build
+	npx tsx scripts/e2e-comment-anchors.ts
 
 # Live longevity test for the Pub/Sub comment-listener. Creates a real doc
 # in Drive, ensures a Workspace Events subscription, and either:
@@ -142,6 +155,9 @@ help:
 	@echo "  make e2e             Run all e2e scripts."
 	@echo "                       Or run a single suite: make e2e/rendering,"
 	@echo "                       make e2e/roundtrip, make e2e/agents, make e2e/comments."
+	@echo "  make e2e/comment-anchors  Interactive splice/revert tests."
+	@echo "                       Excluded from \`make e2e\` because each case"
+	@echo "                       prompts you to anchor a comment via the Docs UI."
 	@echo "  make e2e/connection  Live longevity test for the Pub/Sub listener."
 	@echo "                       Slow (~3 min); excluded from \`make e2e\`."
 	@echo "  make clean           Remove build outputs and the ./codocs launcher."

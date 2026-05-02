@@ -65,6 +65,7 @@ export {
   getPreferredAgentTypes,
   recordQuotaFailure,
   clearQuotaFailure,
+  executeAnchorSpliceOps,
 } from './harness/index.js';
 export type {
   AgentType,
@@ -94,4 +95,8 @@ export type {
   BillingTier,
   HarnessSubscription,
   SubscriptionCheckOptions,
+  AnchorSpliceOp,
+  CommentAnchor,
+  SpliceDocsClient,
+  SpliceExecResult,
 } from './harness/index.js';

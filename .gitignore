@@ -25,3 +25,6 @@ npm-debug.log*
 
 # Bun
 *.bun-build
+
+# E2E worktrees + diagnostic artifact dirs
+.codocs/

@@ -167,6 +167,120 @@ describe('tryBuildSpliceOp — op construction', () => {
     expect(totalTrim).toBe('BROWN'.length);
   });
 
+  // Reproduces an e2e-CA13 failure: a splice op for an anchor whose
+  // first character is a multi-code-unit emoji (UTF-16 surrogate
+  // pair) ends up with a `currentRange` whose length is one MORE
+  // than the anchor's UTF-16 code-unit count. Downstream trim
+  // arithmetic then shifts by +1 too, and `splicePoint = start + 1`
+  // lands BETWEEN the two surrogates of the emoji — Drive then
+  // either rejects the insertText or the subsequent locate fails.
+  // Reproduces an e2e CA13 failure: Drive's batchUpdate rejects an
+  // insertText whose location is INSIDE a grapheme cluster (e.g.
+  // between the two UTF-16 code units of an emoji surrogate pair).
+  // splicePoint = startIndex + 1 used to land between the high and
+  // low surrogate of a leading 🤖. Drive returns
+  // "Invalid requests[0].insertText: The insertion index cannot be
+  // within a grapheme cluster." and the splice exec skips. Fix:
+  // splicePoint must skip the leading grapheme cluster of the anchor.
+  // Reproduces e2e CA8: when a section contains MULTIPLE
+  // structurally-similar paragraphs and TWO of them are anchored
+  // and being edited, findReplacement's section-level context
+  // matching can't disambiguate which paragraph is which (every
+  // ctxBefore window like "instruction.\n\n" appears multiple times
+  // in the section). Both anchors fall to revert and neither edit
+  // lands. A paragraph-aware findReplacement should handle this:
+  // split section into paragraphs, pair by position, then
+  // context-match within just one paragraph.
+  it('finds replacements when a section has two anchored sibling paragraphs', () => {
+    // Mirror the e2e CA8 fixture: each anchored body sentence is
+    // preceded by a same-shaped instruction blockquote, so the
+    // section-level context windows ("instruction.\n\n",
+    // "comment.\n\n", etc.) appear MULTIPLE times in the section.
+    // Section-level findReplacement can't disambiguate.
+    const t =
+      '# CA8 — two anchors in the same section\n\n' +
+      '> **Action [pair-a]:** highlight the FIRST body sentence and add a comment.\n\n' +
+      'First pair sentence here.\n\n' +
+      '> **Action [pair-b]:** highlight the SECOND body sentence and add a comment.\n\n' +
+      'Second pair sentence here.\n';
+    const m = t
+      .replace('First pair sentence here.', 'First pair sentence rewritten.')
+      .replace('Second pair sentence here.', 'Second pair sentence rewritten.');
+    const fd = flatDoc(t);
+
+    const outA = tryBuildSpliceOp({
+      anchor: { commentId: 'a', quotedText: 'First pair sentence here.' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    const outB = tryBuildSpliceOp({
+      anchor: { commentId: 'b', quotedText: 'Second pair sentence here.' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in outA) {
+      throw new Error(`expected pair-a splice, got ineligible: ${outA.ineligible}`);
+    }
+    if ('ineligible' in outB) {
+      throw new Error(`expected pair-b splice, got ineligible: ${outB.ineligible}`);
+    }
+    expect(outA.newText).toBe('First pair sentence rewritten.');
+    expect(outB.newText).toBe('Second pair sentence rewritten.');
+  });
+
+  it('places splicePoint AFTER the leading grapheme when the anchor begins with a surrogate-pair emoji', () => {
+    // anchor "🤖 happy" — 🤖 is two code units (a surrogate pair).
+    // splicePoint must be >= startIndex + 2, not startIndex + 1.
+    const t = 'pre.\n\n🤖 happy bot says hello.\n\nsuffix.\n';
+    const m = 'pre.\n\n🤖 cheerful bot says hello.\n\nsuffix.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: '🤖 happy bot says hello.' },
+      theirs: t,
+      mergedMarkdown: m,
+      indexMap: fd.indexMap,
+      bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ineligible: ${out.ineligible}`);
+    // Splice point must NOT land inside the surrogate pair. Since
+    // the leading codepoint 🤖 is 2 UTF-16 code units, the earliest
+    // valid splice point is startIndex + 2.
+    expect(out.splicePoint).toBeGreaterThanOrEqual(out.currentRange.startIndex + 2);
+    // And the leading trim must cover those same 2 code units (not
+    // 1) so step 2 deletes the whole emoji rather than leaving a
+    // dangling surrogate.
+    const leadingTrim = out.trimRanges[out.trimRanges.length - 1];
+    expect(leadingTrim.startIndex).toBe(out.currentRange.startIndex);
+    expect(leadingTrim.endIndex - leadingTrim.startIndex).toBeGreaterThanOrEqual(2);
+  });
+
+  it('produces a currentRange whose length matches the anchor in code units (emoji prefix)', () => {
+    // Section needs some leading context so findReplacement can pick
+    // a unique alignment marker; the anchor itself starts at the
+    // first emoji.
+    const t = 'pre.\n\n🤖 happy bot says hello.\n\nsuffix.\n';
+    const m = 'pre.\n\n🤖 cheerful bot says hello.\n\nsuffix.\n';
+    const fd = flatDoc(t);
+    const anchor = '🤖 happy bot says hello.';
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: anchor },
+      theirs: t,
+      mergedMarkdown: m,
+      indexMap: fd.indexMap,
+      bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ineligible: ${out.ineligible}`);
+    // The currentRange must span exactly anchor.length code units.
+    // Off-by-one here causes the trim ranges to read past the end of
+    // the anchored span, which the splice exec catches by skipping.
+    const observedLen = out.currentRange.endIndex - out.currentRange.startIndex;
+    expect(observedLen).toBe(anchor.length);
+    // splicePoint must skip past the leading grapheme (the 🤖
+    // surrogate pair = 2 code units). Inserting at startIndex + 1
+    // would land between the two surrogates of the emoji and Drive
+    // would reject the batch with "The insertion index cannot be
+    // within a grapheme cluster."
+    expect(out.splicePoint).toBe(out.currentRange.startIndex + 2);
+  });
+
   it('2-char anchor uses the minimal interior splice point (1 char on each side)', () => {
     // anchor = "OK" (2 chars). splicePoint = start+1, leaving 1 char of
     // prefix and 1 char of suffix. After step 1 with newText="YES":
@@ -258,9 +372,13 @@ describe('preserveCommentAnchors — top-level wiring', () => {
     expect(out.spliceOps.length).toBe(1);
     expect(out.spliceOps[0].newText).toBe('red');
     expect(out.preservedAnchors).toEqual([{ quotedText: 'brown', via: 'splice' }]);
-    // mergedMarkdown is left untouched in splice mode (the splice op
-    // carries the rewrite) — caller still issues main batch + splice.
-    expect(out.mergedMarkdown).toBe(m);
+    // mergedMarkdown is reverted to theirs for the section holding the
+    // splice anchor: the section-diff sees no change there and emits
+    // no main-batch requests, so Drive doesn't orphan the anchor by
+    // deleting its underlying span. The splice op runs after and
+    // performs the rewrite via insert+trim, which never deletes the
+    // whole anchor in a single batch.
+    expect(out.mergedMarkdown).toBe(t);
   });
 
   it('reverts an ineligible (1-char) anchor and labels via:"revert"', () => {
@@ -290,5 +408,54 @@ describe('preserveCommentAnchors — top-level wiring', () => {
     expect(out.preservedAnchors).toEqual([]);
     expect(out.spliceOps).toEqual([]);
     expect(out.mergedMarkdown).toBe(m);
+  });
+
+  // Reproduces an e2e failure mode: when the anchor's quotedText
+  // appears MULTIPLE TIMES in `theirs` (e.g. once in an instruction
+  // blockquote and once in the actual body line that the user
+  // anchored on), and the body occurrence is edited, the planner
+  // should NOT classify the anchor as noop just because some other
+  // occurrence still survives in merged. Doing so silently drops
+  // the splice/revert outcome and leaves the comment exposed to
+  // orphaning.
+  it('does not falsely classify a multi-occurrence anchor as noop when one occurrence is edited', () => {
+    // Anchor text appears in an instructional blockquote AND in the
+    // body line. The agent edits ONLY the body line (e.g. inside a
+    // table row / heading). Naïve noop check would say "unchanged"
+    // because both `theirs` and `merged` contain the text — the
+    // instruction occurrence was untouched. But the body occurrence
+    // (where Drive's anchor is bound) WAS edited.
+    const t = '> highlight TARGETED in the body below.\n\n| TARGETED | other |\n';
+    const m = '> highlight TARGETED in the body below.\n\n| EDITED | other |\n';
+    const fd = flatDoc(t);
+    const out = preserveCommentAnchors(
+      m, t,
+      [{ commentId: 'c1', quotedText: 'TARGETED' }],
+      fd.indexMap, fd.bodyEndIndex,
+    );
+    // The planner can't safely splice (ambiguous which TARGETED is
+    // the bound one) and can't claim noop. Expected outcome: revert
+    // via 'multiple-anchor-occurrences' falling through to revert.
+    expect(out.preservedAnchors.length).toBe(1);
+    expect(out.preservedAnchors[0].quotedText).toBe('TARGETED');
+    // We don't pin via to splice or revert — the planner's job is
+    // to NOT silently accept the edit. A revert is the safe outcome.
+    expect(['revert', 'splice']).toContain(out.preservedAnchors[0].via);
+  });
+
+  it('still classifies a single-occurrence anchor as noop when truly unchanged', () => {
+    // Sanity check the fix doesn't regress the simple case: anchor
+    // text occurs once in theirs, still occurs once in merged after
+    // an unrelated edit elsewhere.
+    const t = 'Stable line.\n\nEditable line.\n';
+    const m = 'Stable line.\n\nModified line.\n';
+    const fd = flatDoc(t);
+    const out = preserveCommentAnchors(
+      m, t,
+      [{ commentId: 'c1', quotedText: 'Stable line.' }],
+      fd.indexMap, fd.bodyEndIndex,
+    );
+    expect(out.preservedAnchors).toEqual([]);
+    expect(out.spliceOps).toEqual([]);
   });
 });

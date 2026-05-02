@@ -2440,4 +2440,272 @@ C-body.
     expect(finalBody).toContain('Unchanged anchor.');
     expect(finalBody).toContain('Different other text.');
   });
+
+  // Drive's anchor model: a comment whose anchored text is fully
+  // deleted in a SINGLE batchUpdate becomes orphaned ("Original
+  // content deleted" in the UI) — `quotedFileContent.value` keeps
+  // returning the original string as a sticky snapshot, but the
+  // anchor is no longer bound to any body span. Splice mode only
+  // works if the anchored span is left intact during the main batch
+  // and the splice op (which runs after) does the rewrite via its
+  // two-step insert+trim, which never deletes the whole anchor in
+  // one call.
+  //
+  // These tests assert the precondition: applying ONLY the main-batch
+  // `requests` to the doc body must leave the original anchored span
+  // intact for every splice anchor. The earlier "keeps unrelated
+  // edits" test only checked `spliceOps.length > 0`, which is too
+  // weak — Drive can still orphan even when a splice op was queued.
+  describe('splice anchors keep the original anchored span alive in the main batch', () => {
+    it('whole-line anchor with a one-word edit inside it', async () => {
+      // The agent rewrites just "brown" → "red" inside a wider anchor
+      // covering the entire sentence. The line-diff currently produces
+      // a delete-whole-line + insert-whole-line, which deletes the
+      // anchored text in a single batch and orphans the comment. After
+      // the fix the anchored section is reverted in merged, the main
+      // batch produces no requests for it, and the splice op handles
+      // the rewrite.
+      const base = `# Spec\n\nAuthentication uses the legacy SHA1 scheme today.\n\nThe quick brown fox jumps over the lazy dog.\n\nClosing.\n`;
+      const ours = base.replace('brown', 'red');
+      const theirs = base;
+
+      const { doc, indexMap } = buildDocAndMap(base, [
+        { text: 'Spec', mdOffset: 0 },
+        { text: 'Authentication uses the legacy SHA1 scheme today.', mdOffset: base.indexOf('Authentication') },
+        { text: 'The quick brown fox jumps over the lazy dog.', mdOffset: base.indexOf('The quick') },
+        { text: 'Closing.', mdOffset: base.indexOf('Closing.') },
+      ]);
+
+      const result = await computeDocDiff(
+        base, ours, theirs, doc, indexMap, 'test-agent',
+        undefined,
+        { commentAnchors: [{ commentId: 'fox', quotedText: 'The quick brown fox jumps over the lazy dog.' }] },
+      );
+
+      // Plan: this is a splice case (anchor wider than the edit).
+      expect(result.preservedAnchors).toEqual([
+        { quotedText: 'The quick brown fox jumps over the lazy dog.', via: 'splice' },
+      ]);
+      expect(result.spliceOps.length).toBe(1);
+      expect(result.spliceOps[0].newText).toBe('The quick red fox jumps over the lazy dog.');
+
+      // The load-bearing assertion: applying only the main-batch
+      // requests must leave the original anchored sentence intact.
+      // Drive orphans the comment otherwise — the splice op then has
+      // no anchor to operate on.
+      const initialBody = docBodyText(doc);
+      const afterMainBatch = applyRequests(initialBody, result.requests);
+      expect(afterMainBatch).toContain('The quick brown fox jumps over the lazy dog.');
+      // Other (non-anchor-section) content is unchanged here because
+      // the agent only touched the fox section.
+      expect(afterMainBatch).toContain('Authentication uses the legacy SHA1 scheme today.');
+      expect(afterMainBatch).toContain('Closing.');
+    });
+
+    it('whole-line anchor with the entire line rewritten', async () => {
+      // Hardest case for splice: the agent rewrites the WHOLE anchored
+      // sentence. Without the fix, the main batch deletes the entire
+      // anchored line and inserts a new one — orphaning the comment.
+      // With the fix, the section is reverted in merged so the main
+      // batch leaves the line alone; the splice op's insert+trim does
+      // the rewrite while keeping at least 1 char of the original text
+      // alive at any point.
+      const base = `# H\n\nDeprecated paragraph that needs replacement.\n\nTrailing.\n`;
+      const ours = base.replace(
+        'Deprecated paragraph that needs replacement.',
+        'Updated paragraph with completely fresh content.',
+      );
+      const theirs = base;
+
+      const { doc, indexMap } = buildDocAndMap(base, [
+        { text: 'H', mdOffset: 0 },
+        { text: 'Deprecated paragraph that needs replacement.', mdOffset: base.indexOf('Deprecated') },
+        { text: 'Trailing.', mdOffset: base.indexOf('Trailing.') },
+      ]);
+
+      const result = await computeDocDiff(
+        base, ours, theirs, doc, indexMap, 'test-agent',
+        undefined,
+        { commentAnchors: [{ commentId: 'dep', quotedText: 'Deprecated paragraph that needs replacement.' }] },
+      );
+
+      expect(result.preservedAnchors).toEqual([
+        { quotedText: 'Deprecated paragraph that needs replacement.', via: 'splice' },
+      ]);
+      expect(result.spliceOps.length).toBe(1);
+
+      const initialBody = docBodyText(doc);
+      const afterMainBatch = applyRequests(initialBody, result.requests);
+      expect(afterMainBatch).toContain('Deprecated paragraph that needs replacement.');
+      expect(afterMainBatch).toContain('Trailing.');
+    });
+
+    it('keeps non-anchor-section edits in the main batch', async () => {
+      // Companion to the test above: the agent edits BOTH the anchor
+      // section AND an unrelated section. The main batch must skip the
+      // anchor section (so the anchor survives) but MUST still apply
+      // the unrelated edit. This is the strongest invariant — we want
+      // the fix to be surgical, not "drop all edits when any anchor
+      // exists".
+      const base = `# A\n\nThe quick brown fox jumps over the lazy dog.\n\n# B\n\nOld line.\n`;
+      const ours = `# A\n\nThe quick red fox jumps over the lazy dog.\n\n# B\n\nNew line.\n`;
+      const theirs = base;
+
+      const { doc, indexMap } = buildDocAndMap(base, [
+        { text: 'A', mdOffset: 0 },
+        { text: 'The quick brown fox jumps over the lazy dog.', mdOffset: base.indexOf('The quick') },
+        { text: 'B', mdOffset: base.indexOf('# B') },
+        { text: 'Old line.', mdOffset: base.indexOf('Old line.') },
+      ]);
+
+      const result = await computeDocDiff(
+        base, ours, theirs, doc, indexMap, 'test-agent',
+        undefined,
+        { commentAnchors: [{ commentId: 'fox', quotedText: 'The quick brown fox jumps over the lazy dog.' }] },
+      );
+
+      expect(result.preservedAnchors).toEqual([
+        { quotedText: 'The quick brown fox jumps over the lazy dog.', via: 'splice' },
+      ]);
+      expect(result.spliceOps.length).toBe(1);
+
+      const initialBody = docBodyText(doc);
+      const afterMainBatch = applyRequests(initialBody, result.requests);
+      // Anchor section preserved.
+      expect(afterMainBatch).toContain('The quick brown fox jumps over the lazy dog.');
+      // Unrelated edit landed.
+      expect(afterMainBatch).toContain('New line.');
+      expect(afterMainBatch).not.toContain('Old line.');
+    });
+
+    // Reproduces a follow-on e2e CA10 failure: even with the splice
+    // op generated correctly (matchMergedCounterpart fix), the main
+    // batch ends up DUPLICATING the renamed-heading section because
+    // `revertSectionsHoldingAnchors` uses heading-text keying.
+    // Symptom: the body ends with BOTH "## Renameable Heading" and
+    // "## Renamed Heading", because:
+    //   1. mergedKeyed for the renamed H2 gets a fresh key
+    //      `Renamed Heading\\00` (no theirs section matches).
+    //   2. theirsKeyed for the original has key `Renameable Heading\\00`,
+    //      not in mergedKeySet → "restore deleted section" branch
+    //      re-inserts the original.
+    //   3. Section diff then emits insert requests for the renamed
+    //      H2 anyway, on top of the restored original.
+    // Reproduces e2e CA7: anchor on paragraph A, agent edits both
+    // paragraph A AND a companion paragraph B in the SAME section.
+    // The original splice fix reverted the WHOLE section to keep the
+    // anchor alive, silently dropping B's edit. After this fix the
+    // revert should be paragraph-scoped: only A is restored, so B's
+    // edit reaches the main batch.
+    it('keeps companion-paragraph edits when only one paragraph in the section is anchored', async () => {
+      const base = `# Section\n\nAnchored sentence.\n\nCompanion sentence in same section.\n\n# Other\n\nUntouched.\n`;
+      const ours = base
+        .replace('Anchored sentence.', 'Anchored sentence rewritten.')
+        .replace('Companion sentence in same section.', 'Companion sentence updated.');
+      const theirs = base;
+
+      const { doc, indexMap } = buildDocAndMap(base, [
+        { text: 'Section', mdOffset: 0 },
+        { text: 'Anchored sentence.', mdOffset: base.indexOf('Anchored sentence.') },
+        { text: 'Companion sentence in same section.', mdOffset: base.indexOf('Companion sentence in same section.') },
+        { text: 'Other', mdOffset: base.indexOf('# Other') + 2 },
+        { text: 'Untouched.', mdOffset: base.indexOf('Untouched.') },
+      ]);
+
+      const result = await computeDocDiff(
+        base, ours, theirs, doc, indexMap, 'test-agent',
+        undefined,
+        { commentAnchors: [{ commentId: 'a', quotedText: 'Anchored sentence.' }] },
+      );
+
+      // Splice op for the anchor.
+      expect(result.spliceOps.length).toBe(1);
+      expect(result.spliceOps[0].newText).toBe('Anchored sentence rewritten.');
+
+      // Main batch must NOT delete the original anchored sentence
+      // (splice handles that), AND must apply the companion edit.
+      const initialBody = docBodyText(doc);
+      const afterMainBatch = applyRequests(initialBody, result.requests);
+      expect(afterMainBatch).toContain('Anchored sentence.');
+      expect(afterMainBatch).toContain('Companion sentence updated.');
+      expect(afterMainBatch).not.toContain('Companion sentence in same section.');
+    });
+
+    it('does not duplicate a renamed-heading section in the main batch', async () => {
+      const base = `# Outer\n\nIntro paragraph.\n\n## Renameable Heading\n\nBody under renameable.\n\n# Trailing\n\nEnd.\n`;
+      const ours = base.replace('## Renameable Heading', '## Renamed Heading');
+      const theirs = base;
+
+      const { doc, indexMap } = buildDocAndMap(base, [
+        { text: 'Outer', mdOffset: 0 },
+        { text: 'Intro paragraph.', mdOffset: base.indexOf('Intro paragraph.') },
+        { text: 'Renameable Heading', mdOffset: base.indexOf('## Renameable Heading') + 3 },
+        { text: 'Body under renameable.', mdOffset: base.indexOf('Body under renameable.') },
+        { text: 'Trailing', mdOffset: base.indexOf('# Trailing') + 2 },
+        { text: 'End.', mdOffset: base.indexOf('End.') },
+      ]);
+
+      const result = await computeDocDiff(
+        base, ours, theirs, doc, indexMap, 'test-agent',
+        undefined,
+        { commentAnchors: [{ commentId: 'head', quotedText: 'Renameable Heading' }] },
+      );
+
+      // Splice op exists, that's not the question here.
+      expect(result.spliceOps.length).toBe(1);
+
+      // The load-bearing assertion: applying the main-batch requests
+      // alone must NOT introduce a duplicate H2 / body. The splice
+      // op (which runs after) handles the rename in-place; the main
+      // batch should leave the H2 section alone.
+      const initialBody = docBodyText(doc);
+      const afterMainBatch = applyRequests(initialBody, result.requests);
+      // The original "Renameable Heading" must still be in the body
+      // (left intact for splice to operate on later).
+      expect(afterMainBatch.match(/Renameable Heading/g)?.length ?? 0).toBe(1);
+      // No "Renamed Heading" should have been inserted by the main
+      // batch — the splice does that, not the section diff.
+      expect(afterMainBatch).not.toContain('Renamed Heading');
+      // No duplicated body sentence either.
+      expect(afterMainBatch.match(/Body under renameable\./g)?.length ?? 0).toBe(1);
+    });
+
+    // Reproduces e2e CA10: an anchor on a heading whose own text is
+    // being renamed. parseSections splits on every heading level
+    // (H1–H6), so the anchored heading becomes its own section.
+    // matchMergedCounterpart pairs sections by `.heading` text
+    // equality — but the agent's rename CHANGES that text, so the
+    // counterpart lookup returns null, findReplacement returns null,
+    // the planner falls back to `multi-edit-section` ineligibility,
+    // and the anchor goes to revert. The body assertion below
+    // confirms the splice actually happens (newText is "Renamed
+    // Heading", not the empty/null seen pre-fix).
+    it('splices when the anchored heading itself is being renamed', async () => {
+      const base = `# Outer\n\nIntro paragraph.\n\n## Renameable Heading\n\nBody under renameable.\n\n# Trailing\n\nEnd.\n`;
+      const ours = base.replace('## Renameable Heading', '## Renamed Heading');
+      const theirs = base;
+
+      const { doc, indexMap } = buildDocAndMap(base, [
+        { text: 'Outer', mdOffset: 0 },
+        { text: 'Intro paragraph.', mdOffset: base.indexOf('Intro paragraph.') },
+        { text: 'Renameable Heading', mdOffset: base.indexOf('## Renameable Heading') + 3 },
+        { text: 'Body under renameable.', mdOffset: base.indexOf('Body under renameable.') },
+        { text: 'Trailing', mdOffset: base.indexOf('# Trailing') + 2 },
+        { text: 'End.', mdOffset: base.indexOf('End.') },
+      ]);
+
+      const result = await computeDocDiff(
+        base, ours, theirs, doc, indexMap, 'test-agent',
+        undefined,
+        { commentAnchors: [{ commentId: 'head', quotedText: 'Renameable Heading' }] },
+      );
+
+      // Must be classified as splice (not revert), and the splice
+      // op's newText must be the renamed heading text.
+      const labelled = result.preservedAnchors.find((p) => p.quotedText === 'Renameable Heading');
+      expect(labelled).toEqual({ quotedText: 'Renameable Heading', via: 'splice' });
+      expect(result.spliceOps.length).toBe(1);
+      expect(result.spliceOps[0].newText).toBe('Renamed Heading');
+    });
+  });
 });
