@@ -8,7 +8,7 @@ export PATH := $(HOME)/.bun/bin:$(PATH)
 # exports, comments, the works.
 LOAD_ENV := set -a; [ -f .env ] && . ./.env; set +a;
 
-.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/rendering e2e/roundtrip e2e/agents e2e/comments e2e/comment-anchors eval eval/judge deps help
+.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/noninteractive e2e/rendering e2e/roundtrip e2e/agents e2e/comments e2e/comment-anchors eval eval/judge deps help
 
 all: codocs
 
@@ -87,6 +87,16 @@ infra: gcloud-auth
 # explicitly when working on the splice/revert path.
 e2e: e2e/rendering e2e/roundtrip e2e/agents e2e/comments
 
+# Subset of `e2e` whose passes/failures the runner can determine on
+# its own — no human in the loop. Excludes:
+#   - e2e/rendering (writes a doc for visual inspection)
+#   - e2e/comment-anchors (prompts the user to anchor comments via
+#     the Docs UI between phases)
+# Use this in CI / pre-commit / agent loops; use the full `e2e` (or
+# the individual interactive targets) when validating UI-visible
+# behavior.
+e2e/noninteractive: e2e/roundtrip e2e/agents e2e/comments
+
 e2e/rendering: build
 	npx tsx scripts/e2e-visual-test.ts
 
@@ -155,6 +165,9 @@ help:
 	@echo "  make e2e             Run all e2e scripts."
 	@echo "                       Or run a single suite: make e2e/rendering,"
 	@echo "                       make e2e/roundtrip, make e2e/agents, make e2e/comments."
+	@echo "  make e2e/noninteractive  Same as e2e but skips suites whose pass/fail"
+	@echo "                       depends on a human (rendering: visual review;"
+	@echo "                       comment-anchors: prompted UI anchoring)."
 	@echo "  make e2e/comment-anchors  Interactive splice/revert tests."
 	@echo "                       Excluded from \`make e2e\` because each case"
 	@echo "                       prompts you to anchor a comment via the Docs UI."
