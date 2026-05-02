@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Box, Text, useStdout } from 'ink';
+import { Text, useStdout } from 'ink';
 
 interface Props {
   /** Short status text rendered inside the page header. */
@@ -54,14 +54,16 @@ export function GenerateFromRepo({
 }: Props) {
   const { stdout } = useStdout();
   const cols = Math.max(50, Math.min(stdout?.columns ?? 80, 180));
-  const rows = Math.max(14, Math.min(stdout?.rows ?? 24, 60));
+  // Leave a row of slack so Ink's log-update redraw isn't fighting the
+  // terminal's bottom edge — that's the main source of per-frame flicker.
+  const rows = Math.max(14, Math.min((stdout?.rows ?? 24) - 1, 60));
 
   const pool = useMemo(() => buildPool(codeSamples), [codeSamples]);
   const startRef = useRef(Date.now());
 
   const [, setTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 90);
+    const id = setInterval(() => setTick(t => t + 1), 150);
     return () => clearInterval(id);
   }, []);
 
@@ -214,29 +216,33 @@ export function GenerateFromRepo({
     });
   }
 
-  return (
-    <Box flexDirection="column">
-      {grid.map((row, y) => (
-        <RowText key={y} cells={row} />
-      ))}
-    </Box>
-  );
-}
-
-function RowText({ cells }: { cells: Cell[] }) {
+  // Coalesce the whole grid into a single Text node with styled runs and
+  // explicit newlines between rows. One Yoga layout node per frame instead of
+  // one per row keeps reconciliation cheap at the animation tick rate.
   type Run = { text: string; color?: string; dim: boolean; bold: boolean };
   const runs: Run[] = [];
   let cur: Run | null = null;
-  for (const c of cells) {
-    const dim = c.dim ?? false;
-    const bold = c.bold ?? false;
-    if (cur && cur.color === c.color && cur.dim === dim && cur.bold === bold) {
-      cur.text += c.ch;
-    } else {
-      cur = { text: c.ch, color: c.color, dim, bold };
-      runs.push(cur);
+  for (let y = 0; y < grid.length; y++) {
+    if (y > 0) {
+      if (cur && cur.color === undefined && !cur.dim && !cur.bold) {
+        cur.text += '\n';
+      } else {
+        cur = { text: '\n', color: undefined, dim: false, bold: false };
+        runs.push(cur);
+      }
+    }
+    for (const c of grid[y]) {
+      const dim = c.dim ?? false;
+      const bold = c.bold ?? false;
+      if (cur && cur.color === c.color && cur.dim === dim && cur.bold === bold) {
+        cur.text += c.ch;
+      } else {
+        cur = { text: c.ch, color: c.color, dim, bold };
+        runs.push(cur);
+      }
     }
   }
+
   return (
     <Text>
       {runs.map((r, i) => (
