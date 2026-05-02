@@ -339,7 +339,7 @@ export function listenForComments(
     sub.removeListener('close', closeHandler);
   }
 
-  function scheduleReconnect(reason: string) {
+  function scheduleReconnect(reason: string, idleGapMsAtTrigger?: number) {
     // The reconnectInFlight guard catches the case where reconnect() is
     // currently blocked (e.g. on a hanging old.close()): without it, a
     // watchdog tick or a fresh error event could re-enter reconnect()
@@ -351,7 +351,7 @@ export function listenForComments(
     debug(`Scheduling reconnect (attempt ${reconnectAttempt}) in ${delay}ms — ${reason}`);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      reconnect(reason).catch((err) => {
+      reconnect(reason, idleGapMsAtTrigger).catch((err) => {
         debug(`Reconnect failed: ${(err as Error).message}`);
         scheduleReconnect(`retry after failure: ${(err as Error).message}`);
       });
@@ -385,7 +385,7 @@ export function listenForComments(
     return result;
   }
 
-  async function reconnect(reason: string) {
+  async function reconnect(reason: string, idleGapMsAtTrigger?: number) {
     if (manuallyClosed) return;
     if (reconnectInFlight) {
       debug('reconnect() re-entered while a previous attempt was still in flight — skipping');
@@ -393,7 +393,11 @@ export function listenForComments(
     }
     reconnectInFlight = true;
     const startedAt = Date.now();
-    const lastActivityAgoMs = startedAt - lastActivityAt;
+    // Prefer the idle gap captured at the moment scheduleReconnect was
+    // called: the watchdog resets `lastActivityAt` before scheduling (to
+    // suppress retriggers), so reading it here measures the backoff
+    // delay, not the actual silence that motivated the reconnect.
+    const lastActivityAgoMs = idleGapMsAtTrigger ?? (startedAt - lastActivityAt);
     try {
       const old = subscription;
       const wasOpen = old.isOpen;
@@ -429,9 +433,10 @@ export function listenForComments(
         return;
       }
       if (idleReconnectMs > 0 && Date.now() - lastActivityAt > idleReconnectMs) {
-        debug(`Health check: idle for ${Date.now() - lastActivityAt}ms, recycling`);
+        const idleGapMs = Date.now() - lastActivityAt;
+        debug(`Health check: idle for ${idleGapMs}ms, recycling`);
         lastActivityAt = Date.now(); // avoid retrigger while reconnect is pending
-        scheduleReconnect('health check: idle');
+        scheduleReconnect('health check: idle', idleGapMs);
       }
     }, healthInterval);
     if (typeof healthTimer.unref === 'function') healthTimer.unref();

@@ -333,6 +333,10 @@ describe('listener longevity', () => {
     // Recovery should have fired via the idle path.
     expect(currentSubscription).not.toBe(first);
     expect(reconnects[0]?.reason).toContain('idle');
+    // The reported idle gap must be the actual silence (≥30 min), not
+    // the reconnect backoff delay — guards against the regression where
+    // we read lastActivityAt after the watchdog already reset it.
+    expect(reconnects[0]!.lastActivityAgoMs).toBeGreaterThanOrEqual(30 * 60 * 1000);
 
     currentSubscription!.emit('message', makePubsubMessage('c-2'));
     await flushAsync();
