@@ -18,6 +18,13 @@ export interface TrackedProcess {
 /** Default timeout for agent runs (1 hour). */
 export const DEFAULT_TIMEOUT = 3_600_000;
 
+/**
+ * Per-stream cap for buffered child output. A misbehaving CLI that prints
+ * MB/sec for the full timeout would otherwise OOM the parent — we keep
+ * the *tail* of the output and prepend a truncation notice on overflow.
+ */
+export const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+
 export interface SpawnAgentOptions {
   /** Working directory for the spawned process. */
   cwd?: string;
@@ -31,6 +38,45 @@ export interface SpawnAgentOptions {
   stdinData?: string;
   /** Environment for the child. Defaults to inheriting process.env. */
   env?: NodeJS.ProcessEnv;
+  /** Per-stream cap on retained output bytes. Defaults to DEFAULT_MAX_OUTPUT_BYTES. */
+  maxOutputBytes?: number;
+}
+
+/**
+ * Bounded ring buffer for child stdio: appends chunks until the cap is
+ * reached, then drops oldest chunks (slicing the head of the next-oldest
+ * if needed) so we always retain at most `cap` bytes.
+ */
+class BoundedChunkBuffer {
+  private chunks: Buffer[] = [];
+  private size = 0;
+  private dropped = 0;
+
+  constructor(private readonly cap: number) {}
+
+  push(chunk: Buffer): void {
+    this.chunks.push(chunk);
+    this.size += chunk.length;
+    while (this.size > this.cap && this.chunks.length > 0) {
+      const head = this.chunks[0];
+      const overflow = this.size - this.cap;
+      if (head.length <= overflow) {
+        this.chunks.shift();
+        this.size -= head.length;
+        this.dropped += head.length;
+      } else {
+        this.chunks[0] = head.subarray(overflow);
+        this.size -= overflow;
+        this.dropped += overflow;
+      }
+    }
+  }
+
+  toString(): string {
+    const body = Buffer.concat(this.chunks, this.size).toString('utf-8');
+    if (this.dropped === 0) return body;
+    return `[truncated ${this.dropped} bytes from start of stream]\n${body}`;
+  }
 }
 
 /**
@@ -45,6 +91,7 @@ export function spawnAgent(
 ): Promise<AgentRunResult> {
   const sessionId = opts.sessionId ?? randomUUID();
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT;
+  const maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const trackingId = randomUUID();
 
   return new Promise<AgentRunResult>((resolve, reject) => {
@@ -62,11 +109,11 @@ export function spawnAgent(
 
     const cleanup = () => { active.delete(trackingId); };
 
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
+    const stdoutBuf = new BoundedChunkBuffer(maxOutputBytes);
+    const stderrBuf = new BoundedChunkBuffer(maxOutputBytes);
 
-    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+    child.stdout.on('data', (chunk: Buffer) => stdoutBuf.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderrBuf.push(chunk));
 
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
@@ -86,8 +133,8 @@ export function spawnAgent(
       resolve({
         sessionId,
         exitCode: code ?? 1,
-        stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
-        stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+        stdout: stdoutBuf.toString(),
+        stderr: stderrBuf.toString(),
       });
     });
 

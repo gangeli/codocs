@@ -1,7 +1,7 @@
 ---
 description: Bump version, generate release notes, prepare CI-driven GitHub release
 argument-hint: [major|minor|patch]
-allowed-tools: Read, Edit, Write, Bash(git:*), Bash(node:*), Bash(mkdir:*), Bash(test:*)
+allowed-tools: Read, Edit, Write, Bash(git:*), Bash(node:*), Bash(mkdir:*), Bash(test:*), Bash(make:*)
 ---
 
 <!--
@@ -65,7 +65,16 @@ Bump type: `$1` (default: `patch`). Only bump major when the user explicitly ask
 
 6. **Show the user** a preview: the new version, the release notes, and the list of modified files. Ask them to review before committing. Do **not** commit or push automatically — the user controls when CI runs.
 
-7. **Remind the user** of the path to publish:
+7. **Run `make e2e/noninteractive`** before the user pushes. This covers the roundtrip, agents, and comments suites — every check the runner can verify without a human in the loop. Do not skip it: a release that fails these tests should not be pushed. If it fails, surface the failure and stop; do not proceed to step 8.
+
+8. **Remind the user to run the remaining interactive tests** themselves before pushing to GitHub. The non-interactive run does not cover them:
+   - `make e2e/rendering` — writes a doc for visual inspection.
+   - `make e2e/comment-anchors` — prompts the user to anchor comments via the Docs UI between phases.
+   - `make e2e/connection` — several-minute Pub/Sub reconnect test; run when the listener changed.
+
+   Phrase it as a recommendation, not a hard gate — the user decides which interactive suites are relevant to this release.
+
+9. **Remind the user** of the path to publish:
    - Commit: `git commit -am "Release v<new_version>"`
    - Push to `main`: CI's `release` job detects the version change, tags `v<new_version>`, creates the GitHub Release reading notes from `release_notes/<new_version>.md`, attaches the compiled binaries, and publishes to npm.
    - If `release_notes/<new_version>.md` is missing at push time, CI falls back to auto-generated notes.
