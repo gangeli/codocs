@@ -129,6 +129,15 @@ interface AnchorTestCase {
   edits?: Array<{ from: string; to: string }>;
   apply?: (base: string) => string;
   /**
+   * Synthesise a `base` markdown that diverges from the live doc
+   * (which is treated as `theirs`). Use to test the 3-way merge
+   * path where someone else has edited the doc since the agent's
+   * snapshot. Returns the agent's view of the doc; the runner uses
+   * this for both `base` and the `from` side of `edits`/`apply`.
+   * When unset (the default), `base = theirs`.
+   */
+  divergeBase?: (theirs: string) => string;
+  /**
    * Outcome the planner must produce for the PRIMARY anchor:
    *   'splice' — diff.spliceOps must contain an op for this anchor
    *   'revert' — diff.preservedAnchors must label it via:'revert'
@@ -175,7 +184,7 @@ interface AnchorTestCase {
 //     replace ambiguous and is sanity-checked at runtime).
 const FIXTURE = `# Comment Anchor E2E Tests
 
-This doc walks you through 13 anchor cases. For each section below, follow the action instruction (in the blockquote) and add a comment on the indicated body text using the Docs UI. Once all comments are anchored, return to your terminal and press ENTER to run the tests.
+This doc walks you through 21 anchor cases. For each section below, follow the action instruction (in the blockquote) and add a comment on the indicated body text using the Docs UI. Once all comments are anchored, return to your terminal and press ENTER to run the tests.
 
 # CA1 — replace a word inside the anchored span
 
@@ -271,6 +280,60 @@ function compute() {
 
 🤖 happy bot says hello.
 
+# CA14 — edit introduces a paragraph break inside the anchor
+
+> **Action [split]:** highlight the entire one-line sentence below.
+
+The agent will split the long combined run-on into two paragraphs in this section.
+
+# CA15 — anchor on bold inline text
+
+> **Action [bold]:** highlight ONLY the word rendered in bold inside the sentence below (not the surrounding text).
+
+This sentence has an **important** word in the middle.
+
+# CA16 — anchor on a list-item's text
+
+> **Action [bullet]:** highlight the FIRST bullet item's text below (no leading dash).
+
+- alpha bullet item to anchor on
+- beta bullet item that stays untouched
+- gamma bullet item that stays untouched
+
+# CA17 — anchor on a hyperlink's display text
+
+> **Action [link]:** highlight the link's display text in the sentence below (the underlined part).
+
+Read more by clicking [click here for docs](https://example.com/) right now.
+
+# CA18 — concurrent edit (someone else added a paragraph)
+
+> **Action [conflict]:** highlight the FIRST sentence in this section below.
+
+CA18 conflict sentence to be edited by the agent.
+
+CA18 trailing paragraph that simulates a later addition by someone else.
+
+# CA19 — Cyrillic / non-Latin anchor
+
+> **Action [cyrillic]:** highlight the entire Russian sentence below.
+
+Привет мир — это пример строки.
+
+# CA20 — overlapping anchors (wider + narrower on same line)
+
+> **Action [outer]:** highlight the long phrase "the cat sat on the mat" in the sentence below.
+
+> **Action [inner]:** highlight just the words "cat sat" inside the same sentence.
+
+In the test, the cat sat on the mat for hours.
+
+# CA21 — anchor ending with a surrogate-pair emoji
+
+> **Action [tail-emoji]:** highlight the trailing phrase "wave hello 🦊" (the last three tokens of the line below, including the fox emoji).
+
+The line below ends with wave hello 🦊
+
 # Trailing content
 
 Closing paragraph rounds it off.
@@ -346,6 +409,51 @@ const ANCHORS: AnchorSpec[] = [
     key: 'emoji',
     span: '🤖 happy bot says hello.',
     hint: 'highlight the emoji-prefixed sentence "🤖 happy bot says hello." — see CA13 in the doc',
+  },
+  {
+    key: 'split',
+    span: 'The agent will split the long combined run-on into two paragraphs in this section.',
+    hint: 'highlight the long combined run-on sentence — see CA14 in the doc',
+  },
+  {
+    key: 'bold',
+    span: 'important',
+    hint: 'highlight just the bold word inside the CA15 sentence',
+  },
+  {
+    key: 'bullet',
+    span: 'alpha bullet item to anchor on',
+    hint: 'highlight the first bullet item\'s text — see CA16 in the doc',
+  },
+  {
+    key: 'link',
+    span: 'click here for docs',
+    hint: 'highlight the link\'s display text in CA17',
+  },
+  {
+    key: 'conflict',
+    span: 'CA18 conflict sentence to be edited by the agent.',
+    hint: 'highlight the FIRST CA18 sentence — see CA18 in the doc',
+  },
+  {
+    key: 'cyrillic',
+    span: 'Привет мир — это пример строки.',
+    hint: 'highlight the Cyrillic sentence — see CA19 in the doc',
+  },
+  {
+    key: 'outer',
+    span: 'the cat sat on the mat',
+    hint: 'highlight the long phrase "the cat sat on the mat" — CA20 in the doc',
+  },
+  {
+    key: 'inner',
+    span: 'cat sat',
+    hint: 'highlight just the words "cat sat" inside the same CA20 sentence',
+  },
+  {
+    key: 'tail-emoji',
+    span: 'wave hello 🦊',
+    hint: 'highlight the trailing fox-emoji phrase — see CA21 in the doc',
   },
 ];
 
@@ -555,6 +663,134 @@ const tests: AnchorTestCase[] = [
     outcome: 'splice',
     expectedSpliceNewText: '🤖 cheerful bot says hello.',
     expectedAnchorTextAfter: '🤖 cheerful bot says hello.',
+  },
+
+  // CA14 — Edit produces newText that contains a paragraph break.
+  // The agent's split intent CONFLICTS with anchor preservation:
+  // the splice can't insert paragraph breaks via insertText, and
+  // section-level extractBetween would silently truncate the
+  // newText to just the first half (a real bug in earlier rounds).
+  // The conservative production behaviour is: detect the split,
+  // bail to revert, keep the anchor alive at the cost of dropping
+  // the agent's structural change. Test asserts the conservative
+  // outcome.
+  {
+    title: 'CA14: edit introduces a paragraph break inside the anchor (conservative revert)',
+    anchorKey: 'split',
+    edits: [{
+      from: 'The agent will split the long combined run-on into two paragraphs in this section.',
+      to: 'The agent has split the run-on into two parts.\n\nThe second paragraph continues on its own line.',
+    }],
+    outcome: 'revert',
+    bodyProgression: 'unchanged',
+    expectedAnchorTextAfter: 'The agent will split the long combined run-on into two paragraphs in this section.',
+  },
+
+  // CA15 — Anchor on bold inline text. KNOWN LIMITATION: the
+  // anchor's plain text spans `**important**` markers in the
+  // markdown form of `theirs`, so a literal indexOf misses and
+  // the planner classifies as 'anchor-not-in-current-doc' →
+  // revert. The main batch then line-diffs the bold paragraph
+  // and rewrites it via delete+insert, which orphans the comment.
+  // Skipped until anchor matching learns to ignore inline markers
+  // (or runs against doc body text instead of markdown).
+  {
+    title: 'CA15: anchor on bold inline text (styling preserved?)',
+    anchorKey: 'bold',
+    edits: [{ from: '**important**', to: '**critical**' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'critical',
+    expectedAnchorTextAfter: '**critical**',
+    skip: 'anchor matching across inline markdown markers — see anchor-splice.test.ts CA15 comment',
+  },
+
+  // CA16 — Anchor on a list-item's text. The leading "- " is a
+  // markdown-only prefix (not in the doc body). The splice's
+  // index math goes through interpolateDocIndex which should
+  // skip the markdown prefix, but the case exercises the
+  // bullet-list code path which has its own dedicated handler.
+  {
+    title: 'CA16: anchor on a list-item\'s text',
+    anchorKey: 'bullet',
+    edits: [{ from: 'alpha bullet item to anchor on', to: 'first bullet item to anchor on' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'first bullet item to anchor on',
+    expectedAnchorTextAfter: 'first bullet item to anchor on',
+  },
+
+  // CA17 — Anchor on a hyperlink's display text. The link.url
+  // textStyle is on the run; splice's plain insertText probably
+  // doesn't copy it, so the rewritten span loses the link.
+  {
+    title: 'CA17: anchor on a hyperlink\'s display text (link preserved?)',
+    anchorKey: 'link',
+    edits: [{ from: 'click here for docs', to: 'follow this link for docs' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'follow this link for docs',
+    expectedAnchorTextAfter: 'follow this link for docs',
+  },
+
+  // CA18 — Concurrent edit. theirs has an extra paragraph the
+  // agent didn't see in base. The 3-way merge should combine
+  // both edits; the anchor on the agent-edited paragraph should
+  // splice cleanly. Exercises mergeDocuments path with anchors.
+  {
+    title: 'CA18: concurrent edit (3-way merge with anchor)',
+    anchorKey: 'conflict',
+    divergeBase: (theirs) => theirs.replace(
+      '\n\nCA18 trailing paragraph that simulates a later addition by someone else.\n',
+      '\n',
+    ),
+    edits: [{
+      from: 'CA18 conflict sentence to be edited by the agent.',
+      to: 'CA18 conflict sentence has been rewritten by the agent.',
+    }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'CA18 conflict sentence has been rewritten by the agent.',
+    expectedAnchorTextAfter: 'CA18 conflict sentence has been rewritten by the agent.',
+  },
+
+  // CA19 — Cyrillic / non-Latin text. UTF-16 stores each
+  // Cyrillic codepoint in a single code unit so this should
+  // mostly behave like ASCII; included for locale coverage.
+  {
+    title: 'CA19: Cyrillic / non-Latin anchor',
+    anchorKey: 'cyrillic',
+    edits: [{ from: 'Привет мир', to: 'Здравствуй мир' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'Здравствуй мир — это пример строки.',
+    expectedAnchorTextAfter: 'Здравствуй мир — это пример строки.',
+  },
+
+  // CA20 — Overlapping anchors. The wider span "the cat sat on
+  // the mat" wraps the narrower "cat sat". planAnchorOutcomes
+  // detects the overlap and downgrades the narrower to revert.
+  {
+    title: 'CA20: overlapping anchors (wider splices, narrower reverts)',
+    anchorKey: 'outer',
+    edits: [{ from: 'cat sat on the mat', to: 'tiger sat on the rug' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'the tiger sat on the rug',
+    expectedAnchorTextAfter: 'the tiger sat on the rug',
+    additionalExpectations: [
+      {
+        anchorKey: 'inner',
+        outcome: 'revert',
+      },
+    ],
+  },
+
+  // CA21 — Anchor ENDING with a surrogate-pair emoji. Symmetric
+  // to CA13. The leading-grapheme fix advanced splicePoint past
+  // the leading char; the trailing trim's start arithmetic
+  // hasn't been re-examined for graphemes.
+  {
+    title: 'CA21: anchor ending with a surrogate-pair emoji',
+    anchorKey: 'tail-emoji',
+    edits: [{ from: 'wave hello', to: 'shout hi' }],
+    outcome: 'splice',
+    expectedSpliceNewText: 'shout hi 🦊',
+    expectedAnchorTextAfter: 'shout hi 🦊',
   },
 ];
 
@@ -921,9 +1157,13 @@ async function runCase(
     commentAnchors.push({ commentId: c.id, quotedText: q });
   }
 
-  // Pull the live doc + index map.
+  // Pull the live doc + index map. The live doc is `theirs`. `base`
+  // is the agent's snapshot; usually equal to theirs but can diverge
+  // when a case sets `divergeBase` to simulate a concurrent edit
+  // that landed on the doc after the agent's snapshot.
   const doc = await client.getDocument(docId);
-  const { markdown: base, indexMap } = docsToMarkdownWithMapping(doc);
+  const { markdown: theirsLive, indexMap } = docsToMarkdownWithMapping(doc);
+  const base = tc.divergeBase ? tc.divergeBase(theirsLive) : theirsLive;
 
   // Validate the test definition: exactly one of edits / apply.
   const hasEdits = Array.isArray(tc.edits) && tc.edits.length > 0;
@@ -936,20 +1176,21 @@ async function runCase(
     return { result: { pass: false, reasons }, nextExpectedBody: expectedBody, artifactPath: null };
   }
 
-  // Sanity: each edit's `from` must occur uniquely in the live body.
-  // Skipped for the `apply` path — the function takes responsibility.
+  // Sanity: each edit's `from` must occur uniquely in `base` — the
+  // string the agent is going to mutate. (For divergeBase cases base
+  // ≠ theirsLive, so we explicitly check base, not the live body.)
   if (hasEdits) {
     for (const e of tc.edits!) {
       const occurs = base.split(e.from).length - 1;
       if (occurs === 0) {
         reasons.push(
-          `edit.from ${JSON.stringify(e.from)} not found in live body — prior case may have already changed it`,
+          `edit.from ${JSON.stringify(e.from)} not found in base — prior case may have already changed it`,
         );
         return { result: { pass: false, reasons }, nextExpectedBody: expectedBody, artifactPath: null };
       }
       if (occurs > 1) {
         reasons.push(
-          `edit.from ${JSON.stringify(e.from)} occurs ${occurs} times in live body — must be unique`,
+          `edit.from ${JSON.stringify(e.from)} occurs ${occurs} times in base — must be unique`,
         );
         return { result: { pass: false, reasons }, nextExpectedBody: expectedBody, artifactPath: null };
       }
@@ -960,13 +1201,15 @@ async function runCase(
   // match the running expectedBody from cumulative prior cases. If
   // not, a prior case left the doc in an unexpected state and our
   // expectations have already drifted; surface that loudly.
-  const baseNorm = normalize(base);
+  // Compare against `theirsLive`, NOT `base` — the two diverge for
+  // cases that simulate concurrent edits via `divergeBase`, and
+  // that divergence is intentional, not drift.
+  const liveNorm = normalize(theirsLive);
   const expectedNorm = normalize(expectedBody);
-  if (baseNorm !== expectedNorm) {
+  if (liveNorm !== expectedNorm) {
     reasons.push(
-      `live body does not match cumulative expectation BEFORE this case's edit.\n` +
-      `      expected:\n${indent(expectedNorm, '        ')}\n` +
-      `      actual:\n${indent(baseNorm, '        ')}`,
+      `live body does not match cumulative expectation BEFORE this case's edit. ` +
+      summarizeBodyDiff(expectedNorm, liveNorm),
     );
     // Continue running so we still surface other failures, but flag this.
   }
@@ -979,7 +1222,9 @@ async function runCase(
   } else {
     ours = tc.apply!(base);
   }
-  const theirs = base; // single-author edit; no concurrent changes.
+  // theirs is the live doc state. Equal to base in the common case;
+  // differs when `divergeBase` simulated a concurrent edit.
+  const theirs = theirsLive;
 
   const diff = await computeDocDiff(
     base, ours, theirs, doc, indexMap, 'rt-anchor-agent',
@@ -1049,6 +1294,7 @@ async function runCase(
       reasons.push(`additional anchor [${extra.anchorKey}] not found in live comment map`);
       continue;
     }
+    const extraQuoted = (extraLive.quotedText ?? '').trim();
     if (extra.outcome === 'splice') {
       const op = diff.spliceOps.find((o) => o.commentId === extraLive.id);
       if (!op) {
@@ -1064,6 +1310,30 @@ async function runCase(
           `splice newText mismatch for additional anchor [${extra.anchorKey}].\n` +
           `      expected: ${JSON.stringify(extra.expectedSpliceNewText)}\n` +
           `      actual:   ${JSON.stringify(op.newText)}`,
+        );
+      }
+    } else if (extra.outcome === 'revert') {
+      if (diff.spliceOps.some((o) => o.commentId === extraLive.id)) {
+        reasons.push(
+          `expected NO splice op for additional anchor [${extra.anchorKey}] (revert case), ` +
+          `got ${JSON.stringify(diff.spliceOps.filter((o) => o.commentId === extraLive.id))}`,
+        );
+      }
+      const labelled = diff.preservedAnchors.find(
+        (p) => p.via === 'revert' && (p.quotedText ?? '').trim() === extraQuoted,
+      );
+      if (!labelled) {
+        reasons.push(
+          `expected preservedAnchors to include via:'revert' for additional anchor [${extra.anchorKey}], ` +
+          `got ${JSON.stringify(diff.preservedAnchors)}`,
+        );
+      }
+    } else {
+      // noop
+      if (diff.spliceOps.some((o) => o.commentId === extraLive.id)) {
+        reasons.push(
+          `expected NO splice op for additional anchor [${extra.anchorKey}] (noop case), ` +
+          `got ${JSON.stringify(diff.spliceOps.filter((o) => o.commentId === extraLive.id))}`,
         );
       }
     }

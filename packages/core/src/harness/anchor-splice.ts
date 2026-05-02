@@ -303,6 +303,21 @@ function findReplacement(
   const theirsParaIdx = theirsParas.findIndex(
     (p) => anchorStartInSection >= p.start && anchorStartInSection < p.start + p.text.length,
   );
+  // When the agent rewrote the anchored paragraph into MORE
+  // paragraphs (introduced a `\n\n` paragraph break inside the
+  // newText), bail to revert. Section-level extractBetween would
+  // otherwise treat the new paragraph break as the after-anchor
+  // alignment marker and silently return only the FIRST half of
+  // the agent's split — losing the second paragraph entirely.
+  // The conservative outcome is to revert: keep the anchor's
+  // original paragraph, drop the agent's structural split.
+  if (
+    theirsParaIdx >= 0 &&
+    mergedParas.length > theirsParas.length &&
+    anchorText === theirsParas[theirsParaIdx].text.replace(/\s+$/, '')
+  ) {
+    return null;
+  }
   if (theirsParaIdx >= 0 && theirsParas.length === mergedParas.length) {
     // Trim trailing whitespace from the matched paragraphs — the
     // last paragraph in a section often carries a single trailing

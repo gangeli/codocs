@@ -191,6 +191,74 @@ describe('tryBuildSpliceOp — op construction', () => {
   // lands. A paragraph-aware findReplacement should handle this:
   // split section into paragraphs, pair by position, then
   // context-match within just one paragraph.
+  // Reproduces e2e CA14: agent splits a single anchored paragraph
+  // into two by introducing a `\n\n` paragraph break inside the
+  // newText. Section-level extractBetween then matches against the
+  // FIRST `\n\n` it finds in the merged section, which is the new
+  // paragraph break the agent introduced — so newText comes back
+  // truncated to "first half only" and the agent's intent is
+  // silently dropped. Conservative fix: treat this as
+  // 'multi-edit-section' and let revert/main-batch handle the
+  // structural change. The agent's split won't happen, but the
+  // anchor stays alive.
+  it('does not silently truncate newText when the agent splits the anchored paragraph in two', () => {
+    // Mirrors the e2e CA14 layout: anchored paragraph is the LAST
+    // paragraph of its heading section (no body content after it
+    // in the same section). Section-level extractBetween finds the
+    // FIRST `\n\n` it can in the merged side, which happens to be
+    // the new paragraph break the agent introduced — so it
+    // silently returns just the first half.
+    const t = `# CA14
+\n> instruction blockquote.\n\nThe sentence to split.\n\n# Next\n\nLater section body.\n`;
+    const m = t.replace(
+      'The sentence to split.',
+      'The sentence has been split.\n\nInto two parts now.',
+    );
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'The sentence to split.' },
+      theirs: t,
+      mergedMarkdown: m,
+      indexMap: fd.indexMap,
+      bodyEndIndex: fd.bodyEndIndex,
+    });
+    // Either ineligible (preferred — falls back to revert), or a
+    // splice with newText that captures BOTH split paragraphs.
+    // What's NOT acceptable is a splice whose newText is just
+    // "The sentence has been split." (truncated to the first half).
+    if ('ineligible' in out) {
+      expect(out.ineligible).toBe('multi-edit-section');
+    } else {
+      expect(out.newText).toContain('Into two parts now.');
+    }
+  });
+
+  // KNOWN LIMITATION (e2e CA15): an anchor whose plain text spans
+  // inline markdown markers (bold/italic/code/link) doesn't match
+  // `theirs` because indexOf is literal. Drive returns the comment's
+  // `quotedFileContent` as plain text without markers, but `theirs`
+  // (markdown) has the markers. The planner classifies as
+  // 'anchor-not-in-current-doc' → revert; meanwhile the main batch
+  // line-diffs the bold-styled paragraph and rewrites it via
+  // delete+insert, which orphans the comment on Drive. Proper fix
+  // is non-trivial: anchor matching needs to either (a) work
+  // against the doc body (no markers) instead of markdown, or
+  // (b) use a position-mapped strip that preserves bold-run
+  // boundaries through the splice. Deferred.
+  it('returns ineligible when the anchor spans inline markdown markers (current limitation)', () => {
+    const t = 'Sentence with an **important** word in it.\n';
+    const m = 'Sentence with an **critical** word in it.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'an important word' },
+      theirs: t,
+      mergedMarkdown: m,
+      indexMap: fd.indexMap,
+      bodyEndIndex: fd.bodyEndIndex,
+    });
+    expect('ineligible' in out && out.ineligible).toBe('anchor-not-in-current-doc');
+  });
+
   it('finds replacements when a section has two anchored sibling paragraphs', () => {
     // Mirror the e2e CA8 fixture: each anchored body sentence is
     // preceded by a same-shaped instruction blockquote, so the
