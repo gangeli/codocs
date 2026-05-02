@@ -114,6 +114,15 @@ export interface OrchestratorConfig {
   idleDebounceMs?: number;
   /** Optional logger. */
   debug?: (msg: string) => void;
+  /**
+   * Optional info-level logger for events that should always hit disk —
+   * e.g., reply post/delete failures. The orchestrator returns success
+   * to onCommentProcessed even when the final reply post fails (so the
+   * agent state machine can move on), so without this callback those
+   * failures are invisible: the user sees `agent-reply` in the log but
+   * no actual reply in Drive. Defaults to no-op.
+   */
+  info?: (msg: string) => void;
 }
 
 export class AgentOrchestrator {
@@ -131,6 +140,7 @@ export class AgentOrchestrator {
   private onCommentProcessed: (result: { agentName: string; replyPreview: string; editSummary: string }) => void;
   private onCommentFailed: (agentName: string, error: string) => void;
   private debug: (msg: string) => void;
+  private info: (msg: string) => void;
   private getPermissionMode: () => PermissionMode;
   private codeTaskStore?: CodeTaskStore;
   private getCodeMode: () => CodeMode;
@@ -191,6 +201,7 @@ export class AgentOrchestrator {
     this.onIdle = config.onIdle;
     this.idleDebounceMs = config.idleDebounceMs ?? 3000;
     this.debug = config.debug ?? (() => {});
+    this.info = config.info ?? (() => {});
 
     const pm = config.permissionMode;
     this.getPermissionMode = typeof pm === 'function' ? pm : () => pm ?? { type: 'auto' };
@@ -344,8 +355,12 @@ export class AgentOrchestrator {
         const thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F916} is \u{1F914}');
         this.pendingThinkingReplies.set(queueItemId, thinkingReplyId);
         this.debug(`Posted thinking reply at enqueue (queue item ${queueItemId})`);
-      } catch (err) {
-        this.debug(`Failed to post thinking reply at enqueue: ${err}`);
+      } catch (err: any) {
+        // The thinking reply is only an ack — failing here doesn't
+        // block processing — but if it's failing repeatedly that's a
+        // strong signal Drive write access is broken (in which case
+        // the final reply will fail too), so surface at info.
+        this.info(`Failed to post thinking reply for doc=${documentId.slice(0, 12)} comment=${comment.id}: ${err.message ?? err}`);
       }
     }
 
@@ -579,8 +594,8 @@ export class AgentOrchestrator {
     if (!thinkingReplyId && comment.id) {
       try {
         thinkingReplyId = await this.postReply(documentId, comment.id, '\u{1F916} is \u{1F914}');
-      } catch (err) {
-        this.debug(`Failed to post thinking reply: ${err}`);
+      } catch (err: any) {
+        this.info(`Failed to post thinking reply for doc=${documentId.slice(0, 12)} comment=${comment.id}: ${err.message ?? err}`);
       }
     }
 
@@ -1005,14 +1020,19 @@ export class AgentOrchestrator {
         await this.replyClient.deleteReply(documentId, commentId, thinkingReplyId);
         this.debug(`Deleted thinking reply`);
       } catch (delErr: any) {
-        this.debug(`Failed to delete thinking reply (continuing): ${delErr.message ?? delErr}`);
+        // Non-fatal — a stale thinking reply just means the user sees
+        // both the 🤔 and the final answer.
+        this.info(`Failed to delete thinking reply for doc=${documentId.slice(0, 12)} comment=${commentId}: ${delErr.message ?? delErr}`);
       }
       if (replyContent) {
         try {
           await this.postContentReply(documentId, commentId, replyContent);
           this.debug(`Posted final reply`);
         } catch (replyErr: any) {
-          this.debug(`Failed to post final reply: ${replyErr.message ?? replyErr}`);
+          // Fatal for the user — they'll see no reply in Drive even
+          // though the agent ran. Surface at info so it lands in the
+          // file log alongside the corresponding agent-reply line.
+          this.info(`Failed to post final reply for doc=${documentId.slice(0, 12)} comment=${commentId}: ${replyErr.message ?? replyErr}`);
         }
       }
     } else if (commentId && replyContent) {
@@ -1020,7 +1040,7 @@ export class AgentOrchestrator {
         await this.postContentReply(documentId, commentId, replyContent);
         this.debug(`Reply created (no thinking reply to update)`);
       } catch (err: any) {
-        this.debug(`Reply failed: ${err.message ?? err}`);
+        this.info(`Failed to post reply for doc=${documentId.slice(0, 12)} comment=${commentId}: ${err.message ?? err}`);
       }
     }
   }

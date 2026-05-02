@@ -1184,6 +1184,7 @@ export function registerServeCommand(program: Command) {
               ? () => handleSilenceHook(opts.silenceHook!, emit)
               : undefined,
           debug,
+          info: (msg: string) => emit({ time: new Date(), type: 'error', content: msg }),
         });
 
         // ── Recover any queued items from a previous crash ──────
