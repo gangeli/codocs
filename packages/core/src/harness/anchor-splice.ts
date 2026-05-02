@@ -102,6 +102,26 @@ export type SpliceIneligibilityReason =
  *     non-empty replacement string for the anchor (no anchor-crossing
  *     structural moves, no full deletion)
  */
+/**
+ * Inline-marker chars that pair around a styled run in markdown
+ * (`*` / `_` for emphasis & strong, `` ` `` for inline code). Used
+ * to detect when an anchor's literal hit sits INSIDE a marker pair
+ * — see `tryBuildSpliceOp`.
+ */
+const INLINE_MARKER_CHARS = new Set(['*', '_', '`']);
+
+function literalHitIsInsideMarkers(
+  theirs: string,
+  firstHit: number,
+  mdSpanLen: number,
+): boolean {
+  const before = firstHit > 0 ? theirs[firstHit - 1] : '';
+  const after = firstHit + mdSpanLen < theirs.length
+    ? theirs[firstHit + mdSpanLen]
+    : '';
+  return INLINE_MARKER_CHARS.has(before) || INLINE_MARKER_CHARS.has(after);
+}
+
 export function tryBuildSpliceOp(args: {
   anchor: CommentAnchor;
   theirs: string;
@@ -144,6 +164,23 @@ export function tryBuildSpliceOp(args: {
     secondHit = located.secondHit;
     mdSpanLen = located.spanLen;
     usedStrippedMatch = true;
+  } else if (literalHitIsInsideMarkers(theirs, firstHit, mdSpanLen)) {
+    // Literal hit found, but the anchor's plain text is sandwiched
+    // between inline marker chars (`**important**`, `*careful*`,
+    // `` `code` ``, etc.). The literal context windows would
+    // include the markers, which won't appear in merged after the
+    // agent's edit drops the styling — and worse, the section-
+    // level fallback can match those marker chars against a
+    // sibling marker pair (e.g. an instruction blockquote's
+    // `**Action [name]:**`) and extract a confounding replacement.
+    // Switch to the stripped path before any extraction runs.
+    const located = locateAnchorInStripped(theirs, quoted);
+    if (located) {
+      firstHit = located.firstHit;
+      secondHit = located.secondHit;
+      mdSpanLen = located.spanLen;
+      usedStrippedMatch = true;
+    }
   }
   if (secondHit >= 0) return { ineligible: 'multiple-anchor-occurrences' };
 

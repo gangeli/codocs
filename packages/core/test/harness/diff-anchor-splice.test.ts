@@ -457,6 +457,33 @@ describe('tryBuildSpliceOp — op construction', () => {
     expect(out.newText).toBe('measured');
   });
 
+  // CA22 reproduction: the e2e fixture wraps each anchored body
+  // sentence with an instruction blockquote whose **bold-marked**
+  // label includes brackets like `**Action [italic]:**`. The
+  // stripper turns that into `Action [italic]:`. After my fallback
+  // engages for the literal `*careful*` match (literal context
+  // contains `*` markers absent in merged), findReplacementStripped
+  // must align the right paragraph — the body sentence — and not
+  // mis-align onto the (paragraph-shaped, similarly-styled)
+  // instruction blockquote.
+  it('handles `*italic*` anchor next to a `**bold-with-brackets**` instruction blockquote (CA22 repro)', () => {
+    const t =
+      '# CA22 — anchor on italic inline text\n\n' +
+      '> **Action [italic]:** highlight just the italicised word inside the sentence below.\n\n' +
+      'The plan calls for a *careful* rollout next quarter.\n';
+    const m =
+      '# CA22 — anchor on italic inline text\n\n' +
+      '> **Action [italic]:** highlight just the italicised word inside the sentence below.\n\n' +
+      'The plan calls for a measured rollout next quarter.\n';
+    const fd = flatDoc(t);
+    const out = tryBuildSpliceOp({
+      anchor: { commentId: 'c1', quotedText: 'careful' },
+      theirs: t, mergedMarkdown: m, indexMap: fd.indexMap, bodyEndIndex: fd.bodyEndIndex,
+    });
+    if ('ineligible' in out) throw new Error(`expected splice, got ${out.ineligible}`);
+    expect(out.newText).toBe('measured');
+  });
+
   it('returns ineligible when an anchor truly does not appear (even after stripping)', () => {
     const t = 'Sentence with **bold** content.\n';
     const m = 'Sentence with **bolder** content.\n';

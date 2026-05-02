@@ -739,19 +739,25 @@ const tests: AnchorTestCase[] = [
   // to tryBuildSpliceOp) so the splice math is precise even though
   // the markdown indexMap is approximate around markers.
   //
-  // The edit drops the bold markers in `to` to match the body
-  // change the splice will land. The user is asked to highlight
-  // ONLY the bold word (not the whole sentence), so quotedText
-  // is just `important` — the splice newText is therefore just
-  // `critical` (the word that replaces the bold word in the
-  // stripped-paragraph alignment).
+  // The user is asked to highlight ONLY the bold word, so
+  // quotedText is just `important` — the splice newText is
+  // therefore just `critical` (the stripped-paragraph alignment
+  // returns the corresponding plain word). After splice exec the
+  // body's original bold textRun is preserved on the rewritten
+  // span (Drive's insertText inherits adjacent style), so when
+  // extracted back to markdown the body still wraps the new word
+  // in `**…**` — bold styling is preserved, NOT lost.
   {
-    title: 'CA15: anchor on bold inline text (styling lost, comment survives)',
+    title: 'CA15: anchor on bold inline text (bold preserved, comment survives)',
     anchorKey: 'bold',
-    edits: [{ from: 'has an **important** word', to: 'has an critical word' }],
+    // Edit keeps the bold markers around the swapped word so the
+    // expected body matches the live extraction. The splice itself
+    // produces just the word; the markers come from the inherited
+    // textRun style.
+    edits: [{ from: '**important**', to: '**critical**' }],
     outcome: 'splice',
     expectedSpliceNewText: 'critical',
-    expectedAnchorTextAfter: 'has an critical word',
+    expectedAnchorTextAfter: 'an **critical** word',
   },
 
   // CA16 — Anchor on a list-item's text. The leading "- " is a
@@ -851,14 +857,17 @@ const tests: AnchorTestCase[] = [
   // selection-extension behaviour for styled runs) — the italics
   // are lost, the comment survives.
   {
-    title: 'CA22: anchor on italic inline text',
+    title: 'CA22: anchor on italic inline text (italic preserved, comment survives)',
     anchorKey: 'italic',
-    edits: [{ from: 'a *careful* rollout', to: 'a measured rollout' }],
+    // Same shape as CA15 but with single-asterisk italic markers.
+    // The edit keeps the markers around the swapped word so the
+    // expected body matches the live extraction; the splice itself
+    // produces just the word and the surrounding italic textRun is
+    // preserved on the rewritten span.
+    edits: [{ from: '*careful*', to: '*measured*' }],
     outcome: 'splice',
-    // Single-word anchor on `*careful*` — splice replaces just the
-    // word inside the markers (per the stripped-fallback path).
     expectedSpliceNewText: 'measured',
-    expectedAnchorTextAfter: 'a measured rollout',
+    expectedAnchorTextAfter: 'a *measured* rollout',
   },
 
   // CA23 — Anchor on a snake_case identifier. The `_` chars are
