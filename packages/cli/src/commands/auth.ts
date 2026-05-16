@@ -30,13 +30,25 @@ const LOGIN_DESCRIPTION =
   'GitHub auth enables creating draft PRs for code changes via worktrees.\n' +
   'Without GitHub, code changes are made directly on the current branch.';
 
-const loginAction = withErrorHandler(async (opts: { github?: boolean }) => {
+const loginAction = withErrorHandler(async (opts: { github?: boolean; skipGithub?: boolean }) => {
+  if (opts.github && opts.skipGithub) {
+    throw new Error('--github and --skip-github are mutually exclusive');
+  }
+
   if (!opts.github) {
     // Google OAuth
     const config = readConfig();
     const tokens = await runOAuth2Flow(config.client_id, config.client_secret);
     writeTokens(tokens);
     console.error('Google authentication successful! Tokens saved.\n');
+  }
+
+  if (opts.skipGithub) {
+    console.error(
+      'Skipped GitHub (--skip-github). Code changes will be made directly on the current branch.\n' +
+      'You can connect later with: codocs login --github\n',
+    );
+    return;
   }
 
   // GitHub OAuth — prompt unless --github flag was used (explicit intent)
@@ -67,6 +79,7 @@ export function registerAuthCommands(program: Command) {
     .command('login')
     .description(LOGIN_DESCRIPTION)
     .option('--github', 'Only run the GitHub authentication step')
+    .option('--skip-github', 'Skip the GitHub authentication step (no prompt)')
     .action(loginAction);
 
   const auth = program
@@ -77,6 +90,7 @@ export function registerAuthCommands(program: Command) {
     .command('login')
     .description(LOGIN_DESCRIPTION)
     .option('--github', 'Only run the GitHub authentication step')
+    .option('--skip-github', 'Skip the GitHub authentication step (no prompt)')
     .action(loginAction);
 
   auth
