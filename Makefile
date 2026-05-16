@@ -8,7 +8,7 @@ export PATH := $(HOME)/.bun/bin:$(PATH)
 # exports, comments, the works.
 LOAD_ENV := set -a; [ -f .env ] && . ./.env; set +a;
 
-.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/noninteractive e2e/rendering e2e/roundtrip e2e/agents e2e/comments e2e/comment-anchors eval eval/judge deps help
+.PHONY: all build build-core build-db build-cli dist clean test typecheck check infra gcloud-auth e2e e2e/noninteractive e2e/rendering e2e/roundtrip e2e/agents e2e/comments e2e/comment-anchors e2e/auth eval eval/judge deps help
 
 all: codocs
 
@@ -85,6 +85,10 @@ infra: gcloud-auth
 # Docs (Workspace explicitly ignores API anchors), so each case prompts the
 # user to anchor a comment via the Docs UI before continuing. Run it
 # explicitly when working on the splice/revert path.
+# `e2e/auth` is excluded from the default `make e2e` because it drives the
+# real Google + GitHub OAuth flows in a browser, which requires the user
+# to click through the consent / device-code screens. Run it explicitly
+# when working on the auth pipeline.
 e2e: e2e/rendering e2e/roundtrip e2e/agents e2e/comments
 
 # Subset of `e2e` whose passes/failures the runner can determine on
@@ -117,6 +121,18 @@ e2e/comments: build
 # Workspace editor — comments render as "Original content deleted").
 e2e/comment-anchors: build
 	npx tsx scripts/e2e-comment-anchors.ts
+
+# Interactive: drives `codocs login` end-to-end against the real Google
+# and GitHub OAuth endpoints. Requires the user to click through the
+# consent screen in the browser and enter the GitHub device code. The
+# test isolates XDG_CONFIG_HOME / XDG_DATA_HOME to a temp sandbox so
+# (a) auth is provably unset at the start regardless of the developer's
+# real ~/.local/share/codocs state, and (b) tokens minted here are
+# discarded at the end and never touch the developer's real auth.
+# Pass AUTH_ARGS="--skip-github" to decline the GitHub prompt instead
+# of exercising the device-code flow.
+e2e/auth: build
+	npx tsx scripts/e2e-auth.ts $(AUTH_ARGS)
 
 # Live longevity test for the Pub/Sub comment-listener. Creates a real doc
 # in Drive, ensures a Workspace Events subscription, and either:
@@ -171,6 +187,10 @@ help:
 	@echo "  make e2e/comment-anchors  Interactive splice/revert tests."
 	@echo "                       Excluded from \`make e2e\` because each case"
 	@echo "                       prompts you to anchor a comment via the Docs UI."
+	@echo "  make e2e/auth        Interactive auth flow test."
+	@echo "                       Drives \`codocs login\` against real Google + GitHub"
+	@echo "                       OAuth in an isolated XDG sandbox so your real tokens"
+	@echo "                       are never touched. Excluded from \`make e2e\`."
 	@echo "  make e2e/connection  Live longevity test for the Pub/Sub listener."
 	@echo "                       Slow (~3 min); excluded from \`make e2e\`."
 	@echo "  make clean           Remove build outputs and the ./codocs launcher."
